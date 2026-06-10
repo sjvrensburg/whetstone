@@ -7,4 +7,6 @@
  * SecretStorage access) extend this barrel.
  */
 export * from './constants';
+export * from './crypto';
+export * from './json';
 export * from './types';

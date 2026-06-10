@@ -28,6 +28,8 @@ export default defineConfig({
         'src/commands.ts',
         'src/dev/cli.ts',
         'src/shared/constants.ts',
+        'src/shared/crypto.ts',
+        'src/shared/json.ts',
         'src/coaching/schema.ts',
         'test/support/fixtures.ts',
       ],
