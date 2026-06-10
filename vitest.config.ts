@@ -27,6 +27,8 @@ export default defineConfig({
         'src/container.ts',
         'src/commands.ts',
         'src/dev/cli.ts',
+        'src/shared/constants.ts',
+        'src/coaching/schema.ts',
         'test/support/fixtures.ts',
       ],
       thresholds: {

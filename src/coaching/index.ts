@@ -3,6 +3,7 @@
  * orchestrates a coaching turn. Calls `providers` + `guard`; emits ledger
  * events (Component Overview).
  *
- * Populated by task 12 (request build + turn pipeline).
+ * Task 02 adds the forced-output schema + validator; task 12 adds the request
+ * build + turn pipeline.
  */
-export {};
+export * from './schema';
