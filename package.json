@@ -69,6 +69,36 @@
           ],
           "default": "anthropic",
           "description": "The cloud model provider used for coaching inference (BYO key in SecretStorage). Anthropic is the validated reference provider; others are added once they pass the red-team gate."
+        },
+        "whetstone.models.coaching": {
+          "type": "string",
+          "default": "",
+          "description": "Optional override for the coaching model id. Leave empty to use the active provider's default coaching model."
+        },
+        "whetstone.models.judge": {
+          "type": "string",
+          "default": "",
+          "description": "Optional override for the guard-judge model id. Leave empty to use the active provider's default (cheap) judge model."
+        },
+        "whetstone.ledger.storeInWorkspace": {
+          "type": "boolean",
+          "default": false,
+          "description": "Store the provenance ledger inside the current workspace instead of the extension's global storage. Off by default so the ledger is not accidentally committed; opt in to have it travel with the repository."
+        },
+        "whetstone.grammar.severity": {
+          "type": "string",
+          "enum": [
+            "hint",
+            "info",
+            "warning"
+          ],
+          "default": "info",
+          "description": "Severity (quietness) of local grammar diagnostics. Tuned to a quiet 'hint' or 'info' marker rather than an alarming 'error'."
+        },
+        "whetstone.telemetry.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Opt-out, on-device telemetry (self-return, helpfulness, voice-preservation sampling). Aggregated locally; prose and keys never leave the device. Set to false to disable all collection."
         }
       }
     }

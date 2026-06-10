@@ -25,4 +25,20 @@ export const window = {
   },
 };
 
+/** Minimal `WorkspaceConfiguration`: always returns the caller's default, which
+ * models an unset configuration (the live API is exercised by integration). */
+export interface WorkspaceConfiguration {
+  get<T>(section: string, defaultValue: T): T;
+}
+
+export const workspace = {
+  getConfiguration(_section?: string): WorkspaceConfiguration {
+    return {
+      get<T>(_key: string, defaultValue: T): T {
+        return defaultValue;
+      },
+    };
+  },
+};
+
 export class TreeItem {}
