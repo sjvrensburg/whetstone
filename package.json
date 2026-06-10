@@ -1,0 +1,109 @@
+{
+  "name": "whetstone",
+  "displayName": "Whetstone",
+  "description": "An in-session writing coach that sharpens your draft without ever writing for you, with an honest provenance ledger and always-on local grammar.",
+  "version": "0.0.1",
+  "publisher": "whetstone",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "vscode": "^1.90.0",
+    "node": ">=20"
+  },
+  "categories": [
+    "Linters",
+    "Education",
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onLanguage:markdown",
+    "onLanguage:latex"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "whetstone",
+          "title": "Whetstone",
+          "icon": "media/whetstone.svg"
+        }
+      ]
+    },
+    "views": {
+      "whetstone": [
+        {
+          "id": "whetstone.coaching",
+          "name": "Coaching"
+        },
+        {
+          "id": "whetstone.ledger",
+          "name": "Ledger"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "whetstone.coachSelection",
+        "title": "Coach this selection",
+        "category": "Whetstone"
+      },
+      {
+        "command": "whetstone.openTransparencyReport",
+        "title": "Open transparency report",
+        "category": "Whetstone"
+      },
+      {
+        "command": "whetstone.toggleLedger",
+        "title": "Pause or resume the provenance ledger",
+        "category": "Whetstone"
+      }
+    ],
+    "configuration": {
+      "title": "Whetstone",
+      "properties": {
+        "whetstone.activeProvider": {
+          "type": "string",
+          "enum": [
+            "anthropic"
+          ],
+          "default": "anthropic",
+          "description": "The cloud model provider used for coaching inference (BYO key in SecretStorage). Anthropic is the validated reference provider; others are added once they pass the red-team gate."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "node esbuild.js --production",
+    "build": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint . --ext .ts,.js",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run --coverage",
+    "test:unit": "vitest run --coverage",
+    "test:watch": "vitest",
+    "compile-tests": "node esbuild.js && tsc -p tsconfig.test.json",
+    "pretest:integration": "npm run compile-tests",
+    "test:integration": "node ./out/test/runTest.js",
+    "dev": "node esbuild.js --cli && node dist/dev/cli.js"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.7",
+    "@types/node": "^22.5.0",
+    "@types/vscode": "^1.90.0",
+    "@typescript-eslint/eslint-plugin": "^8.5.0",
+    "@typescript-eslint/parser": "^8.5.0",
+    "@vitest/coverage-v8": "^2.1.1",
+    "@vscode/test-electron": "^2.4.1",
+    "esbuild": "^0.24.0",
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.1.0",
+    "glob": "^11.0.0",
+    "mocha": "^10.7.3",
+    "prettier": "^3.3.3",
+    "typescript": "^5.6.2",
+    "vitest": "^2.1.1"
+  }
+}
