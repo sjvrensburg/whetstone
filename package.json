@@ -72,6 +72,11 @@
         "command": "whetstone.editBrief",
         "title": "Edit writing brief",
         "category": "Whetstone"
+      },
+      {
+        "command": "whetstone.setFrictionLevel",
+        "title": "Set friction level",
+        "category": "Whetstone"
       }
     ],
     "configuration": {
@@ -121,6 +126,33 @@
           "type": "boolean",
           "default": true,
           "description": "Opt-out, on-device telemetry (self-return, helpfulness, voice-preservation sampling). Aggregated locally; prose and keys never leave the device. Set to false to disable all collection."
+        },
+        "whetstone.friction.level": {
+          "type": "integer",
+          "enum": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "default": 1,
+          "description": "Friction-dial level (ADR-008). 0 = Quiet, 1 = Coach (default), 2 = Engaged, 3 = Deep Work. Controls the intensity of the friction instruments."
+        },
+        "whetstone.friction.floor": {
+          "type": "integer",
+          "enum": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "default": 0,
+          "description": "Institutional floor for the friction dial (ADR-008). The writer cannot set the dial below this level. 0 = no floor."
+        },
+        "whetstone.friction.overrides": {
+          "type": "object",
+          "default": {},
+          "description": "Per-instrument overrides for the friction dial. Keys are instrument names (coachingCadence, pasteHandling, claimFirst, teachBack, mirror); values are the requested state."
         }
       }
     }

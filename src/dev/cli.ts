@@ -50,6 +50,9 @@ const CLI_DEFAULT_SETTINGS = {
   grammarSeverity: 'info' as const,
   telemetryEnabled: true,
   externalInsertThreshold: 50,
+  frictionLevel: 1,
+  frictionFloor: 0,
+  frictionOverrides: {},
 };
 
 async function resolveProvider(io: CliIO): Promise<CoachingProvider | undefined> {
@@ -213,9 +216,15 @@ export function formatInteractiveResult(result: InteractiveResult): string {
 
   lines.push('');
   lines.push('Guard verdict:');
-  lines.push(`  Injection:     ${result.layers.injection.passed ? 'PASS' : 'FAIL'}${result.layers.injection.reason ? ` — ${result.layers.injection.reason}` : ''}`);
-  lines.push(`  Deterministic: ${result.layers.deterministic.passed ? 'PASS' : 'FAIL'}${result.layers.deterministic.reason ? ` — ${result.layers.deterministic.reason}` : ''}`);
-  lines.push(`  Judge:         ${result.layers.judge ? (result.layers.judge.passed ? 'PASS' : 'FAIL') : 'N/A'}${result.layers.judge?.reason ? ` — ${result.layers.judge.reason}` : ''}`);
+  lines.push(
+    `  Injection:     ${result.layers.injection.passed ? 'PASS' : 'FAIL'}${result.layers.injection.reason ? ` — ${result.layers.injection.reason}` : ''}`,
+  );
+  lines.push(
+    `  Deterministic: ${result.layers.deterministic.passed ? 'PASS' : 'FAIL'}${result.layers.deterministic.reason ? ` — ${result.layers.deterministic.reason}` : ''}`,
+  );
+  lines.push(
+    `  Judge:         ${result.layers.judge ? (result.layers.judge.passed ? 'PASS' : 'FAIL') : 'N/A'}${result.layers.judge?.reason ? ` — ${result.layers.judge.reason}` : ''}`,
+  );
   lines.push('');
   lines.push(`Overall: ${result.guardResult.ok ? 'PASS (coaching allowed)' : 'REJECTED'}`);
 
@@ -246,10 +255,7 @@ function printHelp(io: CliIO): void {
  * `interactive` command: coach a single passage and print structured coaching
  * plus the per-layer guard verdict.
  */
-async function cmdInteractive(
-  args: readonly string[],
-  io: CliIO,
-): Promise<number> {
+async function cmdInteractive(args: readonly string[], io: CliIO): Promise<number> {
   // Parse --lang flag
   let lang: 'markdown' | 'latex' = 'markdown';
   const langIdx = args.indexOf('--lang');
@@ -307,10 +313,7 @@ async function cmdInteractive(
  * If no passage is given, reads from stdin. The fixture is saved to the
  * specified path as JSON (ProviderFixture format).
  */
-async function cmdRecord(
-  args: readonly string[],
-  io: CliIO,
-): Promise<number> {
+async function cmdRecord(args: readonly string[], io: CliIO): Promise<number> {
   // Parse args: first positional is the fixture path
   const positionalArgs = args.filter((a) => !a.startsWith('--'));
   if (positionalArgs.length === 0) {
@@ -385,11 +388,7 @@ async function cmdRecord(
     const fs = await import('node:fs');
     const dir = path.dirname(path.resolve(fixturePath));
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(
-      path.resolve(fixturePath),
-      `${JSON.stringify(fixture, null, 2)}\n`,
-      'utf8',
-    );
+    fs.writeFileSync(path.resolve(fixturePath), `${JSON.stringify(fixture, null, 2)}\n`, 'utf8');
 
     io.out(`Recorded ${calls.length} calls to ${path.resolve(fixturePath)}`);
     return 0;

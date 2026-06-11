@@ -25,6 +25,9 @@ const DEFAULT_SETTINGS: WhetstoneSettings = {
   grammarSeverity: 'info',
   telemetryEnabled: true,
   externalInsertThreshold: 50,
+  frictionLevel: 1,
+  frictionFloor: 0,
+  frictionOverrides: {},
 };
 
 /** Create a prompter stub with controllable responses. */

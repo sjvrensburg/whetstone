@@ -42,8 +42,8 @@ describe('extension host module', () => {
 
     try {
       expect(() => extension.activate(context)).not.toThrow();
-      // 6 commands + 2 sidebar views = 8 disposables.
-      expect(pushed).toHaveLength(8);
+      // 6 UI commands + 1 friction command + 2 sidebar views + 1 status bar + 1 config listener = 11 disposables.
+      expect(pushed).toHaveLength(11);
     } finally {
       // Clean up temp dir.
       fs.rmSync(tmpDir, { recursive: true, force: true });

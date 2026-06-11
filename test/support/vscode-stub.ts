@@ -13,6 +13,16 @@ function makeDisposable(): Disposable {
   return { dispose: () => undefined };
 }
 
+/** Minimal StatusBarItem stub for testing. */
+export interface StatusBarItem {
+  text: string;
+  tooltip: string | undefined;
+  command: string | undefined;
+  show(): void;
+  hide(): void;
+  dispose(): void;
+}
+
 export const commands = {
   registerCommand(_id: string, _handler: (...args: unknown[]) => unknown): Disposable {
     return makeDisposable();
@@ -23,9 +33,30 @@ export interface InputBox {
   show(): Thenable<string | undefined>;
 }
 
+export enum StatusBarAlignment {
+  Left = 0,
+  Right = 1,
+}
+
 export const window = {
   registerTreeDataProvider(_viewId: string, _provider: unknown): Disposable {
     return makeDisposable();
+  },
+  createStatusBarItem(_alignment?: StatusBarAlignment, _priority?: number): StatusBarItem {
+    return {
+      text: '',
+      tooltip: '',
+      command: undefined,
+      show() {
+        /* no-op */
+      },
+      hide() {
+        /* no-op */
+      },
+      dispose() {
+        /* no-op */
+      },
+    };
   },
   get activeTextEditor(): TextEditor | undefined {
     return _activeTextEditor;
@@ -95,6 +126,11 @@ export const workspace = {
     return Promise.resolve(new TextDocument(content));
   },
   workspaceFolders: [] as { uri: Uri; name: string; index: number }[] | undefined,
+  onDidChangeConfiguration(
+    _listener: (e: { affectsConfiguration(section: string): boolean }) => void,
+  ): Disposable {
+    return makeDisposable();
+  },
 };
 
 // ---------------------------------------------------------------------------

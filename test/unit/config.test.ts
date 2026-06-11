@@ -54,6 +54,9 @@ describe('readSettings — typed values from configuration', () => {
       grammarSeverity: 'warning',
       telemetryEnabled: false,
       externalInsertThreshold: 50,
+      frictionLevel: 1,
+      frictionFloor: 0,
+      frictionOverrides: {},
     });
   });
 

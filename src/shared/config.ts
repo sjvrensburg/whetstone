@@ -64,6 +64,24 @@ export interface WhetstoneSettings {
    * considered incremental typing and are not recorded.
    */
   externalInsertThreshold: number;
+  /**
+   * Friction-dial level (0–3). Controls the intensity of the friction
+   * instruments (ADR-008). 0 = Quiet, 1 = Coach (default), 2 = Engaged,
+   * 3 = Deep Work.
+   */
+  frictionLevel: number;
+  /**
+   * Institutional floor (0–3). A writer cannot drop the dial below this
+   * level; overrides cannot lower an instrument below its floor-state
+   * (ADR-008).
+   */
+  frictionFloor: number;
+  /**
+   * Per-instrument overrides. Keys are instrument names; values are the
+   * requested state for that instrument. Only instruments with an explicit
+   * override are included.
+   */
+  frictionOverrides: Record<string, string>;
 }
 
 /** The documented defaults, applied whenever a setting is unset. */
@@ -74,6 +92,9 @@ export const DEFAULT_SETTINGS: WhetstoneSettings = {
   grammarSeverity: 'info',
   telemetryEnabled: true,
   externalInsertThreshold: 50,
+  frictionLevel: 1,
+  frictionFloor: 0,
+  frictionOverrides: {},
 };
 
 /**
@@ -114,6 +135,14 @@ function coerceThreshold(value: number): number {
 }
 
 /**
+ * Coerce a friction level (0–3). Invalid values fall back to the provided
+ * default (level 1 for the dial itself, 0 for the floor).
+ */
+function coerceFrictionLevel(value: number, fallback: number): number {
+  return Number.isInteger(value) && value >= 0 && value <= 3 ? value : fallback;
+}
+
+/**
  * Map a configuration source onto the typed settings, applying the documented
  * defaults and coercing any out-of-range value back to its default (settings
  * can be hand-edited in `settings.json` beyond the contributed enum).
@@ -133,6 +162,15 @@ export function readSettings(config: ConfigurationSource): WhetstoneSettings {
     externalInsertThreshold: coerceThreshold(
       config.get('ledger.externalInsertThreshold', DEFAULT_SETTINGS.externalInsertThreshold),
     ),
+    frictionLevel: coerceFrictionLevel(
+      config.get('friction.level', DEFAULT_SETTINGS.frictionLevel),
+      DEFAULT_SETTINGS.frictionLevel,
+    ),
+    frictionFloor: coerceFrictionLevel(
+      config.get('friction.floor', DEFAULT_SETTINGS.frictionFloor),
+      DEFAULT_SETTINGS.frictionFloor,
+    ),
+    frictionOverrides: config.get('friction.overrides', DEFAULT_SETTINGS.frictionOverrides),
   };
 }
 

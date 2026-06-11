@@ -11,6 +11,8 @@ import { LedgerImpl, LedgerStore, resolveLedgerDir } from './ledger';
 import { renderReportDocument } from './ledger';
 import { ConsentGate } from './consent';
 import { BriefCapture, BriefFileStore } from './brief';
+import { Dial } from './friction/dial';
+import { FrictionStatusBar, createFrictionControlCommands } from './friction/control';
 
 /**
  * Extension host entry point. Owns lifecycle only: it builds the dependency
@@ -47,6 +49,29 @@ export function activate(context: vscode.ExtensionContext): void {
   // Brief (task 14)
   const briefStore = new BriefFileStore(ledgerDir);
   const briefCapture = new BriefCapture(briefStore);
+
+  // Friction dial (task 20, ADR-008)
+  const dial = new Dial({
+    level: settings.frictionLevel,
+    floor: settings.frictionFloor,
+    overrides: settings.frictionOverrides,
+  });
+  const frictionBar = new FrictionStatusBar(dial);
+  context.subscriptions.push(frictionBar);
+
+  // React to settings changes — update dial without reload
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('whetstone')) {
+        const updated = getSettings();
+        dial.updateConfig({
+          level: updated.frictionLevel,
+          floor: updated.frictionFloor,
+          overrides: updated.frictionOverrides,
+        });
+      }
+    }),
+  );
 
   // Consent gate (task 13)
   const consentGate = new ConsentGate({
@@ -136,6 +161,12 @@ export function activate(context: vscode.ExtensionContext): void {
   // --- Register commands ---
   const commands = createUICommands(deps);
   for (const command of commands) {
+    context.subscriptions.push(vscode.commands.registerCommand(command.id, command.handler));
+  }
+
+  // --- Register friction control commands (task 20) ---
+  const frictionCommands = createFrictionControlCommands({ dial });
+  for (const command of frictionCommands) {
     context.subscriptions.push(vscode.commands.registerCommand(command.id, command.handler));
   }
 }
