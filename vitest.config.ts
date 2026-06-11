@@ -59,6 +59,8 @@ export default defineConfig({
         'src/guard/judge.ts',
         'src/consent/index.ts',
         'src/brief/index.ts',
+        'src/telemetry/redact.ts',
+        'src/telemetry/index.ts',
         'src/ui/coachingView.ts',
         'src/ui/ledgerView.ts',
         'src/ui/commands.ts',

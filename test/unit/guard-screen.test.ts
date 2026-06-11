@@ -9,6 +9,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { RefusalGuard, createRefusalGuard } from '../../src/guard/index';
 import type { CoachingProvider } from '../../src/providers/types';
 import type { DocumentContext, StructuredCoaching } from '../../src/shared/types';
+import { TelemetrySink } from '../../src/telemetry';
 import { allNonLeaks, allLeaks, injections, leaks } from '../fixtures/redteam/corpus';
 
 // ---------------------------------------------------------------------------
@@ -59,9 +60,7 @@ describe('RefusalGuard.screen()', () => {
 
   it('returns ok:false with layer "deterministic" for rewrite pattern', async () => {
     const result = await guard.screen(
-      coaching(
-        obs('Change the first sentence to "A better opening."', 'Does this help?'),
-      ),
+      coaching(obs('Change the first sentence to "A better opening."', 'Does this help?')),
       doc,
     );
     expect(result.ok).toBe(false);
@@ -72,10 +71,7 @@ describe('RefusalGuard.screen()', () => {
   });
 
   it('returns ok:false with layer "deterministic" for over-length field', async () => {
-    const result = await guard.screen(
-      coaching(obs('A'.repeat(281), 'What is the claim?')),
-      doc,
-    );
+    const result = await guard.screen(coaching(obs('A'.repeat(281), 'What is the claim?')), doc);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.layer).toBe('deterministic');
@@ -256,6 +252,7 @@ describe('screen() layer ordering — deterministic first, then judge', () => {
       id: 'test',
       coach: vi.fn(),
       judge: judgeFn,
+      explainRule: vi.fn(),
     };
     const guardWithJudge = new RefusalGuard({ provider });
 
@@ -293,6 +290,7 @@ describe('screen() layer ordering — deterministic first, then judge', () => {
       id: 'test',
       coach: vi.fn(),
       judge: judgeFn,
+      explainRule: vi.fn(),
     };
     const guardWithJudge = new RefusalGuard({ provider });
 
@@ -310,5 +308,113 @@ describe('screen() layer ordering — deterministic first, then judge', () => {
     if (!result.ok) {
       expect(result.layer).toBe('judge');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 18 — telemetry instrumentation of judge verdicts
+// ---------------------------------------------------------------------------
+
+describe('RefusalGuard — judge-verdict telemetry (task 18.2)', () => {
+  const cleanCoaching = coaching(
+    obs(
+      'The paragraph positions LLMs as a threat without examining mitigating factors.',
+      'What if the argument addressed both threats and opportunities — where would the balance fall?',
+    ),
+  );
+
+  it('records a passed judge verdict when the judge accepts', async () => {
+    const telemetry = new TelemetrySink({ readEnabled: () => true });
+    const provider: CoachingProvider = {
+      id: 'test',
+      coach: vi.fn(),
+      judge: vi.fn(async () => ({ ok: true as const, value: { refused: false, reason: '' } })),
+      explainRule: vi.fn(),
+    };
+    const g = new RefusalGuard({ provider, telemetry });
+
+    const result = await g.screen(cleanCoaching, doc);
+
+    expect(result.ok).toBe(true);
+    expect(telemetry.metrics().judgeVerdicts).toEqual({ refused: 0, passed: 1 });
+  });
+
+  it('records a refused judge verdict when the judge refuses', async () => {
+    const telemetry = new TelemetrySink({ readEnabled: () => true });
+    const provider: CoachingProvider = {
+      id: 'test',
+      coach: vi.fn(),
+      judge: vi.fn(async () => ({
+        ok: true as const,
+        value: { refused: true, reason: 'paste-ready prose detected' },
+      })),
+      explainRule: vi.fn(),
+    };
+    const g = new RefusalGuard({ provider, telemetry });
+
+    const result = await g.screen(cleanCoaching, doc);
+
+    expect(result.ok).toBe(false);
+    expect(telemetry.metrics().judgeVerdicts).toEqual({ refused: 1, passed: 0 });
+  });
+
+  it('records a refused verdict when the judge call fails (fail-closed)', async () => {
+    const telemetry = new TelemetrySink({ readEnabled: () => true });
+    const provider: CoachingProvider = {
+      id: 'test',
+      coach: vi.fn(),
+      judge: vi.fn(async () => ({
+        ok: false as const,
+        error: { kind: 'timeout', message: 't/o' },
+      })),
+      explainRule: vi.fn(),
+    };
+    const g = new RefusalGuard({ provider, telemetry });
+
+    const result = await g.screen(cleanCoaching, doc);
+
+    expect(result.ok).toBe(false);
+    expect(telemetry.metrics().judgeVerdicts.refused).toBe(1);
+  });
+
+  it('does not record a judge verdict when the deterministic layer rejects first', async () => {
+    const telemetry = new TelemetrySink({ readEnabled: () => true });
+    const judgeFn = vi.fn();
+    const provider: CoachingProvider = {
+      id: 'test',
+      coach: vi.fn(),
+      judge: judgeFn,
+      explainRule: vi.fn(),
+    };
+    const g = new RefusalGuard({ provider, telemetry });
+
+    // Rewrite pattern → deterministic rejection; judge never runs.
+    const result = await g.screen(
+      coaching(obs('Change the first sentence to "A better opening."', 'Does this help?')),
+      doc,
+    );
+
+    expect(result.ok).toBe(false);
+    expect(judgeFn).not.toHaveBeenCalled();
+    expect(telemetry.metrics().judgeVerdicts).toEqual({ refused: 0, passed: 0 });
+  });
+
+  it('a throwing sink never affects the guard result', async () => {
+    const throwingSink = {
+      recordGuardJudgeVerdict: vi.fn(() => {
+        throw new Error('sink exploded');
+      }),
+    };
+    const provider: CoachingProvider = {
+      id: 'test',
+      coach: vi.fn(),
+      judge: vi.fn(async () => ({ ok: true as const, value: { refused: false, reason: '' } })),
+      explainRule: vi.fn(),
+    };
+    const g = new RefusalGuard({ provider, telemetry: throwingSink as unknown as TelemetrySink });
+
+    // The guard must still pass despite the sink throwing.
+    const result = await g.screen(cleanCoaching, doc);
+    expect(result.ok).toBe(true);
   });
 });

@@ -19,6 +19,7 @@ import { LedgerTreeDataProvider, type LedgerViewState } from '../../src/ui/ledge
 import type { Observation, StructuredCoaching, Brief } from '../../src/shared/types';
 import type { CoachingTurnDeps } from '../../src/coaching';
 import type { ConsentResult } from '../../src/consent';
+import { TelemetrySink } from '../../src/telemetry';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -64,10 +65,10 @@ function makeDeps(overrides: Partial<UICommandDeps> = {}): UICommandDeps {
   const coachingView = new CoachingTreeDataProvider();
   const ledgerView = new LedgerTreeDataProvider(makeLedgerViewState());
 
-  let consentResult: ConsentResult = { ok: true };
-  let briefData: Brief | undefined = undefined;
-  let reportData = { countsByType: {} as Record<string, number>, integrity: { intact: true } };
-  let disclosureText = 'Disclosure text';
+  const consentResult: ConsentResult = { ok: true };
+  const briefData: Brief | undefined = undefined;
+  const reportData = { countsByType: {} as Record<string, number>, integrity: { intact: true } };
+  const disclosureText = 'Disclosure text';
 
   return {
     consentGate: {
@@ -425,5 +426,90 @@ describe('consent-before-coaching integration', () => {
 
     expect(deps.buildCoachingDeps).not.toHaveBeenCalled();
     expect(deps.coachingView.coaching).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 18 — telemetry instrumentation of UI interactions
+// ---------------------------------------------------------------------------
+
+describe('UI commands — telemetry instrumentation (task 18.3)', () => {
+  it('records an activation on a successful coaching interaction', async () => {
+    const telemetry = new TelemetrySink({ readEnabled: () => true });
+    const deps = makeDeps({ telemetry });
+    const commands = createUICommands(deps);
+    const coachCmd = commands.find((c) => c.id === 'whetstone.coachSelection')!;
+
+    await coachCmd.handler();
+
+    expect(telemetry.metrics().activationCount).toBe(1);
+  });
+
+  it('does not record an activation when coaching fails', async () => {
+    const telemetry = new TelemetrySink({ readEnabled: () => true });
+    const deps = makeDeps({ telemetry });
+    // Force a guard failure → coaching turn returns not-ok.
+    (deps.buildCoachingDeps as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      provider: {
+        id: 'test-provider',
+        coach: vi.fn(async () => ({ ok: true, value: makeCoaching() })),
+      },
+      guard: {
+        screen: vi.fn(async () => ({ ok: false, reason: 'rejected', layer: 'deterministic' })),
+      },
+      ledger: { append: vi.fn(async () => undefined) },
+    } as unknown as CoachingTurnDeps);
+    const commands = createUICommands(deps);
+    const coachCmd = commands.find((c) => c.id === 'whetstone.coachSelection')!;
+
+    await coachCmd.handler();
+
+    expect(telemetry.metrics().activationCount).toBe(0);
+  });
+
+  it('records ledger-on when resuming a paused ledger', async () => {
+    const telemetry = new TelemetrySink({ readEnabled: () => true });
+    const deps = makeDeps({ telemetry });
+    Object.defineProperty(deps.ledger, 'isPaused', { value: true, configurable: true });
+    const commands = createUICommands(deps);
+    const toggleCmd = commands.find((c) => c.id === 'whetstone.toggleLedger')!;
+
+    await toggleCmd.handler();
+
+    expect(telemetry.metrics().ledgerOn).toBe(true);
+  });
+
+  it('records ledger-off when pausing an active ledger', async () => {
+    const telemetry = new TelemetrySink({ readEnabled: () => true });
+    const deps = makeDeps({ telemetry });
+    // isPaused defaults to false → toggle pauses.
+    const commands = createUICommands(deps);
+    const toggleCmd = commands.find((c) => c.id === 'whetstone.toggleLedger')!;
+
+    await toggleCmd.handler();
+
+    expect(telemetry.metrics().ledgerOn).toBe(false);
+  });
+
+  it('records a report generation when opening the transparency report', async () => {
+    const telemetry = new TelemetrySink({ readEnabled: () => true });
+    const deps = makeDeps({ telemetry });
+    const commands = createUICommands(deps);
+    const reportCmd = commands.find((c) => c.id === 'whetstone.openTransparencyReport')!;
+
+    await reportCmd.handler();
+
+    expect(telemetry.metrics().reportsGenerated).toEqual({ report: 1, disclosure: 0 });
+  });
+
+  it('records a disclosure generation when exporting the disclosure', async () => {
+    const telemetry = new TelemetrySink({ readEnabled: () => true });
+    const deps = makeDeps({ telemetry });
+    const commands = createUICommands(deps);
+    const disclosureCmd = commands.find((c) => c.id === 'whetstone.exportDisclosure')!;
+
+    await disclosureCmd.handler();
+
+    expect(telemetry.metrics().reportsGenerated).toEqual({ report: 0, disclosure: 1 });
   });
 });

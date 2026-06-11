@@ -24,6 +24,7 @@ import type { CoachingTreeDataProvider, CoachingDocumentRef } from './coachingVi
 import { revealObservationSpan } from './coachingView';
 import type { ObservationItem } from './coachingView';
 import type { LedgerTreeDataProvider } from './ledgerView';
+import type { TelemetrySink } from '../telemetry';
 
 // ---------------------------------------------------------------------------
 // DI seam — all services the commands need, injected for testability
@@ -55,6 +56,12 @@ export interface UICommandDeps {
   openReportDocument: () => Promise<void>;
   /** Renders the disclosure and opens it. */
   openDisclosureDocument: () => Promise<void>;
+  /**
+   * Optional telemetry sink (task 18.3). When present, records activation (on
+   * a successful coaching interaction), ledger on/off state, and report /
+   * disclosure generation events. Optional so existing tests are unaffected.
+   */
+  telemetry?: TelemetrySink;
 }
 
 /** The ledger control surface commands need (extends the read-only view). */
@@ -140,6 +147,9 @@ async function handleCoachSelection(deps: UICommandDeps): Promise<void> {
     return;
   }
 
+  // --- A successful coaching interaction is an activation event (task 18.3). ---
+  deps.telemetry?.recordActivation();
+
   // --- Render in coaching TreeView ---
   const docRef: CoachingDocumentRef = {
     uri: editor.document.uri,
@@ -178,9 +188,11 @@ async function handleToggleLedger(deps: UICommandDeps): Promise<void> {
   if (deps.ledger.isPaused) {
     await deps.ledger.resume();
     vscode.window.showInformationMessage('Ledger resumed.');
+    deps.telemetry?.recordLedgerState({ on: true });
   } else {
     await deps.ledger.pause();
     vscode.window.showInformationMessage('Ledger paused.');
+    deps.telemetry?.recordLedgerState({ on: false });
   }
   deps.ledgerView.refresh();
 }
@@ -192,6 +204,7 @@ async function handleToggleLedger(deps: UICommandDeps): Promise<void> {
 /** Open the transparency report as a generated Markdown document. */
 async function handleOpenTransparencyReport(deps: UICommandDeps): Promise<void> {
   await deps.openReportDocument();
+  deps.telemetry?.recordReportGenerated({ kind: 'report' });
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +214,7 @@ async function handleOpenTransparencyReport(deps: UICommandDeps): Promise<void> 
 /** Open the ICMJE disclosure as a generated text document. */
 async function handleExportDisclosure(deps: UICommandDeps): Promise<void> {
   await deps.openDisclosureDocument();
+  deps.telemetry?.recordReportGenerated({ kind: 'disclosure' });
 }
 
 // ---------------------------------------------------------------------------

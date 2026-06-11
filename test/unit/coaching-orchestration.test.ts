@@ -18,6 +18,7 @@ import type { CoachingTurnDeps, CoachingTurnInput } from '../../src/coaching/ind
 import type { CoachingProvider, ProviderErrorKind } from '../../src/providers/types';
 import type { RefusalGuard } from '../../src/guard/index';
 import type { Ledger, StructuredCoaching, DocumentLanguage } from '../../src/shared/types';
+import { TelemetrySink } from '../../src/telemetry';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -59,11 +60,15 @@ function stubProvider(response: StructuredCoaching): CoachingProvider {
       value: response,
     })),
     judge: vi.fn(),
+    explainRule: vi.fn(),
   };
 }
 
 /** Create a provider stub that returns a failure. */
-function stubFailingProvider(error: { kind: ProviderErrorKind; message: string }): CoachingProvider {
+function stubFailingProvider(error: {
+  kind: ProviderErrorKind;
+  message: string;
+}): CoachingProvider {
   return {
     id: 'test-provider',
     coach: vi.fn(async () => ({
@@ -71,18 +76,30 @@ function stubFailingProvider(error: { kind: ProviderErrorKind; message: string }
       error: { kind: error.kind, message: error.message },
     })),
     judge: vi.fn(),
+    explainRule: vi.fn(),
   };
 }
 
 /** Create a guard stub. */
-function stubGuard(passes: boolean, reason = 'rejected', layer: 'deterministic' | 'judge' = 'deterministic') {
+function stubGuard(
+  passes: boolean,
+  reason = 'rejected',
+  layer: 'deterministic' | 'judge' = 'deterministic',
+) {
   return {
-    screen: vi.fn(async (): Promise<{ ok: boolean; coaching?: StructuredCoaching; reason?: string; layer?: string }> => {
-      if (passes) {
-        return { ok: true, coaching: CLEAN_COACHING };
-      }
-      return { ok: false, reason, layer };
-    }),
+    screen: vi.fn(
+      async (): Promise<{
+        ok: boolean;
+        coaching?: StructuredCoaching;
+        reason?: string;
+        layer?: string;
+      }> => {
+        if (passes) {
+          return { ok: true, coaching: CLEAN_COACHING };
+        }
+        return { ok: false, reason, layer };
+      },
+    ),
   } as unknown as RefusalGuard;
 }
 
@@ -406,10 +423,7 @@ describe('Integration: end-to-end stubbed coaching turn', () => {
     const guard = stubGuard(true);
     const ledger = stubLedger();
 
-    const result = await runCoachingTurn(
-      { provider, guard, ledger },
-      DEFAULT_INPUT,
-    );
+    const result = await runCoachingTurn({ provider, guard, ledger }, DEFAULT_INPUT);
 
     // Result is ok.
     expect(result.ok).toBe(true);
@@ -474,10 +488,7 @@ describe('Integration: end-to-end stubbed coaching turn', () => {
     } as unknown as RefusalGuard;
     const ledger = stubLedger();
 
-    const result = await runCoachingTurn(
-      { provider, guard, ledger },
-      DEFAULT_INPUT,
-    );
+    const result = await runCoachingTurn({ provider, guard, ledger }, DEFAULT_INPUT);
 
     expect(result.ok).toBe(true);
 
@@ -504,10 +515,7 @@ describe('Integration: end-to-end stubbed coaching turn', () => {
       updatedAt: '2026-06-01T00:00:00.000Z',
     };
 
-    await runCoachingTurn(
-      { provider, guard, ledger },
-      { ...DEFAULT_INPUT, brief },
-    );
+    await runCoachingTurn({ provider, guard, ledger }, { ...DEFAULT_INPUT, brief });
 
     const coachReq = (provider.coach as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(coachReq.brief).toEqual(brief);
@@ -532,16 +540,18 @@ describe('Integration: end-to-end stubbed coaching turn', () => {
         };
       }),
       judge: vi.fn(),
+      explainRule: vi.fn(),
     };
     const guard = {
-      screen: vi.fn(async () => ({ ok: false, reason: 'rejected', layer: 'deterministic' as const })),
+      screen: vi.fn(async () => ({
+        ok: false,
+        reason: 'rejected',
+        layer: 'deterministic' as const,
+      })),
     } as unknown as RefusalGuard;
     const ledger = stubLedger();
 
-    const result = await runCoachingTurn(
-      { provider, guard, ledger },
-      DEFAULT_INPUT,
-    );
+    const result = await runCoachingTurn({ provider, guard, ledger }, DEFAULT_INPUT);
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -550,5 +560,70 @@ describe('Integration: end-to-end stubbed coaching turn', () => {
       expect(result.error.message).toContain('timed out');
     }
     expect(ledger.append).not.toHaveBeenCalled();
+  });
+});
+
+// ===========================================================================
+// Task 18 — telemetry instrumentation of the turn pipeline
+// ===========================================================================
+
+describe('runCoachingTurn — telemetry instrumentation', () => {
+  it('records a passing outcome and a voice-preservation sample on a clean turn', async () => {
+    const telemetry = new TelemetrySink({ readEnabled: () => true });
+    const deps = stubDeps({ telemetry });
+
+    const result = await runCoachingTurn(deps, DEFAULT_INPUT);
+
+    expect(result.ok).toBe(true);
+    const m = telemetry.metrics();
+    expect(m.coachingTurns.pass).toBe(1);
+    expect(m.coachingTurns.reject).toBe(0);
+    expect(m.voicePreservation.samples).toBe(1);
+    expect(m.voicePreservation.rate).toBe(1); // no prose leaked
+  });
+
+  it('records the guard layer on a rejected turn', async () => {
+    const telemetry = new TelemetrySink({ readEnabled: () => true });
+    const deps = stubDeps({
+      telemetry,
+      guard: stubGuard(false, 'n-gram overlap too high', 'deterministic'),
+    });
+
+    const result = await runCoachingTurn(deps, DEFAULT_INPUT);
+
+    expect(result.ok).toBe(false);
+    const m = telemetry.metrics();
+    expect(m.coachingTurns.reject).toBeGreaterThanOrEqual(1);
+    expect(m.coachingTurns.byLayer.deterministic).toBeGreaterThanOrEqual(1);
+    // Suppressed text never reached the writer → still preserved.
+    expect(m.voicePreservation.rate).toBe(1);
+  });
+
+  it('does not record a coaching-turn outcome on a provider error', async () => {
+    const telemetry = new TelemetrySink({ readEnabled: () => true });
+    const deps = stubDeps({
+      telemetry,
+      provider: stubFailingProvider({ kind: 'timeout', message: 'timed out' }),
+    });
+
+    const result = await runCoachingTurn(deps, DEFAULT_INPUT);
+
+    expect(result.ok).toBe(false);
+    const m = telemetry.metrics();
+    // No guard screen happened, so no coaching-turn outcome is recorded.
+    expect(m.coachingTurns.pass).toBe(0);
+    expect(m.coachingTurns.reject).toBe(0);
+  });
+
+  it('records nothing when telemetry is opt-out', async () => {
+    const telemetry = new TelemetrySink({ readEnabled: () => false });
+    const deps = stubDeps({ telemetry });
+
+    await runCoachingTurn(deps, DEFAULT_INPUT);
+
+    const m = telemetry.metrics();
+    expect(m.coachingTurns.pass).toBe(0);
+    expect(m.voicePreservation.samples).toBe(0);
+    expect(telemetry.getEvents()).toHaveLength(0);
   });
 });

@@ -16,11 +16,18 @@
 
 import type { CoachingProvider } from '../providers/types';
 import type { DocumentContext, GuardResult, StructuredCoaching } from '../shared/types';
+import type { TelemetrySink } from '../telemetry';
 import { runDeterministicChecks } from './deterministic';
 import { type JudgeOptions, runJudgeLayer } from './judge';
 import { screenInjection } from './injection';
 
-export { checkSpanLengths, checkRewritePatterns, checkNgramOverlap, extractNgrams, ngramOverlap } from './deterministic';
+export {
+  checkSpanLengths,
+  checkRewritePatterns,
+  checkNgramOverlap,
+  extractNgrams,
+  ngramOverlap,
+} from './deterministic';
 export { type JudgeOptions, runJudgeLayer, singleJudge, majorityJudge } from './judge';
 export { wrapUntrusted, screenInjection } from './injection';
 
@@ -38,6 +45,14 @@ export interface RefusalGuardDeps {
   provider?: CoachingProvider;
   /** Judge configuration: rounds (majority-of-N) and per-call timeout. */
   judgeOptions?: JudgeOptions;
+  /**
+   * Optional telemetry sink (task 18.2). When present, the judge verdict
+   * (refused/passed) is recorded after each judge run. The guard's screening
+   * logic is unchanged; telemetry is a fire-and-forget observer that can
+   * never affect the guard result. Optional so the guard stays usable in
+   * isolation (red-team tests construct it without telemetry).
+   */
+  telemetry?: TelemetrySink;
 }
 
 /**
@@ -55,10 +70,28 @@ export interface RefusalGuardDeps {
 export class RefusalGuard {
   private readonly provider?: CoachingProvider;
   private readonly judgeOptions?: JudgeOptions;
+  private readonly telemetry?: TelemetrySink;
 
   constructor(deps?: RefusalGuardDeps) {
     this.provider = deps?.provider;
     this.judgeOptions = deps?.judgeOptions;
+    this.telemetry = deps?.telemetry;
+  }
+
+  /**
+   * Emit a telemetry observation without ever letting it affect the guard
+   * result. A throwing sink is swallowed — the F2 invariant must not depend
+   * on instrumentation.
+   */
+  private emitTelemetry(fn: () => void): void {
+    if (!this.telemetry) {
+      return;
+    }
+    try {
+      fn();
+    } catch {
+      // Telemetry must never affect screening.
+    }
   }
 
   /**
@@ -87,6 +120,11 @@ export class RefusalGuard {
     // Layer 3: Cloud judge (if a provider is configured).
     if (this.provider) {
       const judgeResult = await runJudgeLayer(this.provider, out, this.judgeOptions);
+      // Record the judge's own verdict (task 18.2): refused unless it explicitly
+      // passed. Done before the early-return so both outcomes are observed.
+      this.emitTelemetry(() =>
+        this.telemetry!.recordGuardJudgeVerdict({ refused: !judgeResult.ok }),
+      );
       if (!judgeResult.ok) return judgeResult;
     }
 

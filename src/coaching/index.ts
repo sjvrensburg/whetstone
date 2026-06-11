@@ -18,8 +18,15 @@ export * from './schema';
 
 import type { RefusalGuard } from '../guard';
 import type { Ledger } from '../shared/types';
-import type { Brief, CoachingRequest, DocumentContext, DocumentLanguage, StructuredCoaching } from '../shared/types';
+import type {
+  Brief,
+  CoachingRequest,
+  DocumentContext,
+  DocumentLanguage,
+  StructuredCoaching,
+} from '../shared/types';
 import type { CoachingProvider } from '../providers/types';
+import type { TelemetrySink } from '../telemetry';
 
 // ---------------------------------------------------------------------------
 // Turn-pipeline types
@@ -38,6 +45,12 @@ export interface CoachingTurnDeps {
    * Default is 2 (one initial + one retry with stricter reminder).
    */
   maxAttempts?: number;
+  /**
+   * Optional telemetry sink (task 18). When present, each guard-screen
+   * outcome (pass/reject + guard layer) and a voice-preservation sample are
+   * recorded. Optional so existing callers and tests are unaffected.
+   */
+  telemetry?: TelemetrySink;
 }
 
 /** The input to a coaching turn — what the UI command provides. */
@@ -180,7 +193,7 @@ export async function runCoachingTurn(
   deps: CoachingTurnDeps,
   input: CoachingTurnInput,
 ): Promise<CoachingTurnResult> {
-  const { provider, guard, ledger } = deps;
+  const { provider, guard, ledger, telemetry } = deps;
   const maxAttempts = deps.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
   const doc = buildDocumentContext(input);
   let request = buildCoachingRequest(input);
@@ -202,6 +215,20 @@ export async function runCoachingTurn(
 
     // --- Screen through refusal guard ---
     const guardResult = await guard.screen(coaching, doc);
+
+    // --- Record the guard-screen outcome + a voice-preservation sample
+    // (task 18.2 / 18.4). The guard suppresses suspect text by construction,
+    // so no paste-ready prose reaches the writer either way (leaked: false);
+    // a rejection records which layer caught it. ---
+    telemetry?.recordCoachingTurnOutcome({
+      outcome: guardResult.ok ? 'pass' : 'reject',
+      ...(!guardResult.ok ? { layer: guardResult.layer } : {}),
+    });
+    telemetry?.recordVoicePreservationSample({
+      leaked: false,
+      ...(!guardResult.ok ? { layer: guardResult.layer } : {}),
+    });
+
     if (guardResult.ok) {
       // --- Pass: append ai_consult ledger event (task 12.4) ---
       await ledger.append({
