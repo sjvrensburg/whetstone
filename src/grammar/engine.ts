@@ -20,6 +20,8 @@
 import type { DocumentLanguage } from '../shared/types';
 import type { GrammarDiagnostic } from './diagnostics';
 import { lintsToDiagnostics, resolveSeverity } from './diagnostics';
+import type { DismissalStore } from './dismissals';
+import { filterDismissed } from './dismissals';
 import type { LinterBackend } from './worker';
 import { maskLaTeX } from './latexMask';
 
@@ -125,21 +127,27 @@ export class GrammarEngine {
   private readonly backend: LinterBackend;
   private readonly severitySetting: 'hint' | 'info' | 'warning';
   private readonly debounceMs: number;
+  private readonly dismissalStore: DismissalStore | null;
   private debounce: Debounce<LintResult>;
 
   /**
-   * @param backend    The linter backend (real harper.js or mock for tests).
-   * @param severity   The grammar diagnostic severity setting.
-   * @param debounceMs Debounce delay in ms (default 300).
+   * @param backend         The linter backend (real harper.js or mock for tests).
+   * @param severity        The grammar diagnostic severity setting.
+   * @param debounceMs      Debounce delay in ms (default 300).
+   * @param dismissalStore  Optional per-workspace dismissal store. When provided,
+   *                        dismissed lints are filtered out before diagnostics are
+   *                        produced (Task 06, ADR-005 ESL mitigation).
    */
   constructor(
     backend: LinterBackend,
     severity: 'hint' | 'info' | 'warning' = 'info',
     debounceMs: number = DEFAULT_DEBOUNCE_MS,
+    dismissalStore?: DismissalStore,
   ) {
     this.backend = backend;
     this.severitySetting = severity;
     this.debounceMs = debounceMs;
+    this.dismissalStore = dismissalStore ?? null;
     this.debounce = new Debounce<LintResult>(() => Promise.resolve(emptyResult), debounceMs);
   }
 
@@ -158,10 +166,7 @@ export class GrammarEngine {
    * @param language The document language ('markdown' or 'latex').
    * @returns A `LintResult` with diagnostics.
    */
-  async lintDocument(
-    text: string,
-    language: DocumentLanguage,
-  ): Promise<LintResult> {
+  async lintDocument(text: string, language: DocumentLanguage): Promise<LintResult> {
     if (language === 'latex') {
       return this.lintLatex(text);
     }
@@ -172,10 +177,7 @@ export class GrammarEngine {
    * Schedule a debounced lint. Rapid successive calls coalesce into one.
    * Returns a promise that resolves with the result of the eventual lint pass.
    */
-  scheduleLint(
-    text: string,
-    language: DocumentLanguage,
-  ): Promise<LintResult> {
+  scheduleLint(text: string, language: DocumentLanguage): Promise<LintResult> {
     this.debounce.cancel();
     this.debounce = new Debounce<LintResult>(
       () => this.lintDocument(text, language),
@@ -200,7 +202,10 @@ export class GrammarEngine {
   // -------------------------------------------------------------------------
 
   private async lintMarkdown(text: string): Promise<LintResult> {
-    const lints = await this.backend.lint({ text, language: 'markdown' });
+    let lints = await this.backend.lint({ text, language: 'markdown' });
+    if (this.dismissalStore) {
+      lints = filterDismissed(lints, this.dismissalStore);
+    }
     const severity = resolveSeverity(this.severitySetting);
     const diagnostics = lintsToDiagnostics(lints, text, null, severity);
     return { diagnostics };
@@ -208,10 +213,13 @@ export class GrammarEngine {
 
   private async lintLatex(text: string): Promise<LintResult> {
     const maskResult = maskLaTeX(text);
-    const lints = await this.backend.lint({
+    let lints = await this.backend.lint({
       text: maskResult.masked,
       language: 'plaintext',
     });
+    if (this.dismissalStore) {
+      lints = filterDismissed(lints, this.dismissalStore);
+    }
     const severity = resolveSeverity(this.severitySetting);
     const diagnostics = lintsToDiagnostics(lints, text, maskResult.sourceMap, severity);
     return { diagnostics };
@@ -232,8 +240,9 @@ const emptyResult: LintResult = { diagnostics: [] };
 export async function createGrammarEngine(
   severity: 'hint' | 'info' | 'warning' = 'info',
   debounceMs: number = DEFAULT_DEBOUNCE_MS,
+  dismissalStore?: DismissalStore,
 ): Promise<GrammarEngine> {
   const { createDirectBackend } = await import('./worker');
   const backend = await createDirectBackend();
-  return new GrammarEngine(backend, severity, debounceMs);
+  return new GrammarEngine(backend, severity, debounceMs, dismissalStore);
 }

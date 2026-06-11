@@ -37,6 +37,9 @@ export default defineConfig({
         'src/grammar/latexMask.ts',
         'src/grammar/diagnostics.ts',
         'src/grammar/worker.ts',
+        'src/grammar/dismissals.ts',
+        'src/grammar/hover.ts',
+        'src/grammar/codeActions.ts',
         'test/support/fixtures.ts',
       ],
       thresholds: {

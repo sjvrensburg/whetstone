@@ -15,6 +15,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { GrammarEngine, Debounce, type LintResult } from '../../../src/grammar/engine';
 import type { LinterBackend, LintRequest } from '../../../src/grammar/worker';
 import type { SerializedLint } from '../../../src/grammar/diagnostics';
+import { DismissalStore, type DismissalStorage } from '../../../src/grammar/dismissals';
 
 // ---------------------------------------------------------------------------
 // Mock linter backend
@@ -193,10 +194,7 @@ describe('Debounce', () => {
   });
 
   it('returns the result through the promise', async () => {
-    const debounced = new Debounce<LintResult>(
-      async () => ({ diagnostics: [] }),
-      50,
-    );
+    const debounced = new Debounce<LintResult>(async () => ({ diagnostics: [] }), 50);
 
     const promise = debounced.call();
     await vi.advanceTimersByTimeAsync(100);
@@ -230,5 +228,92 @@ describe('Debounce', () => {
     expect(debounced.isScheduled).toBe(true);
     vi.advanceTimersByTime(100);
     expect(debounced.isScheduled).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GrammarEngine + DismissalStore integration
+// ---------------------------------------------------------------------------
+
+/** In-memory storage for dismissals in tests. */
+class InMemoryDismissalStorage implements DismissalStorage {
+  private readonly data = new Map<string, unknown>();
+  get<T>(key: string, defaultValue: T): T {
+    return (this.data.get(key) as T) ?? defaultValue;
+  }
+  async update(key: string, value: unknown): Promise<void> {
+    this.data.set(key, value);
+  }
+}
+
+describe('GrammarEngine with DismissalStore', () => {
+  it('filters dismissed lints from Markdown diagnostics', async () => {
+    const backend = new MockLinterBackend([sampleLint]);
+    const storage = new InMemoryDismissalStorage();
+    const store = new DismissalStore(storage);
+    await store.dismiss(sampleLint);
+    const engine = new GrammarEngine(backend, 'info', 0, store);
+
+    const result = await engine.lintDocument('Thsi is a test.', 'markdown');
+    expect(result.diagnostics).toHaveLength(0);
+    await engine.dispose();
+  });
+
+  it('keeps non-dismissed lints', async () => {
+    const lint1: SerializedLint = {
+      span: { start: 0, end: 4 },
+      problemText: 'Thsi',
+      lintKind: 'Spelling',
+      lintKindPretty: 'Spelling',
+      message: 'Did you mean "This"?',
+      suggestionCount: 1,
+    };
+    const lint2: SerializedLint = {
+      span: { start: 5, end: 7 },
+      problemText: 'is',
+      lintKind: 'Grammar',
+      lintKindPretty: 'Grammar',
+      message: 'Check grammar.',
+      suggestionCount: 0,
+    };
+    const backend = new MockLinterBackend([lint1, lint2]);
+    const storage = new InMemoryDismissalStorage();
+    const store = new DismissalStore(storage);
+    await store.dismiss(lint1); // dismiss only lint1
+    const engine = new GrammarEngine(backend, 'info', 0, store);
+
+    const result = await engine.lintDocument('Thsi is a test.', 'markdown');
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0].message).toBe('Check grammar.');
+    await engine.dispose();
+  });
+
+  it('passes all lints through when no dismissal store is provided', async () => {
+    const backend = new MockLinterBackend([sampleLint]);
+    const engine = new GrammarEngine(backend, 'info');
+
+    const result = await engine.lintDocument('Thsi is a test.', 'markdown');
+    expect(result.diagnostics).toHaveLength(1);
+    await engine.dispose();
+  });
+
+  it('filters dismissed lints in LaTeX pipeline', async () => {
+    const lint: SerializedLint = {
+      span: { start: 5, end: 9 },
+      problemText: 'more',
+      lintKind: 'Spelling',
+      lintKindPretty: 'Spelling',
+      message: 'Check "more"',
+      suggestionCount: 0,
+    };
+    const backend = new MockLinterBackend([lint]);
+    const storage = new InMemoryDismissalStorage();
+    const store = new DismissalStore(storage);
+    await store.dismiss(lint);
+    const engine = new GrammarEngine(backend, 'info', 0, store);
+
+    const result = await engine.lintDocument('Text \\textbf{bold} more text', 'latex');
+    expect(result.diagnostics).toHaveLength(0);
+    await engine.dispose();
   });
 });

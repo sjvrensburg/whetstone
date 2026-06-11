@@ -8,6 +8,11 @@
  * - `lintsToDiagnostics` — Harper lints → VS Code hint/info diagnostics
  * - `DirectLinterBackend` / `LinterBackend` — linter abstraction
  *
+ * Public surface (task 06):
+ * - `DismissalStore` — persistent per-workspace lint dismissal store
+ * - `GrammarHoverProvider` — hover over grammar diagnostics
+ * - `GrammarCodeActionProvider` — "dismiss as false positive" quick-fix
+ *
  * Consumed by task 06 (hover, dismiss), task 15 (explain-this-rule).
  */
 
@@ -25,6 +30,20 @@ export type {
   DocumentPosition,
   DocumentRange,
 } from './diagnostics';
+
+export { DismissalStore, computeDismissalKey, lintToIdentity, filterDismissed } from './dismissals';
+export type { LintIdentity, DismissalStorage } from './dismissals';
+
+export { GrammarHoverProvider, formatHoverContent, diagnosticToHoverData } from './hover';
+export type { HoverData } from './hover';
+
+export {
+  GrammarCodeActionProvider,
+  createDismissAction,
+  handleDismissCommand,
+  DISMISS_COMMAND_ID,
+} from './codeActions';
+export type { DismissCommandArgs } from './codeActions';
 
 export { DirectLinterBackend, serializeLint, serializeLints } from './worker';
 export type { LinterBackend, LintRequest } from './worker';
