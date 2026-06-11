@@ -45,6 +45,9 @@ export default defineConfig({
         'src/ledger/store.ts',
         'src/ledger/index.ts',
         'src/ledger/detector.ts',
+        'src/providers/openaiCompatible.ts',
+        'src/providers/prompts.ts',
+        'src/providers/registry.ts',
         'test/support/fixtures.ts',
       ],
       thresholds: {

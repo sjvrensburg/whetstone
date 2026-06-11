@@ -65,10 +65,11 @@
         "whetstone.activeProvider": {
           "type": "string",
           "enum": [
+            "zai",
             "anthropic"
           ],
-          "default": "anthropic",
-          "description": "The cloud model provider used for coaching inference (BYO key in SecretStorage). Anthropic is the validated reference provider; others are added once they pass the red-team gate."
+          "default": "zai",
+          "description": "The cloud model provider used for coaching inference (BYO key in SecretStorage). ZAI is the validated reference provider; others are added once they pass the red-team gate."
         },
         "whetstone.models.coaching": {
           "type": "string",
@@ -143,6 +144,7 @@
     "vitest": "^2.1.1"
   },
   "dependencies": {
-    "harper.js": "^2.4.0"
+    "harper.js": "^2.4.0",
+    "openai": "^4.104.0"
   }
 }

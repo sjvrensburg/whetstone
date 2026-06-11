@@ -19,11 +19,12 @@ import * as vscode from 'vscode';
 export const CONFIG_SECTION = 'whetstone';
 
 /**
- * The provider ids the active-provider setting accepts (ADR-004). Anthropic is
- * the validated reference; others are added only once they pass the red-team
- * gate, so the list grows alongside `package.json`'s enum.
+ * The provider ids the active-provider setting accepts (ADR-004). ZAI is the
+ * validated reference (amendment 2026-06-11); Anthropic is retained for future
+ * activation once it passes the red-team gate. The list grows alongside
+ * `package.json`'s enum.
  */
-export const PROVIDER_IDS = ['anthropic'] as const;
+export const PROVIDER_IDS = ['zai', 'anthropic'] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
 /**
@@ -67,7 +68,7 @@ export interface WhetstoneSettings {
 
 /** The documented defaults, applied whenever a setting is unset. */
 export const DEFAULT_SETTINGS: WhetstoneSettings = {
-  activeProvider: 'anthropic',
+  activeProvider: 'zai',
   models: {},
   ledgerInWorkspace: false,
   grammarSeverity: 'info',
