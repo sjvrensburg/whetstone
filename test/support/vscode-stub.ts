@@ -19,9 +19,55 @@ export const commands = {
   },
 };
 
+export interface InputBox {
+  show(): Thenable<string | undefined>;
+}
+
 export const window = {
   registerTreeDataProvider(_viewId: string, _provider: unknown): Disposable {
     return makeDisposable();
+  },
+  get activeTextEditor(): TextEditor | undefined {
+    return _activeTextEditor;
+  },
+  showInformationMessage(_message: string, ..._items: string[]): Thenable<string | undefined> {
+    return Promise.resolve(undefined);
+  },
+  showWarningMessage(_message: string, ..._items: string[]): Thenable<string | undefined> {
+    return Promise.resolve(undefined);
+  },
+  showErrorMessage(_message: string, ..._items: string[]): Thenable<string | undefined> {
+    return Promise.resolve(undefined);
+  },
+  showInputBox(_options?: {
+    title?: string;
+    prompt?: string;
+    placeholder?: string;
+    value?: string;
+  }): Thenable<string | undefined> {
+    return Promise.resolve(undefined);
+  },
+  showQuickPick<T extends string>(
+    _items: T[] | Thenable<T[]>,
+    _options?: { title?: string; placeHolder?: string },
+  ): Thenable<T | undefined> {
+    return Promise.resolve(undefined);
+  },
+  showTextDocument(
+    _doc: TextDocument | Uri,
+    _columnOrOptions?: unknown,
+    _preserveFocus?: boolean,
+  ): Thenable<TextEditor> {
+    throw new Error('showTextDocument not implemented in stub');
+  },
+  createOutputChannel(_name: string): { appendLine(_value: string): void; dispose(): void } {
+    return { appendLine: () => undefined, dispose: () => undefined };
+  },
+  withProgress<R>(
+    _options: unknown,
+    _task: (progress: unknown, token: unknown) => Thenable<R>,
+  ): Thenable<R> {
+    return _task({}, {});
   },
 };
 
@@ -39,9 +85,83 @@ export const workspace = {
       },
     };
   },
+  openTextDocument(
+    _contentOrOptions?: string | { content?: string; language?: string },
+  ): Thenable<TextDocument> {
+    const content =
+      typeof _contentOrOptions === 'string'
+        ? _contentOrOptions
+        : (_contentOrOptions?.content ?? '');
+    return Promise.resolve(new TextDocument(content));
+  },
+  workspaceFolders: [] as { uri: Uri; name: string; index: number }[] | undefined,
 };
 
-export class TreeItem {}
+// ---------------------------------------------------------------------------
+// TreeView / TreeDataProvider types (Task 17)
+// ---------------------------------------------------------------------------
+
+export enum TreeItemCollapsibleState {
+  None = 0,
+  Collapsed = 1,
+  Expanded = 2,
+}
+
+export class ThemeIcon {
+  static readonly File = new ThemeIcon('file');
+  static readonly Folder = new ThemeIcon('folder');
+  static readonly Check = new ThemeIcon('check');
+  static readonly Warning = new ThemeIcon('warning');
+  static readonly Eye = new ThemeIcon('eye');
+  static readonly EyeClosed = new ThemeIcon('eye-closed');
+  readonly id: string;
+  private constructor(id: string) {
+    this.id = id;
+  }
+}
+
+export class TreeItem {
+  label?: string;
+  description?: string;
+  tooltip?: string | MarkdownString;
+  collapsibleState: TreeItemCollapsibleState;
+  contextValue?: string;
+  command?: { command: string; title: string; arguments?: unknown[] };
+  iconPath?: ThemeIcon;
+  accessibilityInformation?: { label: string; role?: string };
+  constructor(label: string, collapsibleState?: TreeItemCollapsibleState) {
+    this.label = label;
+    this.collapsibleState = collapsibleState ?? TreeItemCollapsibleState.None;
+  }
+}
+
+/** Minimal Event<T> for TreeDataProvider onDidChangeTreeData. */
+export interface Event<T> {
+  (listener: (e: T | undefined) => void): Disposable;
+}
+
+/** Minimal EventEmitter<T> stub for testing. */
+export class EventEmitter<T = void> {
+  private _listeners: Array<(e: T | undefined) => void> = [];
+  get event(): Event<T> {
+    return (listener: (e: T | undefined) => void) => {
+      this._listeners.push(listener);
+      return {
+        dispose: () => {
+          this._listeners = this._listeners.filter((l) => l !== listener);
+        },
+      };
+    };
+  }
+  fire(data?: T): void {
+    for (const l of this._listeners) {
+      l(data);
+    }
+  }
+  dispose(): void {
+    this._listeners = [];
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Hover provider types (Task 06)
@@ -52,16 +172,6 @@ export class MarkdownString {
   readonly value: string;
   constructor(value: string) {
     this.value = value;
-  }
-}
-
-/** Minimal Hover for hover provider return type. */
-export class Hover {
-  readonly contents: MarkdownString[];
-  readonly range: Range | undefined;
-  constructor(contents: MarkdownString[], range?: Range) {
-    this.contents = contents;
-    this.range = range;
   }
 }
 
@@ -136,6 +246,71 @@ export class Range {
     }
     return true;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Hover (Task 06 — needed by providers)
+// ---------------------------------------------------------------------------
+
+/** Minimal Hover for hover provider return type. */
+export class Hover {
+  readonly contents: MarkdownString[];
+  readonly range: Range | undefined;
+  constructor(contents: MarkdownString[], range?: Range) {
+    this.contents = contents;
+    this.range = range;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Selection & TextEditor (Task 17 — needed by command handlers)
+// ---------------------------------------------------------------------------
+
+/** Selection stub — a Range subclass for editor selections. */
+export class Selection extends Range {
+  readonly anchor: Position;
+  readonly active: Position;
+  constructor(anchor: Position, active: Position);
+  constructor(anchorLine: number, anchorChar: number, activeLine: number, activeChar: number);
+  constructor(
+    anchorOrLine: Position | number,
+    anchorOrChar: Position | number,
+    activeOrLine?: Position | number,
+    activeOrChar?: number,
+  ) {
+    if (anchorOrLine instanceof Position) {
+      super(anchorOrLine, anchorOrChar as Position);
+      this.anchor = anchorOrLine;
+      this.active = anchorOrChar as Position;
+    } else {
+      super(anchorOrLine, anchorOrChar as number, activeOrLine as number, activeOrChar as number);
+      this.anchor = new Position(anchorOrLine, anchorOrChar as number);
+      this.active = new Position(activeOrLine as number, activeOrChar as number);
+    }
+  }
+}
+
+/** Minimal TextEditor for testing command handlers. */
+export interface TextEditor {
+  readonly document: TextDocument;
+  selection: Selection;
+  selections: Selection[];
+  revealRange(range: Range, _revealType?: unknown): void;
+}
+
+/** Minimal TextEditorRevealType for revealRange. */
+export enum TextEditorRevealType {
+  Default = 0,
+  InCenter = 1,
+  InCenterIfOutsideViewport = 2,
+  AtTop = 3,
+}
+
+/** Active text editor — tests can set this via setActiveEditor(). */
+let _activeTextEditor: TextEditor | undefined;
+
+export function setActiveEditor(editor: TextEditor | undefined): void {
+  _activeTextEditor = editor;
 }
 
 // ---------------------------------------------------------------------------

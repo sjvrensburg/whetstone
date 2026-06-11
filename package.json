@@ -49,13 +49,28 @@
         "category": "Whetstone"
       },
       {
-        "command": "whetstone.openTransparencyReport",
-        "title": "Open transparency report",
+        "command": "whetstone.revealSpan",
+        "title": "Reveal coaching span in editor",
         "category": "Whetstone"
       },
       {
         "command": "whetstone.toggleLedger",
         "title": "Pause or resume the provenance ledger",
+        "category": "Whetstone"
+      },
+      {
+        "command": "whetstone.openTransparencyReport",
+        "title": "Open transparency report",
+        "category": "Whetstone"
+      },
+      {
+        "command": "whetstone.exportDisclosure",
+        "title": "Export ICMJE disclosure",
+        "category": "Whetstone"
+      },
+      {
+        "command": "whetstone.editBrief",
+        "title": "Edit writing brief",
         "category": "Whetstone"
       }
     ],

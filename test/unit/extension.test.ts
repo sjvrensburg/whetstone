@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as os from 'node:os';
 import * as extension from '../../src/extension';
 
 // `vscode` is aliased to a stub (vitest.config.ts), so the host file imports
@@ -13,6 +16,9 @@ describe('extension host module', () => {
 
   it('activate wires commands and views through context.subscriptions', () => {
     const pushed: { dispose(): unknown }[] = [];
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'whetstone-ext-test-'));
+
+    const secretsMap = new Map<string, string>();
     const context = {
       subscriptions: {
         push: (...items: { dispose(): unknown }[]) => {
@@ -20,11 +26,28 @@ describe('extension host module', () => {
           return pushed.length;
         },
       },
+      globalStorageUri: { fsPath: path.join(tmpDir, 'globalStorage') },
+      secrets: {
+        get: (key: string) => Promise.resolve(secretsMap.get(key)),
+        store: (key: string, value: string) => {
+          secretsMap.set(key, value);
+          return Promise.resolve();
+        },
+        delete: (key: string) => {
+          secretsMap.delete(key);
+          return Promise.resolve();
+        },
+      },
     } as unknown as Parameters<typeof extension.activate>[0];
 
-    expect(() => extension.activate(context)).not.toThrow();
-    // 3 no-op commands + 2 sidebar views registered as disposables.
-    expect(pushed).toHaveLength(5);
+    try {
+      expect(() => extension.activate(context)).not.toThrow();
+      // 6 commands + 2 sidebar views = 8 disposables.
+      expect(pushed).toHaveLength(8);
+    } finally {
+      // Clean up temp dir.
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it('deactivate runs without throwing', () => {

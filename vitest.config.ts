@@ -59,6 +59,9 @@ export default defineConfig({
         'src/guard/judge.ts',
         'src/consent/index.ts',
         'src/brief/index.ts',
+        'src/ui/coachingView.ts',
+        'src/ui/ledgerView.ts',
+        'src/ui/commands.ts',
         'test/support/fixtures.ts',
       ],
       thresholds: {

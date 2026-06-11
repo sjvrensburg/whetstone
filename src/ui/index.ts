@@ -1,34 +1,57 @@
-import * as vscode from 'vscode';
-import type { ModuleContainer } from '../container';
-
 /**
- * `ui/` — Presentation only (Component Overview boundary). TreeView providers,
- * commands, and span reveal live here; no business logic.
+ * `ui/` — Presentation only (Component Overview boundary, ADR-007).
  *
- * For the scaffold this registers the two sidebar TreeViews (coaching + ledger,
- * per ADR-007's native-first decision) backed by an empty data provider, so the
- * view container is real and visible in the integration host. Task 17 replaces
- * the empty providers with the coaching/ledger views fed by the domain services.
+ * TreeView providers, commands, and span reveal live here; no business logic.
+ * Task 17 replaces the scaffold's empty providers with real coaching and ledger
+ * views fed by the domain services, and wires the command handlers.
  */
 
-/** An empty TreeDataProvider placeholder: a real, registered provider with no items yet. */
-class EmptyTreeDataProvider implements vscode.TreeDataProvider<never> {
-  getTreeItem(element: never): vscode.TreeItem {
-    return element;
-  }
+export {
+  CoachingTreeDataProvider,
+  ObservationItem,
+  ReflectionItem,
+  EmptyCoachingItem,
+  revealObservationSpan,
+} from './coachingView';
+export type { CoachingTreeElement, CoachingDocumentRef } from './coachingView';
+export { LedgerTreeDataProvider, LedgerStatusItem } from './ledgerView';
+export type { LedgerViewState } from './ledgerView';
+export { createUICommands, UI_COMMAND_IDS } from './commands';
+export type { UICommandDeps, CommandDescriptor } from './commands';
 
-  getChildren(): never[] {
-    return [];
-  }
-}
+import * as vscode from 'vscode';
+import type { ModuleContainer } from '../container';
+import { CoachingTreeDataProvider } from './coachingView';
+import { LedgerTreeDataProvider } from './ledgerView';
+import type { LedgerViewState } from './ledgerView';
 
 /** View ids contributed by `package.json` under the `whetstone` view container. */
 export const VIEW_IDS = ['whetstone.coaching', 'whetstone.ledger'] as const;
 
-/** Register the sidebar views. Pure wiring over the container; no business logic. */
-export function registerViews(context: vscode.ExtensionContext, _container: ModuleContainer): void {
-  const provider = new EmptyTreeDataProvider();
-  for (const viewId of VIEW_IDS) {
-    context.subscriptions.push(vscode.window.registerTreeDataProvider(viewId, provider));
-  }
+/**
+ * Register the sidebar views with real TreeDataProviders backed by the
+ * domain services. The providers are stored in `container.ui` so the command
+ * handlers can access them.
+ *
+ * Presentation only — no business logic.
+ */
+export function registerViews(context: vscode.ExtensionContext, container: ModuleContainer): void {
+  const coachingView = new CoachingTreeDataProvider();
+  const ledgerView = new LedgerTreeDataProvider(
+    (container.ledger as LedgerViewState | undefined) ?? {
+      isPaused: false,
+      isDisabled: false,
+      integrityStatus: { intact: true },
+    },
+  );
+
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider('whetstone.coaching', coachingView),
+  );
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider('whetstone.ledger', ledgerView),
+  );
+
+  // Store providers in the container so command handlers can access them.
+  container.ui = { coachingView, ledgerView };
 }

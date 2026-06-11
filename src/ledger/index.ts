@@ -18,7 +18,7 @@ import { computeDisclosureText } from './disclosure';
 import type { Ed25519KeyPair } from '../shared/crypto';
 import type { Ledger, LedgerEvent, TransparencyReport } from '../shared/types';
 
-export { resolveLedgerDir, type StorageLocationDeps } from './store';
+export { LedgerStore, resolveLedgerDir, type StorageLocationDeps } from './store';
 export type { Checkpoint } from './checkpoints';
 export type { AppendInput } from './chain';
 export { SCOPING_NOTE, DECLARABLE_TYPES } from './report';

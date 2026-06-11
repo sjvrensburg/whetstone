@@ -8,7 +8,7 @@ describe('createCommands (no-op command surface)', () => {
     expect(descriptors.map((d) => d.id)).toEqual([...COMMAND_IDS]);
   });
 
-  it('registers handlers that are no-ops and never throw', () => {
+  it('registers handlers that are no-ops when container.ui is not set', () => {
     const descriptors = createCommands(createContainer());
     for (const descriptor of descriptors) {
       expect(typeof descriptor.handler).toBe('function');
@@ -16,11 +16,14 @@ describe('createCommands (no-op command surface)', () => {
     }
   });
 
-  it('exposes the canonical scaffold command ids', () => {
+  it('exposes the canonical command ids from the UI module', () => {
     expect(COMMAND_IDS).toEqual([
       'whetstone.coachSelection',
-      'whetstone.openTransparencyReport',
+      'whetstone.revealSpan',
       'whetstone.toggleLedger',
+      'whetstone.openTransparencyReport',
+      'whetstone.exportDisclosure',
+      'whetstone.editBrief',
     ]);
   });
 });
