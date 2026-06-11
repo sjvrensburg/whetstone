@@ -19,7 +19,7 @@ on:
       - 'test/fixtures/redteam/**'
   # Periodic live mode: runs weekly against recorded fixtures
   schedule:
-    - cron: '17 3 * * 1'  # Monday 03:17 UTC
+    - cron: '17 3 * * 1' # Monday 03:17 UTC
 
 jobs:
   redteam-gate:

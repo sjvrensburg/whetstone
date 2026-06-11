@@ -32,7 +32,12 @@ import { CORPUS, LEAK_FIXTURES, NON_LEAK_FIXTURES } from './corpus';
 function createCiJudge(): CoachingProvider {
   return {
     id: 'ci-stub',
-    coach: vi.fn(async (): Promise<ProviderResult<StructuredCoaching>> => ({ ok: true, value: { observations: [] } })),
+    coach: vi.fn(
+      async (): Promise<ProviderResult<StructuredCoaching>> => ({
+        ok: true,
+        value: { observations: [] },
+      }),
+    ),
     judge: vi.fn(async (candidate: StructuredCoaching): Promise<ProviderResult<GuardVerdict>> => {
       // Check each observation for paste-ready prose indicators
       for (const obs of candidate.observations) {
@@ -123,11 +128,18 @@ describe('red-team gate: full guard against recorded fixtures', () => {
     // Create a corpus where the stub judge lets everything through
     const permissiveProvider: CoachingProvider = {
       id: 'permissive',
-      coach: vi.fn(async (): Promise<ProviderResult<StructuredCoaching>> => ({ ok: true, value: { observations: [] } })),
-      judge: vi.fn(async (): Promise<ProviderResult<GuardVerdict>> => ({
-        ok: true,
-        value: { refused: false, reason: 'allowing everything' },
-      })),
+      coach: vi.fn(
+        async (): Promise<ProviderResult<StructuredCoaching>> => ({
+          ok: true,
+          value: { observations: [] },
+        }),
+      ),
+      judge: vi.fn(
+        async (): Promise<ProviderResult<GuardVerdict>> => ({
+          ok: true,
+          value: { refused: false, reason: 'allowing everything' },
+        }),
+      ),
       explainRule: vi.fn(async (): Promise<ProviderResult<string>> => ({ ok: true, value: 'ok' })),
     };
 

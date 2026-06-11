@@ -139,9 +139,7 @@ describe('checkRewritePatterns', () => {
 
   it('rejects "a better version would be" in reflection', () => {
     const result = checkRewritePatterns(
-      coaching(
-        obs('A better version would be "The results demonstrate…"', 'What do you think?'),
-      ),
+      coaching(obs('A better version would be "The results demonstrate…"', 'What do you think?')),
     );
     expect(result.ok).toBe(false);
   });

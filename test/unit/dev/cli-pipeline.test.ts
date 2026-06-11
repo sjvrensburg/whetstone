@@ -12,12 +12,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  runInteractive,
-  formatInteractiveResult,
-  runCli,
-  type CliIO,
-} from '../../../src/dev/cli';
+import { runInteractive, formatInteractiveResult, runCli, type CliIO } from '../../../src/dev/cli';
 import type { CoachingProvider } from '../../../src/providers/types';
 import type { StructuredCoaching } from '../../../src/shared/types';
 
@@ -134,7 +129,9 @@ describe('runInteractive', () => {
   });
 
   it('fails the deterministic layer when coaching trips a rewrite pattern', async () => {
-    const provider = fakeProvider({ coach: async () => ({ ok: true as const, value: rewriteCoaching }) });
+    const provider = fakeProvider({
+      coach: async () => ({ ok: true as const, value: rewriteCoaching }),
+    });
     const result = await runInteractive(PASSAGE, 'markdown', provider);
     expect(result.layers.injection.passed).toBe(true);
     expect(result.layers.deterministic.passed).toBe(false);
@@ -143,7 +140,10 @@ describe('runInteractive', () => {
 
   it('fails the judge layer when the judge refuses clean coaching', async () => {
     const provider = fakeProvider({
-      judge: async () => ({ ok: true as const, value: { refused: true, reason: 'reads like paste-ready prose' } }),
+      judge: async () => ({
+        ok: true as const,
+        value: { refused: true, reason: 'reads like paste-ready prose' },
+      }),
     });
     const result = await runInteractive(PASSAGE, 'markdown', provider);
     expect(result.layers.injection.passed).toBe(true);
@@ -220,7 +220,10 @@ describe('runCli command happy paths (mocked provider)', () => {
     try {
       const fixturePath = join(dir, 'sample.json');
       const { io } = makeIO();
-      const code = await runCli(['record', fixturePath, '--passage', 'Some passage to record.'], io);
+      const code = await runCli(
+        ['record', fixturePath, '--passage', 'Some passage to record.'],
+        io,
+      );
       expect(code).toBe(0);
       expect(existsSync(fixturePath)).toBe(true);
       const fixture = JSON.parse(readFileSync(fixturePath, 'utf8'));

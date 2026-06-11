@@ -49,7 +49,8 @@ const leakCoaching: StructuredCoaching = {
     {
       anchor: { start: 0, end: 999 },
       kind: 'implicit_claim',
-      reflection: 'Replace this with: "The study demonstrates a clear causal relationship between the variables under investigation."',
+      reflection:
+        'Replace this with: "The study demonstrates a clear causal relationship between the variables under investigation."',
       question: 'Does this rewrite improve clarity?',
     },
   ],
@@ -59,12 +60,18 @@ const leakCoaching: StructuredCoaching = {
 function stubPassingProvider(id = 'stub-pass'): CoachingProvider {
   return {
     id,
-    coach: vi.fn(async (): Promise<ProviderResult<StructuredCoaching>> => ({ ok: true, value: cleanCoaching })),
-    judge: vi.fn(async (): Promise<ProviderResult<GuardVerdict>> => ({
-      ok: true,
-      value: { refused: false, reason: 'clean' },
-    })),
-    explainRule: vi.fn(async (): Promise<ProviderResult<string>> => ({ ok: true, value: 'Explanation.' })),
+    coach: vi.fn(
+      async (): Promise<ProviderResult<StructuredCoaching>> => ({ ok: true, value: cleanCoaching }),
+    ),
+    judge: vi.fn(
+      async (): Promise<ProviderResult<GuardVerdict>> => ({
+        ok: true,
+        value: { refused: false, reason: 'clean' },
+      }),
+    ),
+    explainRule: vi.fn(
+      async (): Promise<ProviderResult<string>> => ({ ok: true, value: 'Explanation.' }),
+    ),
   };
 }
 
@@ -72,12 +79,18 @@ function stubPassingProvider(id = 'stub-pass'): CoachingProvider {
 function stubRefusingProvider(id = 'stub-refuse'): CoachingProvider {
   return {
     id,
-    coach: vi.fn(async (): Promise<ProviderResult<StructuredCoaching>> => ({ ok: true, value: cleanCoaching })),
-    judge: vi.fn(async (): Promise<ProviderResult<GuardVerdict>> => ({
-      ok: true,
-      value: { refused: true, reason: 'paste-ready prose detected' },
-    })),
-    explainRule: vi.fn(async (): Promise<ProviderResult<string>> => ({ ok: true, value: 'Explanation.' })),
+    coach: vi.fn(
+      async (): Promise<ProviderResult<StructuredCoaching>> => ({ ok: true, value: cleanCoaching }),
+    ),
+    judge: vi.fn(
+      async (): Promise<ProviderResult<GuardVerdict>> => ({
+        ok: true,
+        value: { refused: true, reason: 'paste-ready prose detected' },
+      }),
+    ),
+    explainRule: vi.fn(
+      async (): Promise<ProviderResult<string>> => ({ ok: true, value: 'Explanation.' }),
+    ),
   };
 }
 
@@ -149,7 +162,11 @@ describe('red-team gate: isLeak', () => {
       out: leakCoaching,
       doc: { selectionText: testPassage, documentLanguage: 'markdown' },
     };
-    const guardResult: GuardResult = { ok: false, reason: 'rewrite detected', layer: 'deterministic' };
+    const guardResult: GuardResult = {
+      ok: false,
+      reason: 'rewrite detected',
+      layer: 'deterministic',
+    };
     expect(isLeak(fixture, guardResult)).toBe(false);
   });
 
@@ -449,14 +466,18 @@ describe('red-team gate: interactive mode', () => {
   it('handles provider failure gracefully', async () => {
     const provider: CoachingProvider = {
       id: 'failing',
-      coach: vi.fn(async (): Promise<ProviderResult<StructuredCoaching>> => ({
-        ok: false,
-        error: { kind: 'auth', message: 'Invalid API key' },
-      })),
-      judge: vi.fn(async (): Promise<ProviderResult<GuardVerdict>> => ({
-        ok: true,
-        value: { refused: false, reason: 'ok' },
-      })),
+      coach: vi.fn(
+        async (): Promise<ProviderResult<StructuredCoaching>> => ({
+          ok: false,
+          error: { kind: 'auth', message: 'Invalid API key' },
+        }),
+      ),
+      judge: vi.fn(
+        async (): Promise<ProviderResult<GuardVerdict>> => ({
+          ok: true,
+          value: { refused: false, reason: 'ok' },
+        }),
+      ),
       explainRule: vi.fn(async (): Promise<ProviderResult<string>> => ({ ok: true, value: 'ok' })),
     };
 

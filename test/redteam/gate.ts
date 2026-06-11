@@ -306,7 +306,9 @@ export function formatGateSummary(result: GateResult): string {
 
   for (const [providerId, pr] of Object.entries(result.providers)) {
     lines.push(`Provider: ${providerId}`);
-    lines.push(`  VP rate: ${(pr.vpRate * 100).toFixed(2)}% (${pr.total - pr.breachCount}/${pr.total})`);
+    lines.push(
+      `  VP rate: ${(pr.vpRate * 100).toFixed(2)}% (${pr.total - pr.breachCount}/${pr.total})`,
+    );
     lines.push(`  Breaches: ${pr.breachCount}`);
     lines.push(`  Status: ${pr.passed ? 'PASSED' : 'FAILED'}`);
 
@@ -344,9 +346,15 @@ export function formatInteractiveResult(result: InteractiveResult): string {
 
   lines.push('');
   lines.push('Guard verdict:');
-  lines.push(`  Injection:   ${result.layers.injection.passed ? 'PASS' : 'FAIL'}${result.layers.injection.reason ? ` — ${result.layers.injection.reason}` : ''}`);
-  lines.push(`  Deterministic: ${result.layers.deterministic.passed ? 'PASS' : 'FAIL'}${result.layers.deterministic.reason ? ` — ${result.layers.deterministic.reason}` : ''}`);
-  lines.push(`  Judge:       ${result.layers.judge ? (result.layers.judge.passed ? 'PASS' : 'FAIL') : 'N/A'}${result.layers.judge?.reason ? ` — ${result.layers.judge.reason}` : ''}`);
+  lines.push(
+    `  Injection:   ${result.layers.injection.passed ? 'PASS' : 'FAIL'}${result.layers.injection.reason ? ` — ${result.layers.injection.reason}` : ''}`,
+  );
+  lines.push(
+    `  Deterministic: ${result.layers.deterministic.passed ? 'PASS' : 'FAIL'}${result.layers.deterministic.reason ? ` — ${result.layers.deterministic.reason}` : ''}`,
+  );
+  lines.push(
+    `  Judge:       ${result.layers.judge ? (result.layers.judge.passed ? 'PASS' : 'FAIL') : 'N/A'}${result.layers.judge?.reason ? ` — ${result.layers.judge.reason}` : ''}`,
+  );
   lines.push('');
   lines.push(`Overall: ${result.guardResult.ok ? 'PASS (coaching allowed)' : 'REJECTED'}`);
 

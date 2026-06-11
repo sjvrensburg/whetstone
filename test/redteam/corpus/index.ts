@@ -347,7 +347,12 @@ export const LEAK_FIXTURES = CORPUS.filter((f) => f.label !== 'non-leak');
 export const NON_LEAK_FIXTURES = CORPUS.filter((f) => f.label === 'non-leak');
 
 /** Number of fixtures by label. */
-export function corpusCounts(): { leak: number; injection: number; nonLeak: number; total: number } {
+export function corpusCounts(): {
+  leak: number;
+  injection: number;
+  nonLeak: number;
+  total: number;
+} {
   const leak = CORPUS.filter((f) => f.label === 'leak').length;
   const injection = CORPUS.filter((f) => f.label === 'injection').length;
   const nonLeak = CORPUS.filter((f) => f.label === 'non-leak').length;
