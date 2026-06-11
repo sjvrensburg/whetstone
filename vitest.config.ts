@@ -44,6 +44,7 @@ export default defineConfig({
         'src/ledger/checkpoints.ts',
         'src/ledger/store.ts',
         'src/ledger/index.ts',
+        'src/ledger/detector.ts',
         'test/support/fixtures.ts',
       ],
       thresholds: {

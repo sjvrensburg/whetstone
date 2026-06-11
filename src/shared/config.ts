@@ -57,6 +57,12 @@ export interface WhetstoneSettings {
   grammarSeverity: GrammarSeverity;
   /** Whether opt-out telemetry collection is enabled. */
   telemetryEnabled: boolean;
+  /**
+   * Minimum characters in a single insert to be classified as paste-shaped
+   * (ADR-006: record, don't certify). Changes below this threshold are
+   * considered incremental typing and are not recorded.
+   */
+  externalInsertThreshold: number;
 }
 
 /** The documented defaults, applied whenever a setting is unset. */
@@ -66,6 +72,7 @@ export const DEFAULT_SETTINGS: WhetstoneSettings = {
   ledgerInWorkspace: false,
   grammarSeverity: 'info',
   telemetryEnabled: true,
+  externalInsertThreshold: 50,
 };
 
 /**
@@ -96,6 +103,16 @@ function normalizeModel(value: string): string | undefined {
 }
 
 /**
+ * Coerce the external-insert threshold to a positive integer, falling back
+ * to the default for NaN, negative, or zero values (hand-edited settings).
+ */
+function coerceThreshold(value: number): number {
+  return Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : DEFAULT_SETTINGS.externalInsertThreshold;
+}
+
+/**
  * Map a configuration source onto the typed settings, applying the documented
  * defaults and coercing any out-of-range value back to its default (settings
  * can be hand-edited in `settings.json` beyond the contributed enum).
@@ -112,6 +129,9 @@ export function readSettings(config: ConfigurationSource): WhetstoneSettings {
       config.get('grammar.severity', DEFAULT_SETTINGS.grammarSeverity),
     ),
     telemetryEnabled: config.get('telemetry.enabled', DEFAULT_SETTINGS.telemetryEnabled),
+    externalInsertThreshold: coerceThreshold(
+      config.get('ledger.externalInsertThreshold', DEFAULT_SETTINGS.externalInsertThreshold),
+    ),
   };
 }
 

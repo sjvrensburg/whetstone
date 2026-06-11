@@ -85,6 +85,12 @@
           "default": false,
           "description": "Store the provenance ledger inside the current workspace instead of the extension's global storage. Off by default so the ledger is not accidentally committed; opt in to have it travel with the repository."
         },
+        "whetstone.ledger.externalInsertThreshold": {
+          "type": "number",
+          "default": 50,
+          "minimum": 1,
+          "description": "Minimum number of characters in a single insert to be recorded as a significant external-text insertion (paste-shaped change). Changes below this threshold are considered incremental typing. Recorded transparently — never asserts AI authorship."
+        },
         "whetstone.grammar.severity": {
           "type": "string",
           "enum": [

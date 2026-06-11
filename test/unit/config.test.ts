@@ -53,6 +53,7 @@ describe('readSettings — typed values from configuration', () => {
       ledgerInWorkspace: true,
       grammarSeverity: 'warning',
       telemetryEnabled: false,
+      externalInsertThreshold: 50,
     });
   });
 
@@ -84,6 +85,31 @@ describe('readSettings — coercion of out-of-range values', () => {
         severity,
       );
     }
+  });
+
+  it('coerces a negative external-insert threshold back to the default', () => {
+    const settings = readSettings(fakeConfig({ 'ledger.externalInsertThreshold': -10 }));
+    expect(settings.externalInsertThreshold).toBe(DEFAULT_SETTINGS.externalInsertThreshold);
+  });
+
+  it('coerces zero external-insert threshold back to the default', () => {
+    const settings = readSettings(fakeConfig({ 'ledger.externalInsertThreshold': 0 }));
+    expect(settings.externalInsertThreshold).toBe(DEFAULT_SETTINGS.externalInsertThreshold);
+  });
+
+  it('coerces NaN external-insert threshold back to the default', () => {
+    const settings = readSettings(fakeConfig({ 'ledger.externalInsertThreshold': NaN }));
+    expect(settings.externalInsertThreshold).toBe(DEFAULT_SETTINGS.externalInsertThreshold);
+  });
+
+  it('accepts a valid external-insert threshold', () => {
+    const settings = readSettings(fakeConfig({ 'ledger.externalInsertThreshold': 100 }));
+    expect(settings.externalInsertThreshold).toBe(100);
+  });
+
+  it('floors a fractional external-insert threshold', () => {
+    const settings = readSettings(fakeConfig({ 'ledger.externalInsertThreshold': 99.9 }));
+    expect(settings.externalInsertThreshold).toBe(99);
   });
 });
 
