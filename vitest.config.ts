@@ -53,6 +53,7 @@ export default defineConfig({
         'src/guard/deterministic.ts',
         'src/guard/injection.ts',
         'src/guard/judge.ts',
+        'src/consent/index.ts',
         'test/support/fixtures.ts',
       ],
       thresholds: {
