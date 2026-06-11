@@ -26,9 +26,7 @@ export type CheckResult = { ok: true } | { ok: false; reason: string };
 
 export type GuardLayer = 'injection' | 'schema' | 'deterministic' | 'provider';
 
-export type GuardResult =
-  | { ok: true }
-  | { ok: false; layer: GuardLayer; reason: string };
+export type GuardResult = { ok: true } | { ok: false; layer: GuardLayer; reason: string };
 
 // ---------------------------------------------------------------------------
 // Untrusted-channel wrapping + injection screening
@@ -181,4 +179,66 @@ export function runDeterministicChecks(
   const rewrite = checkRewritePatterns(coaching);
   if (!rewrite.ok) return rewrite;
   return checkNgramOverlap(coaching, selectionText);
+}
+
+// ---------------------------------------------------------------------------
+// Chat-reply screening (free text — no structural schema to lean on)
+// ---------------------------------------------------------------------------
+
+/**
+ * Chat replies are coaching-sized, not essay-sized. A reply long enough to
+ * BE the essay is the failure mode this cap exists for.
+ */
+export const CHAT_REPLY_MAX_LENGTH = 900;
+
+const TEXT_REWRITE_PATTERNS: readonly RegExp[] = [
+  ...REWRITE_PATTERNS,
+  /\bhere'?s\s+(?:a|the|your|one)\s+(?:draft|paragraph|version|opening|intro|sentence)\b/i,
+  /\bhere\s+is\s+(?:a|the|your|one)\s+(?:draft|paragraph|version|opening|intro|sentence)\b/i,
+  /\byou\s+(?:could|can|might)\s+(?:say|phrase|word)\s+it\b/i,
+  /\bhow\s+about\s*[:"]/i,
+  /\bsomething\s+like\s*[:"]/i,
+];
+
+/**
+ * Screen a free-text chat reply. Without the structural schema (which makes
+ * ghostwriting impossible for coaching turns), chat leans on the system
+ * prompt plus these deterministic heuristics: length cap, rewrite/dictation
+ * shapes, n-gram overlap with the draft, and the forbidden-label vocabulary.
+ * A residual risk remains by construction — the cap keeps it small.
+ */
+export function screenChatReply(reply: string, contextText: string): CheckResult {
+  if (reply.trim().length === 0) {
+    return { ok: false, reason: 'empty reply' };
+  }
+  if (reply.length > CHAT_REPLY_MAX_LENGTH) {
+    return {
+      ok: false,
+      reason: `reply exceeds ${CHAT_REPLY_MAX_LENGTH} characters — too long to be coaching`,
+    };
+  }
+
+  for (const pattern of TEXT_REWRITE_PATTERNS) {
+    if (pattern.test(reply)) {
+      return { ok: false, reason: `reply matches rewrite pattern "${pattern.source}"` };
+    }
+  }
+
+  if (contextText.trim().length > 0) {
+    const words = reply.split(/[^a-zA-Z0-9]+/).filter((w) => w.length > 0);
+    if (words.length >= GUARD_NGRAM_SIZE) {
+      const overlap = ngramOverlap(
+        extractNgrams(reply, GUARD_NGRAM_SIZE),
+        extractNgrams(contextText, GUARD_NGRAM_SIZE),
+      );
+      if (overlap >= GUARD_OVERLAP_THRESHOLD) {
+        return {
+          ok: false,
+          reason: `reply has ${(overlap * 100).toFixed(0)}% n-gram overlap with the draft (threshold ${GUARD_OVERLAP_THRESHOLD * 100}%)`,
+        };
+      }
+    }
+  }
+
+  return { ok: true };
 }

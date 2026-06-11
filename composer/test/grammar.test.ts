@@ -22,7 +22,10 @@ describe('toDiagnostics', () => {
   });
 
   it('clamps out-of-range spans and drops empty ones', () => {
-    const diagnostics = toDiagnostics([lint({ from: 90, to: 200 }), lint({ from: 150, to: 160 })], 100);
+    const diagnostics = toDiagnostics(
+      [lint({ from: 90, to: 200 }), lint({ from: 150, to: 160 })],
+      100,
+    );
     expect(diagnostics).toHaveLength(1);
     expect(diagnostics[0]).toMatchObject({ from: 90, to: 100 });
   });

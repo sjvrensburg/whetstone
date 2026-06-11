@@ -13,7 +13,10 @@ export interface ClaimGateElements {
 }
 
 /** Render the gate overlay into `host`; resolves with the submitted claim. */
-export function showClaimGate(host: HTMLElement): { elements: ClaimGateElements; claim: Promise<string> } {
+export function showClaimGate(host: HTMLElement): {
+  elements: ClaimGateElements;
+  claim: Promise<string>;
+} {
   const overlay = document.createElement('div');
   overlay.className = 'ws-claim-overlay';
   overlay.innerHTML = `

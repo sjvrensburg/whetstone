@@ -20,9 +20,7 @@ describe('BurstTracker', () => {
     expect(events).toHaveLength(0);
 
     vi.advanceTimersByTime(2000);
-    expect(events).toEqual([
-      { type: 'typing_burst', size: 8, location: { from: 0, to: 8 } },
-    ]);
+    expect(events).toEqual([{ type: 'typing_burst', size: 8, location: { from: 0, to: 8 } }]);
   });
 
   it('keeps extending the idle window while typing continues', () => {

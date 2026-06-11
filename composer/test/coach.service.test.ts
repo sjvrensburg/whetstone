@@ -33,6 +33,9 @@ function fakeProvider(output: unknown): CoachProvider & { calls: number } {
       if (output instanceof Error) throw output;
       return output;
     },
+    async completeText() {
+      throw new Error('not used in coaching');
+    },
   };
 }
 

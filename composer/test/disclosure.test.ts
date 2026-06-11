@@ -10,10 +10,7 @@ import { hasNoForbiddenLabels } from '../src/core/labels';
 import type { ProcessEvent, ProcessEventType } from '../src/service/types';
 
 let counter = 0;
-function ev(
-  type: ProcessEventType,
-  extra: Partial<Omit<ProcessEvent, 'type'>> = {},
-): ProcessEvent {
+function ev(type: ProcessEventType, extra: Partial<Omit<ProcessEvent, 'type'>> = {}): ProcessEvent {
   counter++;
   return {
     id: `e${counter}`,

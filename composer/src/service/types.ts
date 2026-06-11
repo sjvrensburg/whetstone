@@ -9,6 +9,7 @@
 
 import type { Observation } from '../core/coaching';
 import type { GuardLayer } from '../core/guard';
+import type { ChatTurn } from '../core/prompts';
 
 export type ProcessEventType =
   | 'session_start'
@@ -62,6 +63,21 @@ export type CoachResult =
   | { ok: true; observations: Observation[]; provider: string; model: string }
   | { ok: false; refused: true; layer: GuardLayer; reason: string };
 
+/** One coach-chat turn. History is client-held and never journaled. */
+export interface ChatRequest {
+  /** The writer's message to the coach. */
+  message: string;
+  /** Prior turns of this conversation (session-only). */
+  history: ChatTurn[];
+  /** Draft excerpt for context (sent to the provider; never journaled). */
+  contextText?: string;
+  claim?: string;
+}
+
+export type ChatResult =
+  | { ok: true; reply: string; provider: string; model: string }
+  | { ok: false; refused: true; layer: GuardLayer; reason: string };
+
 export interface WhetstoneService {
   startSession(docId: string): Promise<void>;
   appendEvent(e: ProcessEventInput): Promise<ProcessEvent>;
@@ -73,4 +89,9 @@ export interface WhetstoneService {
    * configured — the composer works fully offline without it.
    */
   coach?(req: CoachRequest): Promise<CoachResult>;
+  /**
+   * Conversational coaching channel (chat). Same egress rules as coach():
+   * consent-gated, guarded, journaled as metadata only.
+   */
+  coachChat?(req: ChatRequest): Promise<ChatResult>;
 }

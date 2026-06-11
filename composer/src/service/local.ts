@@ -12,10 +12,13 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
 import { isStructuredCoaching, validateStructuredCoaching } from '../core/coaching';
 import { renderDisclosure } from '../core/disclosure';
-import { runDeterministicChecks, screenInjection } from '../core/guard';
-import { buildCoachMessages } from '../core/prompts';
+import { runDeterministicChecks, screenChatReply, screenInjection } from '../core/guard';
+import { assertNoForbiddenLabels } from '../core/labels';
+import { buildChatMessages, buildCoachMessages } from '../core/prompts';
 import type { CoachProvider } from './provider';
 import type {
+  ChatRequest,
+  ChatResult,
   CoachRequest,
   CoachResult,
   DisclosureDoc,
@@ -179,6 +182,76 @@ export class LocalService implements WhetstoneService {
     }
 
     await journal({ refused: false, observations: raw.observations.length });
-    return { ok: true, observations: raw.observations, provider: provider.name, model: provider.model };
+    return {
+      ok: true,
+      observations: raw.observations,
+      provider: provider.name,
+      model: provider.model,
+    };
+  }
+
+  /**
+   * Conversational coaching (the chat box). Same pipeline shape as coach():
+   * injection screen BEFORE egress → provider → free-text guard. Journaled
+   * as a metadata-only coach_consult with mode "chat" — never the messages,
+   * never the reply.
+   */
+  async coachChat(req: ChatRequest): Promise<ChatResult> {
+    const provider = this.provider;
+    if (!provider) {
+      return { ok: false, refused: true, layer: 'provider', reason: 'no provider configured' };
+    }
+
+    const journal = async (outcome: Record<string, string | number | boolean>) => {
+      await this.appendEvent({
+        type: 'coach_consult',
+        size: req.message.length + (req.contextText?.length ?? 0),
+        meta: { provider: provider.name, model: provider.model, mode: 'chat', ...outcome },
+      });
+    };
+
+    // Both the writer's message and the draft excerpt are inputs that could
+    // smuggle instructions — screen both before any egress.
+    const injection = screenInjection(`${req.message}\n${req.contextText ?? ''}`);
+    if (!injection.ok) {
+      await journal({ refused: true, layer: 'injection' });
+      return { ok: false, refused: true, layer: 'injection', reason: injection.reason };
+    }
+
+    let reply: string;
+    try {
+      reply = await provider.completeText(
+        buildChatMessages(req.message, req.history, req.contextText, req.claim),
+      );
+    } catch (error) {
+      await journal({ refused: true, layer: 'provider' });
+      return {
+        ok: false,
+        refused: true,
+        layer: 'provider',
+        reason: error instanceof Error ? error.message : 'provider call failed',
+      };
+    }
+
+    const screened = screenChatReply(reply, req.contextText ?? '');
+    if (!screened.ok) {
+      await journal({ refused: true, layer: 'deterministic' });
+      return { ok: false, refused: true, layer: 'deterministic', reason: screened.reason };
+    }
+
+    try {
+      assertNoForbiddenLabels(reply, 'coach chat reply');
+    } catch (error) {
+      await journal({ refused: true, layer: 'deterministic' });
+      return {
+        ok: false,
+        refused: true,
+        layer: 'deterministic',
+        reason: error instanceof Error ? error.message : 'forbidden label',
+      };
+    }
+
+    await journal({ refused: false, replySize: reply.length });
+    return { ok: true, reply, provider: provider.name, model: provider.model };
   }
 }

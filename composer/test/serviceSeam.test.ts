@@ -64,7 +64,11 @@ class MockRemoteService implements WhetstoneService {
  */
 async function clientSession(service: WhetstoneService, docId: string) {
   await service.startSession(docId);
-  await service.appendEvent({ type: 'claim_set', size: 20, meta: { claim: 'My one-line thesis.' } });
+  await service.appendEvent({
+    type: 'claim_set',
+    size: 20,
+    meta: { claim: 'My one-line thesis.' },
+  });
   await service.appendEvent({ type: 'typing_burst', size: 120, location: { from: 0, to: 120 } });
   await service.appendEvent({
     type: 'paste_quarantined',
@@ -120,8 +124,6 @@ describe('H4 — Service seam substitutability', () => {
         .split('\n')
         .filter((line) => !line.startsWith('Session:'))
         .join('\n');
-    expect(stripSession(local.disclosure.markdown)).toBe(
-      stripSession(remote.disclosure.markdown),
-    );
+    expect(stripSession(local.disclosure.markdown)).toBe(stripSession(remote.disclosure.markdown));
   });
 });

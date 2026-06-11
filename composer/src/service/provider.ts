@@ -22,6 +22,11 @@ export interface CoachProvider {
    * JSON output (NOT yet validated — the Service validates and guards it).
    */
   complete(messages: ChatMessage[]): Promise<unknown>;
+  /**
+   * Run one free-text completion (the coach chat). Returns the raw reply
+   * text (NOT yet screened — the Service guards it).
+   */
+  completeText(messages: ChatMessage[]): Promise<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +68,27 @@ export class AnthropicCoachProvider implements CoachProvider {
     }
     return JSON.parse(text.text);
   }
+
+  async completeText(messages: ChatMessage[]): Promise<string> {
+    const client = new Anthropic({ apiKey: this.apiKey, dangerouslyAllowBrowser: true });
+
+    const system = messages.find((m) => m.role === 'system')?.content ?? '';
+    const turns = messages.filter((m) => m.role !== 'system');
+
+    const response = await client.messages.create({
+      model: this.model,
+      max_tokens: 1024,
+      thinking: { type: 'adaptive' },
+      system,
+      messages: turns.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+    });
+
+    const text = response.content.find((b) => b.type === 'text');
+    if (!text || text.type !== 'text') {
+      throw new Error(`provider returned no text block (stop_reason: ${response.stop_reason})`);
+    }
+    return text.text;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -93,7 +119,9 @@ export class OpenAICompatibleCoachProvider implements CoachProvider {
     this.baseUrl = (options.baseUrl ?? ZAI_BASE_URL).replace(/\/$/, '');
     this.model = options.model ?? ZAI_DEFAULT_MODEL;
     this.name = options.name ?? 'zai';
-    this.fetchFn = options.fetchFn ?? fetch;
+    // Wrap rather than reference: a bare `fetch` called via `this.fetchFn(...)`
+    // loses its `window` receiver in browsers — "Illegal invocation".
+    this.fetchFn = options.fetchFn ?? ((...args) => fetch(...args));
   }
 
   async complete(messages: ChatMessage[]): Promise<unknown> {
@@ -115,8 +143,7 @@ export class OpenAICompatibleCoachProvider implements CoachProvider {
             type: 'function',
             function: {
               name: 'produce_coaching',
-              description:
-                'Produce the structured coaching observations for the analyzed passage.',
+              description: 'Produce the structured coaching observations for the analyzed passage.',
               parameters: COACHING_JSON_SCHEMA,
             },
           },
@@ -151,6 +178,30 @@ export class OpenAICompatibleCoachProvider implements CoachProvider {
     }
 
     throw new Error('provider returned neither a tool call nor message content');
+  }
+
+  async completeText(messages: ChatMessage[]): Promise<string> {
+    const response = await this.fetchFn(`${this.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify({ model: this.model, messages }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`provider request failed with status ${response.status}`);
+    }
+
+    const body = (await response.json()) as {
+      choices?: { message?: { content?: string } }[];
+    };
+    const content = body.choices?.[0]?.message?.content;
+    if (typeof content !== 'string' || content.trim().length === 0) {
+      throw new Error('provider returned no message content');
+    }
+    return content.trim();
   }
 }
 

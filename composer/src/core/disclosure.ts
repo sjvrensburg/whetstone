@@ -95,7 +95,11 @@ export function extractClaim(events: ProcessEvent[]): string | undefined {
 }
 
 /** Session span (first event → last event), human-readable. */
-export function sessionSpan(events: ProcessEvent[]): { start?: string; end?: string; minutes: number } {
+export function sessionSpan(events: ProcessEvent[]): {
+  start?: string;
+  end?: string;
+  minutes: number;
+} {
   if (events.length === 0) return { minutes: 0 };
   const start = events[0].ts;
   const end = events[events.length - 1].ts;
@@ -134,11 +138,7 @@ export function renderDisclosure(docId: string, events: ProcessEvent[]): Disclos
   const comp = computeComposition(events);
   const span = sessionSpan(events);
 
-  const lines: string[] = [
-    '# How this was written',
-    '',
-    `Document: \`${docId}\``,
-  ];
+  const lines: string[] = ['# How this was written', '', `Document: \`${docId}\``];
 
   if (span.start && span.end) {
     lines.push(`Session: ${span.start} → ${span.end} (~${span.minutes} min)`);
@@ -152,7 +152,8 @@ export function renderDisclosure(docId: string, events: ProcessEvent[]): Disclos
   if (coaching.total === 0) {
     lines.push('No AI assistance was used.');
   } else {
-    const consultPhrase = coaching.total === 1 ? '1 coaching consult' : `${coaching.total} coaching consults`;
+    const consultPhrase =
+      coaching.total === 1 ? '1 coaching consult' : `${coaching.total} coaching consults`;
     lines.push(
       `- ${consultPhrase} (${coaching.providers.join('; ')}). Coaching returns structural ` +
         'observations and questions only; the tool does not write or rewrite prose.',
@@ -163,8 +164,12 @@ export function renderDisclosure(docId: string, events: ProcessEvent[]): Disclos
   }
 
   lines.push('', '## Composition', '');
-  lines.push(`- Typed in the composer: **${comp.typedChars}** characters (${pct(comp.typedRatio)})`);
-  lines.push(`- Pasted from outside: **${comp.pastedChars}** characters (${pct(1 - comp.typedRatio)})`);
+  lines.push(
+    `- Typed in the composer: **${comp.typedChars}** characters (${pct(comp.typedRatio)})`,
+  );
+  lines.push(
+    `- Pasted from outside: **${comp.pastedChars}** characters (${pct(1 - comp.typedRatio)})`,
+  );
   if (comp.pasteCount > 0) {
     lines.push(`  - Pastes rewritten until owned: ${comp.pastesClaimed}`);
     lines.push(`  - Pastes attributed as quotations: ${comp.pastesAttributed}`);

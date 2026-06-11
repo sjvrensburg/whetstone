@@ -35,6 +35,7 @@ import {
   requestCoachConsent,
   type StoredCoachConfig,
 } from './ui/coachPanel';
+import { CoachChatPanel } from './ui/coachChat';
 import { showDisclosure } from './ui/disclosurePanel';
 import { JournalPanel } from './ui/journalPanel';
 import { MirrorPanel } from './ui/mirrorPanel';
@@ -61,7 +62,10 @@ async function boot(): Promise<void> {
     </header>
     <main class="ws-main">
       <div id="editor-host" class="ws-editor-host"></div>
-      <aside id="coach-host" class="ws-coach-host"></aside>
+      <aside class="ws-coach-host">
+        <div id="coach-results"></div>
+        <div id="chat-host"></div>
+      </aside>
     </main>
     <footer class="ws-footer">
       <div id="mirror-host"></div>
@@ -125,7 +129,7 @@ async function boot(): Promise<void> {
   // Slices 8 + 9 — instruments D (teach-back) and A (push cadence) share one
   // idle boundary; teach-back wins the turn so the writer never gets two
   // interruptions at once.
-  const coachHost = document.getElementById('coach-host')!;
+  const coachHost = document.getElementById('coach-results')!;
   const teachBack = new TeachBackInstrument({
     emit,
     prompt: () => showTeachBackBar(coachHost),
@@ -189,14 +193,34 @@ async function boot(): Promise<void> {
     void service.exportDisclosure(DOC_ID).then((doc) => showDisclosure(doc, DOC_ID));
   });
 
+  // Shared consent/key flow for both coaching surfaces.
+  const ensureCoachConfigured = async (): Promise<boolean> => {
+    if (loadCoachConfig()) return true;
+    const config = await requestCoachConsent();
+    if (!config) return false;
+    localService.setProvider(providerFromConfig(config));
+    return true;
+  };
+
+  // Coach chat — a conversational channel with the same guard and journal
+  // rules as one-shot coaching. Context: the selection, else the draft tail.
+  const chatContext = (): string => {
+    const sel = view.state.selection.main;
+    if (!sel.empty) return view.state.doc.sliceString(sel.from, sel.to);
+    const text = view.state.doc.toString();
+    return text.slice(-2000);
+  };
+  new CoachChatPanel(
+    document.getElementById('chat-host')!,
+    (message, history) =>
+      service.coachChat!({ message, history, contextText: chatContext(), claim }),
+    ensureCoachConfigured,
+  );
+
   // Slice 5 — coaching on the current selection (or the whole draft).
   const coachBtn = document.getElementById('coach-btn') as HTMLButtonElement;
   coachBtn.addEventListener('click', async () => {
-    if (!loadCoachConfig()) {
-      const config = await requestCoachConsent();
-      if (!config) return;
-      localService.setProvider(providerFromConfig(config));
-    }
+    if (!(await ensureCoachConfigured())) return;
 
     const sel = view.state.selection.main;
     const selectionText = sel.empty

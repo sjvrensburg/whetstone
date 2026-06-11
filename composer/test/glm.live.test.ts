@@ -50,4 +50,25 @@ describe.skipIf(!live)('GLM live coaching (network)', () => {
     // Metadata only — the journal must not contain the passage.
     expect(JSON.stringify(record)).not.toContain('detection software');
   }, 120_000);
+
+  it('answers a chat turn without writing prose', async () => {
+    const svc = new LocalService(`live-chat-${Date.now()}`);
+    await svc.startSession('live-chat-doc');
+    svc.setProvider(new OpenAICompatibleCoachProvider({ apiKey: apiKey! }));
+
+    const result = await svc.coachChat({
+      message: 'Is my argument against detection software convincing, or am I missing something?',
+      history: [],
+      contextText: SELECTION,
+      claim: 'Friction beats detection for keeping student writing honest.',
+    });
+
+    // eslint-disable-next-line no-console
+    console.log(JSON.stringify(result, null, 2));
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.reply.length).toBeGreaterThan(20);
+    }
+  }, 120_000);
 });

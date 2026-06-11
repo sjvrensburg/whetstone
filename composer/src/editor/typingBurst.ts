@@ -71,7 +71,10 @@ export class BurstTracker {
  * CodeMirror extension: feed typed (non-paste) input into a `BurstTracker`.
  * Returns the tracker too so callers can flush on session end/export.
  */
-export function typingBurstExtension(emit: EmitEvent): { extension: Extension; tracker: BurstTracker } {
+export function typingBurstExtension(emit: EmitEvent): {
+  extension: Extension;
+  tracker: BurstTracker;
+} {
   const tracker = new BurstTracker(emit);
 
   const extension = EditorView.updateListener.of((update) => {

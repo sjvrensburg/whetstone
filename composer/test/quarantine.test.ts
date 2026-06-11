@@ -57,7 +57,9 @@ describe('paste interception (transactionExtender, headless)', () => {
 
   it('quarantines each qualifying span of a multi-range paste', () => {
     const { state, quarantine } = setup();
-    const base = state.update({ changes: { from: 0, insert: 'one two three four five six' } }).state;
+    const base = state.update({
+      changes: { from: 0, insert: 'one two three four five six' },
+    }).state;
     const next = base.update({
       changes: [
         { from: 0, insert: LONG_PASTE },
@@ -72,7 +74,10 @@ describe('paste interception (transactionExtender, headless)', () => {
 describe('region mapping through edits', () => {
   it('shifts a region when text is inserted before it', () => {
     const { state, quarantine } = setup();
-    let s = state.update({ changes: { from: 0, insert: 'Intro. ' }, userEvent: 'input.type' }).state;
+    let s = state.update({
+      changes: { from: 0, insert: 'Intro. ' },
+      userEvent: 'input.type',
+    }).state;
     s = paste(s, 'Intro. '.length, LONG_PASTE);
     s = s.update({ changes: { from: 0, insert: 'NEW ' }, userEvent: 'input.type' }).state;
 

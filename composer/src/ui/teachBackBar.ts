@@ -28,7 +28,8 @@ export function showTeachBackBar(host: HTMLElement): Promise<string | undefined>
       bar.remove();
       resolve(value);
     };
-    (bar.querySelector('.ws-teachback-skip') as HTMLButtonElement).onclick = () => finish(undefined);
+    (bar.querySelector('.ws-teachback-skip') as HTMLButtonElement).onclick = () =>
+      finish(undefined);
     input.addEventListener('keydown', (ev) => {
       if (ev.key === 'Escape') finish(undefined);
     });

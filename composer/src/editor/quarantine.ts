@@ -222,7 +222,12 @@ export function createQuarantine(options: QuarantineOptions): Quarantine {
     for (const span of insertedSpans(tr)) {
       if (span.text.length >= threshold) {
         effects.push(
-          addRegion.of({ id: idGenerator(), from: span.from, to: span.to, originalText: span.text }),
+          addRegion.of({
+            id: idGenerator(),
+            from: span.from,
+            to: span.to,
+            originalText: span.text,
+          }),
         );
       }
     }
