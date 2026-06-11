@@ -7,5 +7,13 @@
     "sourceMap": true,
     "types": ["node", "mocha", "vscode"]
   },
-  "include": ["src/test/**/*.ts", "src/commands.ts", "src/container.ts"]
+  "include": [
+    "src/test/**/*.ts",
+    "src/commands.ts",
+    "src/container.ts",
+    "src/grammar/*.ts",
+    "src/shared/types.ts",
+    "src/shared/constants.ts",
+    "src/shared/config.ts"
+  ]
 }

@@ -33,6 +33,10 @@ export default defineConfig({
         'src/shared/json.ts',
         'src/shared/secrets.ts',
         'src/coaching/schema.ts',
+        'src/grammar/engine.ts',
+        'src/grammar/latexMask.ts',
+        'src/grammar/diagnostics.ts',
+        'src/grammar/worker.ts',
         'test/support/fixtures.ts',
       ],
       thresholds: {

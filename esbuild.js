@@ -30,7 +30,11 @@ const extensionBuild = {
   ...base,
   entryPoints: ['src/extension.ts'],
   outfile: 'dist/extension.js',
-  external: ['vscode'],
+  // `vscode` is provided by the extension host; `harper.js` ships its own
+  // WASM binary loaded at runtime via `import.meta.url` which does not
+  // survive bundling cleanly — mark it external so the extension loads it
+  // from node_modules at runtime.
+  external: ['vscode', 'harper.js', 'harper.js/binary'],
 };
 
 /** @type {import('esbuild').BuildOptions} */

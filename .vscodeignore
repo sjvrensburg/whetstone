@@ -6,6 +6,7 @@ out/**
 coverage/**
 .compozy/**
 node_modules/**
+!node_modules/harper.js/**
 **/*.ts
 **/*.map
 .eslintrc.json
