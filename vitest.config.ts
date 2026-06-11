@@ -40,6 +40,10 @@ export default defineConfig({
         'src/grammar/dismissals.ts',
         'src/grammar/hover.ts',
         'src/grammar/codeActions.ts',
+        'src/ledger/chain.ts',
+        'src/ledger/checkpoints.ts',
+        'src/ledger/store.ts',
+        'src/ledger/index.ts',
         'test/support/fixtures.ts',
       ],
       thresholds: {
