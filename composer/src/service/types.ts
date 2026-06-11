@@ -7,6 +7,9 @@
  * witness). The client code does not change — that is hypothesis H4.
  */
 
+import type { Observation } from '../core/coaching';
+import type { GuardLayer } from '../core/guard';
+
 export type ProcessEventType =
   | 'session_start'
   | 'claim_set'
@@ -45,11 +48,27 @@ export interface DisclosureDoc {
   scopingNote: string;
 }
 
+/** A coaching request — the ONLY path by which prose leaves the device. */
+export interface CoachRequest {
+  /** The selected passage to coach on (sent to the provider; never journaled). */
+  selectionText: string;
+  /** The writer's stated claim, included as context only. */
+  claim?: string;
+}
+
+export type CoachResult =
+  | { ok: true; observations: Observation[]; provider: string; model: string }
+  | { ok: false; refused: true; layer: GuardLayer; reason: string };
+
 export interface WhetstoneService {
   startSession(docId: string): Promise<void>;
   appendEvent(e: ProcessEventInput): Promise<ProcessEvent>;
   getRecord(docId: string): Promise<ProcessEvent[]>;
   getPolicy(): Promise<FrictionPolicy>;
   exportDisclosure(docId: string): Promise<DisclosureDoc>;
-  // coach?(req): Promise<CoachResult>;   // deferred — next slice after the skeleton validates
+  /**
+   * Cloud-egress coaching (slice 5). Optional: absent when no provider is
+   * configured — the composer works fully offline without it.
+   */
+  coach?(req: CoachRequest): Promise<CoachResult>;
 }

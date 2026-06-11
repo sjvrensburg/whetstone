@@ -57,9 +57,8 @@ body {
 /* Editor */
 .ws-editor-host {
   flex: 1;
+  min-width: 0;
   max-width: 46rem;
-  width: 100%;
-  margin: 0 auto;
   padding: 2rem 1rem;
 }
 
@@ -175,4 +174,93 @@ body {
   background: #fff;
   border-radius: 4px;
   cursor: pointer;
+}
+
+/* Layout: editor + coach panel */
+.ws-main {
+  flex: 1;
+  display: flex;
+  max-width: 64rem;
+  width: 100%;
+  margin: 0 auto;
+  gap: 1rem;
+}
+
+.ws-coach-host {
+  width: 17rem;
+  flex-shrink: 0;
+  padding: 2rem 1rem 2rem 0;
+  font-size: 0.85rem;
+  color: #555;
+}
+
+.ws-coach-card {
+  border: 1px solid var(--ws-border);
+  border-radius: 6px;
+  padding: 0.6rem 0.8rem;
+  margin-bottom: 0.7rem;
+  background: #fff;
+}
+
+.ws-coach-kind {
+  font-size: 0.7em;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ws-accent);
+}
+
+.ws-coach-question { font-style: italic; }
+.ws-coach-note, .ws-coach-refusal { color: #777; font-size: 0.9em; }
+
+/* Mirror */
+.ws-mirror {
+  padding: 0.35rem 1.2rem;
+  font-size: 0.75rem;
+  color: #666;
+  border-bottom: 1px solid var(--ws-border);
+}
+
+/* Consent dialog */
+.ws-consent-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(43, 42, 39, 0.45);
+  display: grid;
+  place-items: center;
+  z-index: 30;
+}
+
+.ws-consent-card {
+  background: #fff;
+  border-radius: 6px;
+  padding: 1.2rem 1.5rem;
+  width: min(34rem, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  font-size: 0.92rem;
+}
+
+.ws-consent-card label { display: flex; flex-direction: column; gap: 0.25rem; }
+.ws-consent-card input, .ws-consent-card select {
+  font: inherit;
+  padding: 0.4rem;
+  border: 1px solid var(--ws-border);
+  border-radius: 4px;
+}
+
+.ws-consent-actions { display: flex; gap: 0.6rem; }
+.ws-consent-actions button {
+  font: inherit;
+  font-size: 0.9em;
+  padding: 0.4rem 0.9rem;
+  border-radius: 4px;
+  border: 1px solid var(--ws-border);
+  background: #fff;
+  cursor: pointer;
+}
+.ws-consent-actions button[type=submit] {
+  background: var(--ws-accent);
+  color: #fff;
+  border: none;
 }

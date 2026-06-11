@@ -103,6 +103,26 @@ export function sessionSpan(events: ProcessEvent[]): { start?: string; end?: str
   return { start, end, minutes: Math.max(0, Math.round(ms / 60000)) };
 }
 
+/** Summary of cloud-coaching usage, derived from `coach_consult` events. */
+export function summarizeCoaching(events: ProcessEvent[]): {
+  total: number;
+  refused: number;
+  providers: string[];
+} {
+  let total = 0;
+  let refused = 0;
+  const providers = new Set<string>();
+  for (const e of events) {
+    if (e.type !== 'coach_consult') continue;
+    total++;
+    if (e.meta?.refused === true) refused++;
+    if (typeof e.meta?.provider === 'string' && typeof e.meta?.model === 'string') {
+      providers.add(`${e.meta.provider}: ${e.meta.model}`);
+    }
+  }
+  return { total, refused, providers: [...providers] };
+}
+
 const pct = (ratio: number) => `${Math.round(ratio * 100)}%`;
 
 /**
@@ -126,6 +146,21 @@ export function renderDisclosure(docId: string, events: ProcessEvent[]): Disclos
 
   lines.push('', '## Stated claim', '');
   lines.push(claim ? `> ${claim}` : '_No claim was recorded._');
+
+  lines.push('', '## AI assistance', '');
+  const coaching = summarizeCoaching(events);
+  if (coaching.total === 0) {
+    lines.push('No AI assistance was used.');
+  } else {
+    const consultPhrase = coaching.total === 1 ? '1 coaching consult' : `${coaching.total} coaching consults`;
+    lines.push(
+      `- ${consultPhrase} (${coaching.providers.join('; ')}). Coaching returns structural ` +
+        'observations and questions only; the tool does not write or rewrite prose.',
+    );
+    if (coaching.refused > 0) {
+      lines.push(`- ${coaching.refused} response(s) were withheld by the coaching guard.`);
+    }
+  }
 
   lines.push('', '## Composition', '');
   lines.push(`- Typed in the composer: **${comp.typedChars}** characters (${pct(comp.typedRatio)})`);
