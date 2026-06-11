@@ -23,10 +23,8 @@ Keep only durable, cross-task context here. Do not duplicate facts that are obvi
 - Adding `vscode` API surface requires extending `test/support/vscode-stub.ts` and updating extension subscription count test.
 - Adding fields to `WhetstoneSettings` requires updating: `config.ts`, `package.json`, `dev/cli.ts`, and test files with inline settings snapshots.
 - Friction modules reuse `extractNgrams`/`ngramOverlap` from `src/guard/deterministic.ts`.
-- Tasks 21–25 consume `dial.instrumentState(name)` to gate their behaviour.
-- `Dial` class (`src/friction/`): `instrumentState(name)`, `frictionLevel()`, `effectiveConfig()`, `observe()`, `setLevel()`, `setFloor()`, `setOverride()`, `updateConfig()`. `resolveEffectiveConfig(config)` is pure. `PRESETS` maps levels to `InstrumentStateMap`. Floor clamps ALL instruments.
-- `PasteQuarantine` (`src/friction/paste.ts`): new event types `paste_quarantine`, `paste_claim`.
-- `ClaimFirstGate` (`src/friction/claimFirst.ts`): event type `claim_captured`. Gate runs after consent but before coaching in `handleCoachSelection`.
+- Tasks 21–25 consume `dial.instrumentState(name)` to gate their behaviour. DI pattern: deps object with `{ dial, ledger, now }` + separate UI prompter seam passed to the method (see `claimFirst.ts`).
+- Friction module event types: `paste_quarantine`/`paste_claim` (B), `claim_captured` (C). Claim-first gate runs after consent but before coaching in `handleCoachSelection`.
 
 ## Open Risks
 
@@ -34,6 +32,6 @@ Keep only durable, cross-task context here. Do not duplicate facts that are obvi
 
 ## Handoffs
 
-- Task 07 (`src/ledger/*`): `chainHash(entry)` takes entry without `hash` field. Checkpoints: `sign`/`verify` with PEM keys. `canonicalize` is the only stringifier.
+- Task 07 (`src/ledger/*`): `chainHash(entry)` takes entry without `hash` field. `canonicalize` is the only stringifier. Checkpoints: `sign`/`verify` with PEM keys.
 - Task 09 (`src/providers/*`): `coach()`/`judge()` return `ProviderResult<T>`. Factory `createProvider(settings, apiKey, client?)`.
 - Task 10+11 (`src/guard/*`): `RefusalGuard.screen(out, doc)` → `Promise<GuardResult>`. Without provider, only deterministic layers run.

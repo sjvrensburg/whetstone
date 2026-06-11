@@ -26,6 +26,6 @@
 | 20 | Friction dial — settings, presets & instrument resolution | completed | medium | task_04, task_17 |
 | 21 | Paste quarantine & claim-to-own (instrument B) | completed | high | task_08, task_05, task_20 |
 | 22 | Claim-first commitment gate (instrument C) | completed | medium | task_14, task_17, task_20 |
-| 23 | Teach-back checkpoints (instrument D) | pending | medium | task_12, task_07, task_17, task_20 |
+| 23 | Teach-back checkpoints (instrument D) | completed | medium | task_12, task_07, task_17, task_20 |
 | 24 | Proactive (push) coaching cadence (instrument A) | pending | high | task_12, task_13, task_17, task_20 |
 | 25 | Live process self-mirror (instrument E) | pending | high | task_07, task_08, task_17, task_20 |

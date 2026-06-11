@@ -24,6 +24,7 @@ const report: TransparencyReport = {
     paste_quarantine: 0,
     paste_claim: 0,
     claim_captured: 0,
+    teach_back: 0,
   },
   cloudSends: [
     {

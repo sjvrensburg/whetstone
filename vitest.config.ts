@@ -68,6 +68,7 @@ export default defineConfig({
         'src/friction/dial.ts',
         'src/friction/control.ts',
         'src/friction/paste.ts',
+        'src/friction/teachBack.ts',
         'test/support/fixtures.ts',
         'test/redteam/gate.ts',
         'test/redteam/corpus/index.ts',

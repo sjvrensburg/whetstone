@@ -41,3 +41,14 @@ export type { FrictionControlDeps } from './control';
 
 export { ClaimFirstGate, CLAIM_PROMPT, CLAIM_PLACEHOLDER, CLAIM_TITLE } from './claimFirst';
 export type { ClaimPrompter, ClaimGateResult, ClaimFirstGateDeps } from './claimFirst';
+
+export {
+  TeachBackCheckpoint,
+  isDisconnect,
+  MIN_SUMMARY_LENGTH,
+  SUMMARY_TITLE,
+  SUMMARY_PROMPT,
+  SUMMARY_PLACEHOLDER,
+  DISCONNECT_NUDGE,
+} from './teachBack';
+export type { SummaryPrompter, TeachBackOutcome, TeachBackResult, TeachBackDeps } from './teachBack';

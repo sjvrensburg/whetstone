@@ -19,6 +19,7 @@ function makeReport(overrides: Partial<TransparencyReport> = {}): TransparencyRe
       paste_quarantine: 0,
       paste_claim: 0,
       claim_captured: 0,
+      teach_back: 0,
     },
     cloudSends: [],
     integrity: { intact: true },
@@ -70,6 +71,7 @@ describe('renderReportDocument', () => {
         paste_quarantine: 0,
         paste_claim: 0,
         claim_captured: 0,
+        teach_back: 0,
       },
     });
     const doc = renderReportDocument(report);
@@ -151,6 +153,7 @@ describe('renderReportDocument', () => {
         paste_quarantine: 0,
         paste_claim: 0,
         claim_captured: 0,
+        teach_back: 0,
       },
       cloudSends: [
         {
