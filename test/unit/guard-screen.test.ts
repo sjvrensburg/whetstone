@@ -1,12 +1,13 @@
 /**
- * Integration tests for the `RefusalGuard.screen()` boundary (task 10).
+ * Integration tests for the `RefusalGuard.screen()` boundary (tasks 10 + 11).
  *
- * Tests that `screen()` returns the correct `GuardResult` union without
- * invoking any judge, and validates the curated corpus.
+ * Tests that `screen()` returns the correct `GuardResult` union, validates the
+ * curated corpus, and verifies the deterministic-first-then-judge ordering.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { RefusalGuard, createRefusalGuard } from '../../src/guard/index';
+import type { CoachingProvider } from '../../src/providers/types';
 import type { DocumentContext, StructuredCoaching } from '../../src/shared/types';
 import { allNonLeaks, allLeaks, injections, leaks } from '../fixtures/redteam/corpus';
 
@@ -33,7 +34,7 @@ const doc: DocumentContext = {
   documentLanguage: 'markdown',
 };
 
-const guard = new RefusalGuard();
+const guard = new RefusalGuard(undefined);
 
 // ---------------------------------------------------------------------------
 // screen() boundary — basic pass/fail
@@ -155,8 +156,13 @@ describe('RefusalGuard.screen()', () => {
 // ---------------------------------------------------------------------------
 
 describe('createRefusalGuard', () => {
-  it('creates a RefusalGuard instance', () => {
+  it('creates a RefusalGuard instance without deps', () => {
     const g = createRefusalGuard();
+    expect(g).toBeInstanceOf(RefusalGuard);
+  });
+
+  it('creates a RefusalGuard instance with undefined deps', () => {
+    const g = createRefusalGuard(undefined);
     expect(g).toBeInstanceOf(RefusalGuard);
   });
 });
@@ -234,4 +240,75 @@ describe('leak corpus — specific rejection categories', () => {
       }
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Integration: screen() deterministic-first then judge (task 11)
+// ---------------------------------------------------------------------------
+
+describe('screen() layer ordering — deterministic first, then judge', () => {
+  it('runs deterministic gate first; judge is only invoked when deterministic passes', async () => {
+    const judgeFn = vi.fn(async () => ({
+      ok: true as const,
+      value: { refused: false, reason: '' },
+    }));
+    const provider: CoachingProvider = {
+      id: 'test',
+      coach: vi.fn(),
+      judge: judgeFn,
+    };
+    const guardWithJudge = new RefusalGuard({ provider });
+
+    // Deterministic failure — judge should NOT be called.
+    const detFail = await guardWithJudge.screen(
+      coaching(obs('Change the opening to "Better."', 'Does this work?')),
+      doc,
+    );
+    expect(detFail.ok).toBe(false);
+    if (!detFail.ok) {
+      expect(detFail.layer).toBe('deterministic');
+    }
+    expect(judgeFn).not.toHaveBeenCalled();
+
+    // Clean coaching — deterministic passes, judge IS called.
+    const cleanResult = await guardWithJudge.screen(
+      coaching(
+        obs(
+          'The paragraph positions LLMs as a threat without examining mitigating factors.',
+          'What if the argument addressed both threats and opportunities — where would the balance fall?',
+        ),
+      ),
+      doc,
+    );
+    expect(cleanResult.ok).toBe(true);
+    expect(judgeFn).toHaveBeenCalledOnce();
+  });
+
+  it('runs deterministic gate first; judge refusal does not affect deterministic layer', async () => {
+    const judgeFn = vi.fn(async () => ({
+      ok: true as const,
+      value: { refused: true, reason: 'paste-ready prose detected' },
+    }));
+    const provider: CoachingProvider = {
+      id: 'test',
+      coach: vi.fn(),
+      judge: judgeFn,
+    };
+    const guardWithJudge = new RefusalGuard({ provider });
+
+    // Clean coaching passes deterministic but is refused by the judge.
+    const result = await guardWithJudge.screen(
+      coaching(
+        obs(
+          'The paragraph positions LLMs as a threat without examining mitigating factors.',
+          'What if the argument addressed both threats and opportunities — where would the balance fall?',
+        ),
+      ),
+      doc,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.layer).toBe('judge');
+    }
+  });
 });
