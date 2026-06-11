@@ -14,6 +14,8 @@ describe('runCli (dev-CLI scaffold)', () => {
 
   beforeEach(() => {
     cap = captureIO();
+    // Ensure no API key leaks between tests
+    delete process.env.Z_AI_API_KEY;
   });
 
   it('exits cleanly with no args and reports the scaffold is ready', async () => {
@@ -50,5 +52,72 @@ describe('runCli (dev-CLI scaffold)', () => {
       expect(source).not.toMatch(/from ['"]vscode['"]/);
       expect(source).not.toMatch(/require\(['"]vscode['"]\)/);
     }
+  });
+});
+
+describe('runCli: interactive command', () => {
+  let cap: ReturnType<typeof captureIO>;
+
+  beforeEach(() => {
+    cap = captureIO();
+    delete process.env.Z_AI_API_KEY;
+  });
+
+  it('reports missing API key and exits 1', async () => {
+    const code = await runCli(['interactive', 'Some passage text here.'], cap.io);
+    expect(code).toBe(1);
+    expect(cap.err.join('\n')).toContain('Z_AI_API_KEY');
+  });
+
+  it('reports unknown language flag', async () => {
+    process.env.Z_AI_API_KEY = 'test-key';
+    const code = await runCli(['interactive', '--lang', 'python', 'Some text.'], cap.io);
+    expect(code).toBe(2);
+    expect(cap.err.join('\n')).toContain('Unknown language');
+  });
+
+  it('shows help text with interactive and record commands', async () => {
+    const code = await runCli(['--help'], cap.io);
+    expect(code).toBe(0);
+    const text = cap.out.join('\n');
+    expect(text).toContain('interactive');
+    expect(text).toContain('record');
+    expect(text).toContain('--lang');
+  });
+});
+
+describe('runCli: record command', () => {
+  let cap: ReturnType<typeof captureIO>;
+
+  beforeEach(() => {
+    cap = captureIO();
+    delete process.env.Z_AI_API_KEY;
+  });
+
+  it('reports missing fixture path', async () => {
+    const code = await runCli(['record'], cap.io);
+    expect(code).toBe(2);
+    expect(cap.err.join('\n')).toContain('fixture-path');
+  });
+
+  it('reports missing API key', async () => {
+    const code = await runCli(['record', '/tmp/test-fixture.json', '--passage', 'text'], cap.io);
+    expect(code).toBe(1);
+    expect(cap.err.join('\n')).toContain('Z_AI_API_KEY');
+  });
+});
+
+describe('runCli: gate command not in CLI', () => {
+  let cap: ReturnType<typeof captureIO>;
+
+  beforeEach(() => {
+    cap = captureIO();
+    delete process.env.Z_AI_API_KEY;
+  });
+
+  it('gate command is unknown (gate runner is test-only)', async () => {
+    const code = await runCli(['gate'], cap.io);
+    expect(code).toBe(2);
+    expect(cap.err.join('\n')).toContain('unknown command');
   });
 });

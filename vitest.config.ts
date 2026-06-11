@@ -65,6 +65,8 @@ export default defineConfig({
         'src/ui/ledgerView.ts',
         'src/ui/commands.ts',
         'test/support/fixtures.ts',
+        'test/redteam/gate.ts',
+        'test/redteam/corpus/index.ts',
       ],
       thresholds: {
         lines: 80,
