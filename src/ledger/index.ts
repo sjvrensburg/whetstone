@@ -3,21 +3,28 @@
  * read-side report/export. Single append chokepoint; the tamper-evident
  * provenance substrate (ADR-006, PRD F3).
  *
- * This module is the task-07 deliverable: `LedgerImpl` implements `Ledger`
- * from `shared/types`, consuming the task-03 crypto surface and the task-04
- * SecretStorage key provider. `report()` and `exportDisclosure()` are stubs
- * for task 16; the read-side computations live there.
+ * This module is the task-07 + task-16 deliverable: `LedgerImpl` implements
+ * `Ledger` from `shared/types`, consuming the task-03 crypto surface and the
+ * task-04 SecretStorage key provider. The read-side computations (`report()`,
+ * `exportDisclosure()`) are implemented in `./report` and `./disclosure`,
+ * wired here with checkpoint-on-export semantics (ADR-006).
  */
 
 import { buildEntry, verifyEntryHash } from './chain';
 import { type Checkpoint, shouldCheckpoint, signCheckpoint, verifyCheckpoint } from './checkpoints';
 import { LedgerStore } from './store';
+import { computeReport } from './report';
+import { computeDisclosureText } from './disclosure';
 import type { Ed25519KeyPair } from '../shared/crypto';
 import type { Ledger, LedgerEvent, TransparencyReport } from '../shared/types';
 
 export { resolveLedgerDir, type StorageLocationDeps } from './store';
 export type { Checkpoint } from './checkpoints';
 export type { AppendInput } from './chain';
+export { SCOPING_NOTE, DECLARABLE_TYPES } from './report';
+export { computeReport } from './report';
+export { TOOL_NAME, computeDisclosureText } from './disclosure';
+export { renderReportDocument, renderDisclosureDocument } from './documents';
 
 // ---------------------------------------------------------------------------
 // Prose validation
@@ -278,22 +285,60 @@ export class LedgerImpl implements Ledger {
   }
 
   // -----------------------------------------------------------------------
-  // Task-16 stubs (read-side computations)
+  // Read-side computations (task 16 — ADR-006, F6)
   // -----------------------------------------------------------------------
 
-  /** @throws Always — implemented in task 16. */
+  /**
+   * Compute the transparency report by streaming over all ledger events.
+   * Runs `verify()` first to get an up-to-date integrity status, then
+   * passes the parsed events to the pure `computeReport` function.
+   */
   async report(): Promise<TransparencyReport> {
-    throw new Error('Ledger.report() not implemented — see task 16.');
+    const events = this.readAllEvents();
+    const integrity = await this.verify();
+    return computeReport(events, integrity);
   }
 
-  /** @throws Always — implemented in task 16. */
+  /**
+   * Compute the paste-ready ICMJE disclosure paragraph and write a
+   * checkpoint (ADR-006: "checkpoint on disclosure export").
+   *
+   * The checkpoint makes the disclosure export itself tamper-evident:
+   * if someone tampers with the ledger after the disclosure was generated,
+   * the next verify will detect it.
+   */
   async exportDisclosure(): Promise<string> {
-    throw new Error('Ledger.exportDisclosure() not implemented — see task 16.');
+    const events = this.readAllEvents();
+    const text = computeDisclosureText(events);
+
+    // Checkpoint on export (ADR-006).
+    if (this.lastSeq >= 0 && this.state !== 'disabled') {
+      await this.writeCheckpoint(this.lastSeq, this.lastHash);
+    }
+
+    return text;
   }
 
   // -----------------------------------------------------------------------
   // Internal helpers
   // -----------------------------------------------------------------------
+
+  /**
+   * Read and parse all events from the store. Used by read-side
+   * computations (`report()`, `exportDisclosure()`).
+   */
+  private readAllEvents(): LedgerEvent[] {
+    const lines = this.deps.store.readLines();
+    const events: LedgerEvent[] = [];
+    for (const line of lines) {
+      try {
+        events.push(JSON.parse(line) as LedgerEvent);
+      } catch {
+        // Skip unparseable lines — `verify()` handles integrity.
+      }
+    }
+    return events;
+  }
 
   /** Record a lifecycle event (pause/resume) bypassing the state check. */
   private async appendLifecycleEvent(type: 'ledger_paused' | 'ledger_resumed'): Promise<void> {
