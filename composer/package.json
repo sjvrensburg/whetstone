@@ -14,8 +14,10 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.1",
     "@codemirror/commands": "^6.8.1",
+    "@codemirror/lint": "^6.9.7",
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.36.8",
+    "harper.js": "^2.4.0",
     "idb": "^8.0.3"
   },
   "devDependencies": {

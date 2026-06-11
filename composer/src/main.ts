@@ -10,10 +10,17 @@
 import { history, historyKeymap, defaultKeymap } from '@codemirror/commands';
 import { EditorState } from '@codemirror/state';
 import { EditorView, keymap, placeholder } from '@codemirror/view';
+import { WorkerLinter } from 'harper.js';
+import { binary } from 'harper.js/binary';
 import { extractClaim } from './core/disclosure';
 import { computeMirror } from './core/mirror';
+import { grammarExtension } from './editor/grammar';
+import { idleObserver } from './editor/idle';
 import { createQuarantine } from './editor/quarantine';
 import { typingBurstExtension } from './editor/typingBurst';
+import { harperBackend, type GrammarBackend } from './grammar/harper';
+import { PushCadenceInstrument, extractParagraphs } from './instruments/pushCadence';
+import { TeachBackInstrument } from './instruments/teachBack';
 import { LocalService } from './service/local';
 import {
   AnthropicCoachProvider,
@@ -31,6 +38,7 @@ import {
 import { showDisclosure } from './ui/disclosurePanel';
 import { JournalPanel } from './ui/journalPanel';
 import { MirrorPanel } from './ui/mirrorPanel';
+import { showDisconnectNudge, showTeachBackBar } from './ui/teachBackBar';
 import './style.css';
 
 const DOC_ID = location.hash.slice(1) || 'essay-1';
@@ -48,6 +56,7 @@ async function boot(): Promise<void> {
       <span class="ws-title">Whetstone</span>
       <div class="ws-claim-header" id="claim-header"></div>
       <button type="button" id="coach-btn" class="ws-export">Coach</button>
+      <button type="button" id="quiet-btn" class="ws-export" title="Silence proactive coaching for this session">Quiet</button>
       <button type="button" id="export-btn" class="ws-export">Export disclosure</button>
     </header>
     <main class="ws-main">
@@ -96,6 +105,48 @@ async function boot(): Promise<void> {
   }
   pinClaim(claimHeader, claim);
 
+  // Slice 7 — local grammar (Harper WASM, off the main thread). Setup runs in
+  // the background; lints await it. Nothing leaves the device; nothing is
+  // journaled (non-declarable local assistance).
+  const harper = new WorkerLinter({ binary });
+  const harperReady = harper.setup().catch((err) => {
+    console.warn('Harper grammar unavailable:', err);
+    throw err;
+  });
+  const inner = harperBackend(harper);
+  const grammarBackend: GrammarBackend = {
+    setup: () => harperReady,
+    lint: async (text) => {
+      await harperReady;
+      return inner.lint(text);
+    },
+  };
+
+  // Slices 8 + 9 — instruments D (teach-back) and A (push cadence) share one
+  // idle boundary; teach-back wins the turn so the writer never gets two
+  // interruptions at once.
+  const coachHost = document.getElementById('coach-host')!;
+  const teachBack = new TeachBackInstrument({
+    emit,
+    prompt: () => showTeachBackBar(coachHost),
+  });
+  const pushCadence = new PushCadenceInstrument({
+    coach: (selectionText) => service.coach!({ selectionText, claim }),
+    available: () => !!loadCoachConfig(),
+    emit,
+    now: () => Date.now(),
+  });
+
+  const onIdle = async (text: string): Promise<void> => {
+    const tb = await teachBack.onIdle(extractParagraphs(text).length);
+    if (tb.triggered) {
+      if (tb.disconnect) showDisconnectNudge(coachHost);
+      return; // one interruption per pause
+    }
+    const push = await pushCadence.onIdle();
+    if (push.triggered) renderCoachResult(coachHost, push.result);
+  };
+
   // Slices 1 + 3 — editor with typing bursts and paste-quarantine.
   const bursts = typingBurstExtension(emit);
   const quarantine = createQuarantine({ emit });
@@ -111,10 +162,26 @@ async function boot(): Promise<void> {
         placeholder('Start drafting…'),
         bursts.extension,
         quarantine.extension,
+        grammarExtension(grammarBackend),
+        idleObserver({
+          onChange: (text) => pushCadence.feedChange(text),
+          onIdle: (text) => void onIdle(text),
+        }),
       ],
     }),
   });
   view.focus();
+
+  const quietBtn = document.getElementById('quiet-btn') as HTMLButtonElement;
+  quietBtn.addEventListener('click', () => {
+    if (pushCadence.isSilenced) {
+      pushCadence.unsilenceSession();
+      quietBtn.textContent = 'Quiet';
+    } else {
+      pushCadence.silenceSession();
+      quietBtn.textContent = 'Quiet ✓';
+    }
+  });
 
   // Slice 4 — disclosure export.
   document.getElementById('export-btn')!.addEventListener('click', () => {
@@ -123,7 +190,6 @@ async function boot(): Promise<void> {
   });
 
   // Slice 5 — coaching on the current selection (or the whole draft).
-  const coachHost = document.getElementById('coach-host')!;
   const coachBtn = document.getElementById('coach-btn') as HTMLButtonElement;
   coachBtn.addEventListener('click', async () => {
     if (!loadCoachConfig()) {

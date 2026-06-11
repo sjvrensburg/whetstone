@@ -171,6 +171,15 @@ export function renderDisclosure(docId: string, events: ProcessEvent[]): Disclos
     lines.push(`  - Pastes still marked (unresolved): ${comp.pastesUnclaimed}`);
   }
 
+  const teachBacks = events.filter((e) => e.type === 'teach_back');
+  if (teachBacks.length > 0) {
+    const disconnects = teachBacks.filter((e) => e.meta?.disconnect === true).length;
+    lines.push(
+      `- Teach-back checkpoints: **${teachBacks.length}**` +
+        (disconnects > 0 ? ` (${disconnects} marked as hard to summarize)` : ''),
+    );
+  }
+
   lines.push('', '## Scope of this record', '');
   lines.push(SCOPING_NOTE);
 

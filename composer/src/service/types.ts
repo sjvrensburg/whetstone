@@ -19,7 +19,9 @@ export type ProcessEventType =
   | 'paste_claimed'
   | 'paste_attributed'
   | 'region_revised'
-  | 'coach_consult'; // reserved, deferred
+  | 'coach_consult'
+  | 'teach_back' // instrument D (slice 8)
+  | 'push_coaching'; // instrument A (slice 9)
 
 export interface ProcessEvent {
   /** Assigned by the Service. */

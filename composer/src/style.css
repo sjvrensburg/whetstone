@@ -264,3 +264,48 @@ body {
   color: #fff;
   border: none;
 }
+
+/* Teach-back bar */
+.ws-teachback {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  border: 1px solid var(--ws-accent);
+  border-radius: 6px;
+  padding: 0.6rem 0.8rem;
+  margin-bottom: 0.7rem;
+  background: #fff;
+  font-size: 0.85rem;
+}
+
+.ws-teachback input {
+  font: inherit;
+  padding: 0.35rem;
+  border: 1px solid var(--ws-border);
+  border-radius: 4px;
+}
+
+.ws-teachback button {
+  font: inherit;
+  font-size: 0.85em;
+  padding: 0.25rem 0.7rem;
+  border: 1px solid var(--ws-border);
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+.ws-teachback-nudge {
+  border-left: 3px solid var(--ws-amber);
+  padding: 0.4rem 0.6rem;
+  margin-bottom: 0.7rem;
+  color: #777;
+  font-size: 0.85rem;
+}
+
+/* Grammar lint underlines — subtle, info-grade */
+.cm-lintRange-info {
+  background-image: none;
+  border-bottom: 1px dotted #8a8a8a;
+}
