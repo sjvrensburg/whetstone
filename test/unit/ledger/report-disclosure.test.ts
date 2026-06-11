@@ -161,12 +161,10 @@ describe('LedgerImpl.report() — integration', () => {
 describe('LedgerImpl.exportDisclosure() — integration', () => {
   let dir: string;
   let ledger: LedgerImpl;
-  let keyPair: Ed25519KeyPair;
 
   beforeEach(() => {
     dir = makeTempDir();
     const result = makeDeps(dir);
-    keyPair = result.keyPair;
     ledger = new LedgerImpl(result.deps);
   });
 

@@ -232,4 +232,51 @@ The cat sat on the mat.
     const result = maskLaTeX(source);
     expect(result.masked).toBe('');
   });
+
+  // -------------------------------------------------------------------------
+  // Word-boundary preservation (no fusion across masked regions)
+  // -------------------------------------------------------------------------
+
+  it('inserts a separator so a command between two words does not fuse them', () => {
+    // Without a separator, `foo\emph{x}bar` masks to `foobar`, which the linter
+    // would flag as a single bogus word.
+    const source = 'foo\\emph{x}bar';
+    const result = maskLaTeX(source);
+    expect(result.masked).toBe('foo bar');
+    // The sentinel space maps to the start of the masked region (the `\`).
+    const spaceIdx = result.masked.indexOf(' ');
+    expect(source[result.sourceMap[spaceIdx]]).toBe('\\');
+    // `bar` still maps back to its true source offset (foo=0..2, \emph{x}=3..10).
+    const barIdx = result.masked.indexOf('bar');
+    expect(result.sourceMap[barIdx]).toBe(11);
+    expect(source.slice(result.sourceMap[barIdx])).toBe('bar');
+  });
+
+  it('inserts a separator so inline math between two words does not fuse them', () => {
+    const source = 'a$x$b';
+    const result = maskLaTeX(source);
+    expect(result.masked).toBe('a b');
+  });
+
+  it('does not insert a separator when the command is already space-delimited', () => {
+    // The surrounding spaces are prose and already preserved — no extra space.
+    const source = 'foo \\emph{x} bar';
+    const result = maskLaTeX(source);
+    expect(result.masked).toBe('foo  bar');
+  });
+
+  it('does not insert a separator next to punctuation', () => {
+    const source = 'end\\emph{x}.';
+    const result = maskLaTeX(source);
+    // `.` is not a word character, so no fusion risk and no separator.
+    expect(result.masked).toBe('end.');
+  });
+
+  it('keeps the source map monotonic when a separator is inserted', () => {
+    const source = 'foo\\emph{x}bar';
+    const result = maskLaTeX(source);
+    for (let i = 1; i < result.sourceMap.length; i++) {
+      expect(result.sourceMap[i]).toBeGreaterThan(result.sourceMap[i - 1]);
+    }
+  });
 });

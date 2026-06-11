@@ -365,7 +365,7 @@ describe('RefusalGuard — judge-verdict telemetry (task 18.2)', () => {
       coach: vi.fn(),
       judge: vi.fn(async () => ({
         ok: false as const,
-        error: { kind: 'timeout', message: 't/o' },
+        error: { kind: 'timeout' as const, message: 't/o' },
       })),
       explainRule: vi.fn(),
     };

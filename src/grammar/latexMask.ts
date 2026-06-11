@@ -175,6 +175,14 @@ function isAsciiLetter(ch: string): boolean {
 }
 
 /**
+ * A "word character" for boundary-preservation purposes: a letter or digit.
+ * Used to decide whether a masked region was fusing two prose words together.
+ */
+function isWordChar(ch: string): boolean {
+  return isAsciiLetter(ch) || (ch >= '0' && ch <= '9');
+}
+
+/**
  * Skip a balanced group starting at `pos` where `source[pos] === open`.
  * Returns the index after the closing `close` character.
  * Handles nested groups.
@@ -250,6 +258,18 @@ export function maskLaTeX(source: string): MaskResult {
       tryControlSequence(source, i);
 
     if (region) {
+      // Preserve word boundaries: if the masked region sits directly between
+      // two prose word characters (e.g. `foo\emph{x}bar`), deleting it would
+      // fuse them into one token (`foobar`) and the linter would flag a word
+      // that never existed in the source. Emit a single sentinel space, mapped
+      // to the region's start, so the boundary survives and offsets stay
+      // monotonic. Space-delimited regions (the common case) are unaffected.
+      const prevChar = maskedChars.length > 0 ? maskedChars[maskedChars.length - 1] : '';
+      const nextChar = region.end < source.length ? source[region.end] : '';
+      if (isWordChar(prevChar) && isWordChar(nextChar)) {
+        maskedChars.push(' ');
+        sourceMap.push(region.start);
+      }
       // Skip the masked region entirely.
       i = region.end;
       continue;

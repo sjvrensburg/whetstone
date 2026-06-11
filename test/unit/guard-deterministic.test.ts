@@ -39,11 +39,6 @@ const doc: DocumentContext = {
   documentLanguage: 'markdown',
 };
 
-const _shortDoc: DocumentContext = {
-  selectionText: 'Short text.',
-  documentLanguage: 'markdown',
-};
-
 // ---------------------------------------------------------------------------
 // checkSpanLengths
 // ---------------------------------------------------------------------------
@@ -146,7 +141,6 @@ describe('checkRewritePatterns', () => {
     const result = checkRewritePatterns(
       coaching(
         obs('A better version would be "The results demonstrate…"', 'What do you think?'),
-        'What is the claim?',
       ),
     );
     expect(result.ok).toBe(false);

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { computeReport, SCOPING_NOTE, DECLARABLE_TYPES } from '../../../src/ledger/report';
-import type { LedgerEvent, LedgerEventType, TransparencyReport } from '../../../src/shared/types';
+import type { LedgerEvent, LedgerEventType } from '../../../src/shared/types';
 import { chainHash } from '../../../src/shared/crypto';
 
 // ---------------------------------------------------------------------------
