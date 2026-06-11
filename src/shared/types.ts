@@ -102,7 +102,9 @@ export type LedgerEventType =
   | 'external_insert'
   | 'cloud_send'
   | 'ledger_paused'
-  | 'ledger_resumed';
+  | 'ledger_resumed'
+  | 'paste_quarantine'
+  | 'paste_claim';
 
 /**
  * One entry in the append-only hash chain. `hash` is

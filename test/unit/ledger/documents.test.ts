@@ -16,6 +16,8 @@ function makeReport(overrides: Partial<TransparencyReport> = {}): TransparencyRe
       cloud_send: 0,
       ledger_paused: 0,
       ledger_resumed: 0,
+      paste_quarantine: 0,
+      paste_claim: 0,
     },
     cloudSends: [],
     integrity: { intact: true },
@@ -64,6 +66,8 @@ describe('renderReportDocument', () => {
         cloud_send: 2,
         ledger_paused: 0,
         ledger_resumed: 0,
+        paste_quarantine: 0,
+        paste_claim: 0,
       },
     });
     const doc = renderReportDocument(report);
@@ -142,6 +146,8 @@ describe('renderReportDocument', () => {
         cloud_send: 3,
         ledger_paused: 0,
         ledger_resumed: 0,
+        paste_quarantine: 0,
+        paste_claim: 0,
       },
       cloudSends: [
         {

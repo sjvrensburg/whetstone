@@ -21,6 +21,8 @@ const report: TransparencyReport = {
     cloud_send: 1,
     ledger_paused: 0,
     ledger_resumed: 0,
+    paste_quarantine: 0,
+    paste_claim: 0,
   },
   cloudSends: [
     {

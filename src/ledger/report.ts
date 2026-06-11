@@ -49,6 +49,8 @@ function zeroedCounts(): Record<LedgerEventType, number> {
     cloud_send: 0,
     ledger_paused: 0,
     ledger_resumed: 0,
+    paste_quarantine: 0,
+    paste_claim: 0,
   };
 }
 
