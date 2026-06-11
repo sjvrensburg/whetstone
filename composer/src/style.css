@@ -1,0 +1,178 @@
+:root {
+  --ws-bg: #faf8f4;
+  --ws-ink: #2b2a27;
+  --ws-accent: #8a5a00;
+  --ws-amber: #b97d10;
+  --ws-border: #e3ded4;
+  font-family: Georgia, 'Times New Roman', serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ws-bg);
+  color: var(--ws-ink);
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* Header + pinned claim */
+.ws-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.6rem 1.2rem;
+  border-bottom: 1px solid var(--ws-border);
+  background: #fff;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.ws-title {
+  font-weight: bold;
+  letter-spacing: 0.04em;
+}
+
+.ws-claim-header { flex: 1; font-style: italic; min-width: 0; }
+.ws-claim-label { color: var(--ws-accent); font-style: normal; font-size: 0.85em; }
+.ws-claim-text { overflow-wrap: anywhere; }
+
+.ws-export {
+  border: 1px solid var(--ws-border);
+  background: #fff;
+  padding: 0.35rem 0.8rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.85em;
+}
+.ws-export:hover { border-color: var(--ws-accent); }
+
+/* Editor */
+.ws-editor-host {
+  flex: 1;
+  max-width: 46rem;
+  width: 100%;
+  margin: 0 auto;
+  padding: 2rem 1rem;
+}
+
+.cm-editor { min-height: 60vh; font-size: 1.05rem; line-height: 1.6; }
+.cm-editor.cm-focused { outline: none; }
+
+/* Quarantine mark — amber underline (spec §5), supportive not alarming */
+.ws-quarantine {
+  text-decoration: underline wavy var(--ws-amber);
+  text-underline-offset: 4px;
+  background: rgba(185, 125, 16, 0.07);
+}
+
+.ws-attribute-btn {
+  font-size: 0.7em;
+  margin: 0 0.25em;
+  padding: 0 0.4em;
+  border: 1px solid var(--ws-amber);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ws-amber);
+  cursor: pointer;
+  vertical-align: super;
+}
+
+/* Claim gate */
+.ws-claim-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--ws-bg);
+  display: grid;
+  place-items: center;
+  z-index: 10;
+}
+
+.ws-claim-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  width: min(34rem, 90vw);
+}
+
+.ws-claim-form input {
+  font: inherit;
+  padding: 0.6rem;
+  border: 1px solid var(--ws-border);
+  border-radius: 4px;
+}
+
+.ws-claim-form button {
+  align-self: flex-start;
+  font: inherit;
+  padding: 0.45rem 1.1rem;
+  border: none;
+  border-radius: 4px;
+  background: var(--ws-accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+/* Journal debug panel */
+.ws-footer {
+  border-top: 1px solid var(--ws-border);
+  background: #fff;
+  font-family: ui-monospace, monospace;
+  font-size: 0.75rem;
+}
+
+.ws-journal summary { padding: 0.4rem 1.2rem; cursor: pointer; color: #777; }
+.ws-journal-list {
+  max-height: 14rem;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0 1.2rem 0.6rem 2.4rem;
+}
+
+/* Disclosure modal */
+.ws-disclosure-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(43, 42, 39, 0.45);
+  display: grid;
+  place-items: center;
+  z-index: 20;
+}
+
+.ws-disclosure-card {
+  background: #fff;
+  border-radius: 6px;
+  padding: 1.2rem 1.5rem;
+  width: min(42rem, 92vw);
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.ws-disclosure-body {
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+  border: 1px solid var(--ws-border);
+  padding: 0.8rem;
+  border-radius: 4px;
+}
+
+.ws-disclosure-actions { display: flex; gap: 0.6rem; margin-top: 0.8rem; }
+.ws-disclosure-actions button {
+  font: inherit;
+  font-size: 0.85em;
+  padding: 0.35rem 0.9rem;
+  border: 1px solid var(--ws-border);
+  background: #fff;
+  border-radius: 4px;
+  cursor: pointer;
+}
