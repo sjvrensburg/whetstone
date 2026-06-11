@@ -64,3 +64,17 @@ export type {
   PushCadenceConfig,
   PushCadenceResult,
 } from './pushCadence';
+
+export {
+  ProcessMirror,
+  MirrorViewDataProvider,
+  MirrorItem,
+  computeComposition,
+  LABELS,
+  assertNoProofOfPersonhoodLanguage,
+} from './mirror';
+export type {
+  ProcessMirrorDeps,
+  CompositionSnapshot,
+  MirrorSnapshot,
+} from './mirror';

@@ -69,6 +69,7 @@ export default defineConfig({
         'src/friction/control.ts',
         'src/friction/paste.ts',
         'src/friction/teachBack.ts',
+        'src/friction/mirror.ts',
         'src/friction/pushCadence.ts',
         'test/support/fixtures.ts',
         'test/redteam/gate.ts',
