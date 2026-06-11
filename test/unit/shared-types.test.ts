@@ -25,6 +25,7 @@ const report: TransparencyReport = {
     paste_claim: 0,
     claim_captured: 0,
     teach_back: 0,
+    push_coaching: 0,
   },
   cloudSends: [
     {

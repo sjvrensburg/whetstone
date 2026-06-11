@@ -109,7 +109,8 @@ export type LedgerEventType =
   | 'paste_quarantine'
   | 'paste_claim'
   | 'claim_captured'
-  | 'teach_back';
+  | 'teach_back'
+  | 'push_coaching';
 
 /**
  * One entry in the append-only hash chain. `hash` is

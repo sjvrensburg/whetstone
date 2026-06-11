@@ -52,3 +52,15 @@ export {
   DISCONNECT_NUDGE,
 } from './teachBack';
 export type { SummaryPrompter, TeachBackOutcome, TeachBackResult, TeachBackDeps } from './teachBack';
+
+export {
+  PushCadence,
+  extractParagraphs,
+  detectNewParagraph,
+  DEFAULT_PUSH_CONFIG,
+} from './pushCadence';
+export type {
+  PushCadenceDeps,
+  PushCadenceConfig,
+  PushCadenceResult,
+} from './pushCadence';
