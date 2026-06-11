@@ -33,6 +33,7 @@ export default defineConfig({
         'src/shared/json.ts',
         'src/shared/secrets.ts',
         'src/coaching/schema.ts',
+        'src/coaching/index.ts',
         'src/grammar/engine.ts',
         'src/grammar/latexMask.ts',
         'src/grammar/diagnostics.ts',
