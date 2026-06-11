@@ -1,0 +1,63 @@
+<!doctype html>
+<!-- Throwaway diagnostic page: runs WorkerLinter in the real browser and
+     reports each pipeline stage into the DOM so headless --dump-dom can
+     read it. Not part of the app. -->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>harper debug</title>
+  </head>
+  <body>
+    <pre id="out">starting…</pre>
+    <script type="module">
+      const out = document.getElementById('out');
+      const log = (msg) => {
+        out.textContent += '\n' + msg;
+      };
+      window.addEventListener('error', (e) => log('WINDOW ERROR: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) =>
+        log('UNHANDLED REJECTION: ' + (e.reason?.message ?? String(e.reason))),
+      );
+
+      try {
+        log('importing harper.js…');
+        const { WorkerLinter, LocalLinter } = await import('harper.js');
+        const { binary } = await import('harper.js/binary');
+        log('binary url: ' + binary.url);
+
+        log('constructing WorkerLinter…');
+        const linter = new WorkerLinter({ binary });
+
+        log('setup()…');
+        await Promise.race([
+          linter.setup(),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('worker setup timeout 45s')), 45000),
+          ),
+        ]);
+        log('setup OK');
+
+        const lints = await linter.lint('She were going too the libary yesterday.', {
+          language: 'plaintext',
+        });
+        log('lints: ' + lints.length);
+        for (const l of lints) {
+          const s = l.span();
+          log(`  [${s.start},${s.end}] ${l.lint_kind_pretty()}: ${l.message()}`);
+        }
+
+        log('also trying LocalLinter…');
+        const local = new LocalLinter({ binary });
+        await local.setup();
+        const localLints = await local.lint('She were going too the libary yesterday.', {
+          language: 'plaintext',
+        });
+        log('LocalLinter lints: ' + localLints.length);
+        log('DONE');
+      } catch (err) {
+        log('CAUGHT: ' + (err?.message ?? String(err)));
+        log('DONE');
+      }
+    </script>
+  </body>
+</html>
