@@ -48,6 +48,9 @@ export default defineConfig({
         'src/providers/openaiCompatible.ts',
         'src/providers/prompts.ts',
         'src/providers/registry.ts',
+        'src/guard/index.ts',
+        'src/guard/deterministic.ts',
+        'src/guard/injection.ts',
         'test/support/fixtures.ts',
       ],
       thresholds: {
