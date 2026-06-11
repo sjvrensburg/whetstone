@@ -9,16 +9,8 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import {
-  ConsentGate,
-  retentionFor,
-  modelForPurpose,
-} from '../../src/consent/index';
-import type {
-  ConsentDeps,
-  ConsentPrompter,
-  ConsentSecrets,
-} from '../../src/consent/index';
+import { ConsentGate, retentionFor, modelForPurpose } from '../../src/consent/index';
+import type { ConsentDeps, ConsentPrompter, ConsentSecrets } from '../../src/consent/index';
 import type { Ledger } from '../../src/shared/types';
 import type { WhetstoneSettings } from '../../src/shared/config';
 
@@ -36,10 +28,12 @@ const DEFAULT_SETTINGS: WhetstoneSettings = {
 };
 
 /** Create a prompter stub with controllable responses. */
-function stubPrompter(opts: {
-  consentAccepted?: boolean;
-  apiKey?: string | undefined;
-} = {}): ConsentPrompter & {
+function stubPrompter(
+  opts: {
+    consentAccepted?: boolean;
+    apiKey?: string | undefined;
+  } = {},
+): ConsentPrompter & {
   disclosures: Array<Parameters<ConsentPrompter['showConsentDisclosure']>[0]>;
   keyPrompts: string[];
 } {
@@ -60,7 +54,10 @@ function stubPrompter(opts: {
 }
 
 /** Create a secrets stub. */
-function stubSecrets(hasKey = true, _keyToReturn?: string): ConsentSecrets & {
+function stubSecrets(
+  hasKey = true,
+  _keyToReturn?: string,
+): ConsentSecrets & {
   storedKeys: string[];
 } {
   const storedKeys: string[] = [];
@@ -148,9 +145,7 @@ describe('modelForPurpose', () => {
   });
 
   it('throws for unknown providers', () => {
-    expect(() => modelForPurpose('nonexistent', 'coaching')).toThrow(
-      'Unknown provider',
-    );
+    expect(() => modelForPurpose('nonexistent', 'coaching')).toThrow('Unknown provider');
   });
 });
 

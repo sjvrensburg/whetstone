@@ -40,10 +40,21 @@ export type { HoverData } from './hover';
 export {
   GrammarCodeActionProvider,
   createDismissAction,
+  createExplainRuleAction,
   handleDismissCommand,
   DISMISS_COMMAND_ID,
+  EXPLAIN_RULE_COMMAND_ID,
 } from './codeActions';
-export type { DismissCommandArgs } from './codeActions';
+export type { DismissCommandArgs, ExplainRuleCommandArgs } from './codeActions';
+
+export { explainRule, containsRewrite } from './explainRule';
+export type {
+  ExplainRuleInput,
+  ExplainRuleResult,
+  ExplainRuleError,
+  ExplainRuleErrorKind,
+  ExplainRuleDeps,
+} from './explainRule';
 
 export { DirectLinterBackend, serializeLint, serializeLints } from './worker';
 export type { LinterBackend, LintRequest } from './worker';

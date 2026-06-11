@@ -32,7 +32,7 @@ describe('resolveSeverity', () => {
     for (const setting of ['hint', 'info', 'warning'] as const) {
       const severity = resolveSeverity(setting);
       expect(severity).toBeGreaterThanOrEqual(2); // not error (0) or warning (1)
-      expect(severity).toBeLessThanOrEqual(3);    // not error
+      expect(severity).toBeLessThanOrEqual(3); // not error
     }
   });
 });

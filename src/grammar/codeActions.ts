@@ -26,6 +26,12 @@ export const DISMISS_COMMAND_ID = 'whetstone.grammar.dismissFalsePositive';
 /** The quick-fix title shown to the writer. */
 const DISMISS_TITLE = 'Dismiss as false positive';
 
+/** The command ID for the explain-rule action. */
+export const EXPLAIN_RULE_COMMAND_ID = 'whetstone.grammar.explainRule';
+
+/** The quick-fix title for the explain-rule action. */
+const EXPLAIN_RULE_TITLE = 'Explain this rule in my own words';
+
 // ---------------------------------------------------------------------------
 // Dismiss command argument
 // ---------------------------------------------------------------------------
@@ -39,6 +45,23 @@ export interface DismissCommandArgs {
   readonly identity: LintIdentity;
   /** The URI of the document containing the lint (for diagnostic refresh). */
   readonly documentUri: vscode.Uri;
+}
+
+/**
+ * The argument passed to the explain-rule command. Contains the offending
+ * sentence and the lint metadata needed to request a rule explanation.
+ */
+export interface ExplainRuleCommandArgs {
+  /** The sentence containing the grammar issue. */
+  readonly sentence: string;
+  /** The URI of the document (for context). */
+  readonly documentUri: vscode.Uri;
+  /** The lint metadata. */
+  readonly lintKind: string;
+  /** Human-readable lint category. */
+  readonly lintKindPretty: string;
+  /** The diagnostic message from Harper. */
+  readonly message: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -66,6 +89,116 @@ export function createDismissAction(
   };
   // Explicitly no `action.edit` — dismiss never rewrites prose.
   return action;
+}
+
+/**
+ * Create an "Explain this rule" code action for a grammar diagnostic.
+ *
+ * This is a pure factory — it creates the `CodeAction` object without
+ * executing anything. The action's command is resolved when the user
+ * clicks it. The action never carries an edit (explanation is read-only).
+ */
+export function createExplainRuleAction(
+  diagnostic: vscode.Diagnostic,
+  sentence: string,
+  lintKind: string,
+  lintKindPretty: string,
+  message: string,
+  documentUri: vscode.Uri,
+): vscode.CodeAction {
+  const action = new vscode.CodeAction(EXPLAIN_RULE_TITLE, vscode.CodeActionKind.QuickFix);
+  action.diagnostics = [diagnostic];
+  action.command = {
+    title: EXPLAIN_RULE_TITLE,
+    command: EXPLAIN_RULE_COMMAND_ID,
+    arguments: [
+      {
+        sentence,
+        documentUri,
+        lintKind,
+        lintKindPretty,
+        message,
+      } satisfies ExplainRuleCommandArgs,
+    ],
+  };
+  // Explicitly no `action.edit` — explanation is read-only, never applied.
+  return action;
+}
+
+// ---------------------------------------------------------------------------
+// Sentence extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert a (line, character) position to a character offset in the text.
+ * Both line and character are 0-based. Mirrors `vscode.TextDocument.offsetAt`
+ * so tests don't need the full VS Code document API.
+ */
+function positionToOffset(
+  text: string,
+  pos: { readonly line: number; readonly character: number },
+): number {
+  let offset = 0;
+  let line = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (line === pos.line) {
+      return offset + Math.min(pos.character, text.length - offset);
+    }
+    if (text[i] === '\n') {
+      line++;
+      offset = i + 1;
+    }
+  }
+  // Position past the end — return text length.
+  return text.length;
+}
+
+/**
+ * Extract the sentence containing the diagnostic from the document.
+ *
+ * Expands from the diagnostic range to the nearest sentence boundaries
+ * (period, exclamation, question mark, or line boundary) so the rule
+ * explanation has full-sentence context rather than just the flagged fragment.
+ *
+ * Accepts a `TextDocument`-shaped object with `getText()` returning the full
+ * document text, plus a `Diagnostic` with a `range`. Works with both the real
+ * VS Code API and test stubs that may not implement `offsetAt`.
+ */
+function extractSentence(
+  document: { getText(): string },
+  diagnostic: Pick<vscode.Diagnostic, 'range'>,
+): string {
+  const fullText = document.getText();
+  const startOffset = positionToOffset(fullText, diagnostic.range.start);
+  const endOffset = positionToOffset(fullText, diagnostic.range.end);
+
+  // Expand backward to find the sentence start.
+  let sentenceStart = startOffset;
+  for (let i = startOffset - 1; i >= 0; i--) {
+    const ch = fullText[i];
+    if (ch === '.' || ch === '!' || ch === '?' || ch === '\n') {
+      sentenceStart = i + 1;
+      break;
+    }
+    if (i === 0) {
+      sentenceStart = 0;
+    }
+  }
+
+  // Expand forward to find the sentence end.
+  let sentenceEnd = endOffset;
+  for (let i = endOffset; i < fullText.length; i++) {
+    const ch = fullText[i];
+    if (ch === '.' || ch === '!' || ch === '?' || ch === '\n') {
+      sentenceEnd = i + 1;
+      break;
+    }
+    if (i === fullText.length - 1) {
+      sentenceEnd = fullText.length;
+    }
+  }
+
+  return fullText.slice(sentenceStart, sentenceEnd).trim();
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +284,17 @@ export class GrammarCodeActionProvider implements vscode.CodeActionProvider {
       };
 
       actions.push(createDismissAction(diag, identity, document.uri));
+
+      // "Explain this rule" action (task 15) — extracts the sentence around
+      // the diagnostic to provide context for the rule explanation.
+      const sentence = extractSentence(document, diag);
+      const lintKind = typeof diag.code === 'string' ? diag.code : String(diag.code ?? '');
+      const lintKindPretty = diag.source ?? 'Grammar';
+      const message = diag.message;
+
+      actions.push(
+        createExplainRuleAction(diag, sentence, lintKind, lintKindPretty, message, document.uri),
+      );
     }
 
     return actions;

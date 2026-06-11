@@ -58,9 +58,7 @@ describe('checkSpanLengths', () => {
 
   it('rejects an over-length reflection', () => {
     const longReflection = 'A'.repeat(281); // 1 over REFLECTION_MAX_LENGTH (280)
-    const result = checkSpanLengths(
-      coaching(obs(longReflection, 'What is the claim?')),
-    );
+    const result = checkSpanLengths(coaching(obs(longReflection, 'What is the claim?')));
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toContain('reflection exceeds 280');
@@ -69,9 +67,7 @@ describe('checkSpanLengths', () => {
 
   it('rejects an over-length question', () => {
     const longQuestion = 'Q'.repeat(201); // 1 over QUESTION_MAX_LENGTH (200)
-    const result = checkSpanLengths(
-      coaching(obs('A valid reflection.', longQuestion)),
-    );
+    const result = checkSpanLengths(coaching(obs('A valid reflection.', longQuestion)));
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toContain('question exceeds 200');
@@ -114,10 +110,7 @@ describe('checkRewritePatterns', () => {
   it('rejects "change X to Y" in reflection', () => {
     const result = checkRewritePatterns(
       coaching(
-        obs(
-          'Change the first sentence to "A stronger opening would be…"',
-          'Would this help?',
-        ),
+        obs('Change the first sentence to "A stronger opening would be…"', 'Would this help?'),
       ),
     );
     expect(result.ok).toBe(false);
@@ -128,9 +121,7 @@ describe('checkRewritePatterns', () => {
 
   it('rejects "try writing" in reflection', () => {
     const result = checkRewritePatterns(
-      coaching(
-        obs('Try writing this in a more direct voice.', 'Does this help?'),
-      ),
+      coaching(obs('Try writing this in a more direct voice.', 'Does this help?')),
     );
     expect(result.ok).toBe(false);
   });
@@ -164,7 +155,10 @@ describe('checkRewritePatterns', () => {
   it('rejects "suggested rewrite" in question', () => {
     const result = checkRewritePatterns(
       coaching(
-        obs('A claim about data.', 'Here is a suggested rewrite: "The data shows…" — what do you think?'),
+        obs(
+          'A claim about data.',
+          'Here is a suggested rewrite: "The data shows…" — what do you think?',
+        ),
       ),
     );
     expect(result.ok).toBe(false);
@@ -174,7 +168,10 @@ describe('checkRewritePatterns', () => {
     // Pattern only in the question field
     const result = checkRewritePatterns(
       coaching(
-        obs('Clean reflection about structure.', 'Consider writing a topic sentence that frames the argument.'),
+        obs(
+          'Clean reflection about structure.',
+          'Consider writing a topic sentence that frames the argument.',
+        ),
       ),
     );
     expect(result.ok).toBe(false);
@@ -183,8 +180,10 @@ describe('checkRewritePatterns', () => {
   it('accepts text that mentions writing abstractly without a rewrite', () => {
     const result = checkRewritePatterns(
       coaching(
-        obs('The paragraph transitions from evidence to claim.',
-          'How does the writing strategy here serve the argument?'),
+        obs(
+          'The paragraph transitions from evidence to claim.',
+          'How does the writing strategy here serve the argument?',
+        ),
       ),
     );
     expect(result.ok).toBe(true);
@@ -249,7 +248,7 @@ describe('ngramOverlap', () => {
 
   it('computes partial overlap correctly', () => {
     const candidate = extractNgrams('a b c d', 2); // a-b, b-c, c-d
-    const source = extractNgrams('x a b c y', 2);  // x-a, a-b, b-c, c-y
+    const source = extractNgrams('x a b c y', 2); // x-a, a-b, b-c, c-y
     // candidate: a-b, b-c, c-d → 2 out of 3 match → 0.667
     const overlap = ngramOverlap(candidate, source);
     expect(overlap).toBeCloseTo(2 / 3, 2);
@@ -304,10 +303,7 @@ describe('checkNgramOverlap', () => {
 
   it('skips short fields that cannot produce enough n-grams', () => {
     // A very short reflection (1 word) can't produce trigrams
-    const result = checkNgramOverlap(
-      coaching(obs('Interesting.', 'Why?')),
-      doc,
-    );
+    const result = checkNgramOverlap(coaching(obs('Interesting.', 'Why?')), doc);
     expect(result.ok).toBe(true);
   });
 
@@ -321,8 +317,8 @@ describe('checkNgramOverlap', () => {
         ),
       ),
       doc,
-      2,    // bigrams
-      0.9,  // very high threshold
+      2, // bigrams
+      0.9, // very high threshold
     );
     expect(result.ok).toBe(true);
   });

@@ -35,7 +35,9 @@ export function renderReportDocument(report: TransparencyReport): string {
   lines.push('');
 
   // Integrity status
-  const integrityStatus = report.integrity.intact ? 'Intact ✓' : `Broken at event ${report.integrity.brokenAt ?? 'unknown'}`;
+  const integrityStatus = report.integrity.intact
+    ? 'Intact ✓'
+    : `Broken at event ${report.integrity.brokenAt ?? 'unknown'}`;
   lines.push('## Ledger Integrity');
   lines.push('');
   lines.push(`- **Status:** ${integrityStatus}`);

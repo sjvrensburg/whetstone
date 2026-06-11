@@ -35,10 +35,7 @@ describe('Grammar engine (integration)', function () {
   // -------------------------------------------------------------------------
 
   it('produces diagnostics for a Markdown file with errors', async () => {
-    const result = await engine.lintDocument(
-      'This is a testt of the grammar engine.',
-      'markdown',
-    );
+    const result = await engine.lintDocument('This is a testt of the grammar engine.', 'markdown');
     // "testt" should be flagged as a spelling error.
     assert.ok(
       result.diagnostics.length > 0,
@@ -51,10 +48,7 @@ describe('Grammar engine (integration)', function () {
   });
 
   it('marks Markdown diagnostics at hint or info severity, never error', async () => {
-    const result = await engine.lintDocument(
-      'She have went to the store yesterda.',
-      'markdown',
-    );
+    const result = await engine.lintDocument('She have went to the store yesterda.', 'markdown');
     for (const diag of result.diagnostics) {
       assert.ok(
         diag.severity >= 2,
@@ -110,10 +104,7 @@ describe('Grammar engine (integration)', function () {
       // Check that diagnostic ranges don't overlap with the math region.
       const diagStart = diag.range.start.character;
       // Just verify the diagnostics are at valid positions.
-      assert.ok(
-        diagStart < latex.length,
-        `diagnostic start ${diagStart} should be within source`,
-      );
+      assert.ok(diagStart < latex.length, `diagnostic start ${diagStart} should be within source`);
     }
   });
 

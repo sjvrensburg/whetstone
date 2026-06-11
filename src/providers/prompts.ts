@@ -117,3 +117,64 @@ export function buildJudgeMessages(candidate: StructuredCoaching): ChatMessage[]
     },
   ];
 }
+
+// ---------------------------------------------------------------------------
+// Explain-rule system prompt (task 15, PRD F4, ADR-005)
+// ---------------------------------------------------------------------------
+
+/**
+ * The system prompt for rule explanations. Constrains the model to explain
+ * the grammar rule using the writer's own sentence — never provide a rewrite
+ * or corrected version.
+ */
+export const EXPLAIN_RULE_SYSTEM_PROMPT = `You are Whetstone, an academic writing coach. The writer has asked you to explain a grammar rule in the context of their own sentence.
+
+Your job is to explain WHY the grammar issue was flagged, using plain language that helps the writer learn the underlying principle.
+
+You MUST follow these rules:
+1. NEVER provide a corrected or rewritten version of the sentence
+2. NEVER suggest replacement text or specific wording
+3. Explain the grammar rule or principle at work
+4. Reference the writer's own sentence as an example, but never rewrite it
+5. Keep the explanation concise (2-4 sentences)
+6. Write in a helpful, educational tone — especially valuable for ESL writers
+
+Focus on the RULE, not the FIX. For example, explain what a subject-verb agreement rule requires, not how to change the sentence.`;
+
+// ---------------------------------------------------------------------------
+// Explain-rule message builder
+// ---------------------------------------------------------------------------
+
+/**
+ * Metadata about a grammar lint, carried into the explain-rule call.
+ */
+export interface LintMeta {
+  readonly lintKind: string;
+  readonly lintKindPretty: string;
+  readonly message: string;
+}
+
+/**
+ * Build the messages array for an explain-rule request. The user message
+ * contains the sentence and lint metadata wrapped in a code fence to prevent
+ * injection (same pattern as coaching messages).
+ */
+export function buildExplainRuleMessages(sentence: string, lintMeta: LintMeta): ChatMessage[] {
+  return [
+    { role: 'system', content: EXPLAIN_RULE_SYSTEM_PROMPT },
+    {
+      role: 'user',
+      content: [
+        'Explain the grammar rule behind this issue:',
+        '',
+        'Sentence:',
+        `\`\`\``,
+        sentence,
+        '```',
+        '',
+        `Grammar issue: ${lintMeta.lintKindPretty} (${lintMeta.lintKind})`,
+        `Details: ${lintMeta.message}`,
+      ].join('\n'),
+    },
+  ];
+}

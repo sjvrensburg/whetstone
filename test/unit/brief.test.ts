@@ -10,11 +10,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import {
-  BriefCapture,
-  BriefFileStore,
-  createBriefCapture,
-} from '../../src/brief/index';
+import { BriefCapture, BriefFileStore, createBriefCapture } from '../../src/brief/index';
 import type { BriefPrompter, BriefStore } from '../../src/brief/index';
 import type { Brief } from '../../src/shared/types';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -356,7 +352,11 @@ describe('BriefFileStore', () => {
   it('returns undefined for valid JSON missing updatedAt', async () => {
     const store = new BriefFileStore(dir);
     const { writeFileSync } = await import('node:fs');
-    writeFileSync(join(dir, 'brief.json'), JSON.stringify({ purposeClaim: 'no timestamp' }), 'utf8');
+    writeFileSync(
+      join(dir, 'brief.json'),
+      JSON.stringify({ purposeClaim: 'no timestamp' }),
+      'utf8',
+    );
 
     const loaded = await store.load();
     expect(loaded).toBeUndefined();
@@ -432,11 +432,7 @@ describe('capture + BriefFileStore round-trip', () => {
   it('captures and persists a brief through the file store', async () => {
     const store = new BriefFileStore(dir);
     const capture = new BriefCapture(store);
-    const prompter = stubPrompter([
-      'My purpose',
-      'My audience',
-      'My criterion',
-    ]);
+    const prompter = stubPrompter(['My purpose', 'My audience', 'My criterion']);
 
     const result = await capture.capture(prompter);
 

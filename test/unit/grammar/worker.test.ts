@@ -45,7 +45,9 @@ describe('DirectLinterBackend', () => {
   it('calls setup on the underlying linter', async () => {
     let setupCalled = false;
     const mockLinter = {
-      setup: async () => { setupCalled = true; },
+      setup: async () => {
+        setupCalled = true;
+      },
       lint: async () => [],
       dispose: async () => {},
     };
@@ -84,7 +86,9 @@ describe('DirectLinterBackend', () => {
   it('auto-setup on first lint if setup not called', async () => {
     let setupCalled = false;
     const mockLinter = {
-      setup: async () => { setupCalled = true; },
+      setup: async () => {
+        setupCalled = true;
+      },
       lint: async () => [],
       dispose: async () => {},
     };
@@ -116,7 +120,9 @@ describe('DirectLinterBackend', () => {
     const mockLinter = {
       setup: async () => {},
       lint: async () => [],
-      dispose: async () => { disposeCalled = true; },
+      dispose: async () => {
+        disposeCalled = true;
+      },
     };
     const backend = new DirectLinterBackend(mockLinter as any);
     await backend.setup();
@@ -134,7 +140,9 @@ describe('DirectLinterBackend', () => {
       message: () => 'Error',
       suggestion_count: () => 0,
       suggestions: () => [],
-      free: () => { freed++; },
+      free: () => {
+        freed++;
+      },
     };
     const mockLinter = {
       setup: async () => {},

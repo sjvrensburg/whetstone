@@ -3,9 +3,10 @@
  *
  * Verifies:
  * - `createDismissAction` creates a quick-fix with the dismiss command.
+ * - `createExplainRuleAction` creates a quick-fix with the explain-rule command.
  * - `handleDismissCommand` adds the identity to the store.
- * - `GrammarCodeActionProvider` provides dismiss actions for grammar diagnostics.
- * - No code path creates a prose rewrite action.
+ * - `GrammarCodeActionProvider` provides dismiss + explain-rule actions for grammar diagnostics.
+ * - No code path creates a prose rewrite action (no edit property).
  * - Only grammar-sourced diagnostics produce actions.
  */
 
@@ -14,9 +15,12 @@ import * as vscode from 'vscode';
 import {
   GrammarCodeActionProvider,
   createDismissAction,
+  createExplainRuleAction,
   handleDismissCommand,
   DISMISS_COMMAND_ID,
+  EXPLAIN_RULE_COMMAND_ID,
   type DismissCommandArgs,
+  type ExplainRuleCommandArgs,
 } from '../../../src/grammar/codeActions';
 import {
   DismissalStore,
@@ -155,6 +159,98 @@ describe('createDismissAction', () => {
 });
 
 // ---------------------------------------------------------------------------
+// createExplainRuleAction
+// ---------------------------------------------------------------------------
+
+describe('createExplainRuleAction', () => {
+  it('creates an action with the explain-rule title', () => {
+    const d = diag(range(0, 0, 0, 6), 'Did you mean "color"?');
+    const action = createExplainRuleAction(
+      d,
+      'colour is nice',
+      'Spelling',
+      'Spelling',
+      'Did you mean "color"?',
+      uri('/test/doc.md'),
+    );
+    expect(action.title).toBe('Explain this rule in my own words');
+  });
+
+  it('sets the QuickFix kind', () => {
+    const d = diag(range(0, 0, 0, 6), 'Test');
+    const action = createExplainRuleAction(
+      d,
+      'test sentence',
+      'Spelling',
+      'Spelling',
+      'Test',
+      uri('/test/doc.md'),
+    );
+    expect(action.kind).toBe(vscode.CodeActionKind.QuickFix);
+  });
+
+  it('includes the explain-rule command', () => {
+    const d = diag(range(0, 0, 0, 6), 'Test');
+    const action = createExplainRuleAction(
+      d,
+      'test',
+      'Spelling',
+      'Spelling',
+      'Test',
+      uri('/test/doc.md'),
+    );
+    expect(action.command).toBeDefined();
+    expect(action.command!.command).toBe(EXPLAIN_RULE_COMMAND_ID);
+  });
+
+  it('passes lint metadata and URI in command arguments', () => {
+    const d = diag(range(0, 0, 0, 6), 'Did you mean "color"?');
+    const u = uri('/test/doc.md');
+    const action = createExplainRuleAction(
+      d,
+      'colour is nice',
+      'Spelling',
+      'Spelling',
+      'Did you mean "color"?',
+      u,
+    );
+    const args = action.command!.arguments![0] as ExplainRuleCommandArgs;
+    expect(args.sentence).toBe('colour is nice');
+    expect(args.lintKind).toBe('Spelling');
+    expect(args.lintKindPretty).toBe('Spelling');
+    expect(args.message).toBe('Did you mean "color"?');
+    expect(args.documentUri).toBe(u);
+  });
+
+  it('attaches the diagnostic to the action', () => {
+    const d = diag(range(0, 0, 0, 6), 'Test');
+    const action = createExplainRuleAction(
+      d,
+      'test',
+      'Spelling',
+      'Spelling',
+      'Test',
+      uri('/test/doc.md'),
+    );
+    expect(action.diagnostics).toEqual([d]);
+  });
+
+  it('NEVER sets an edit (explanation is read-only)', () => {
+    const d = diag(range(0, 0, 0, 6), 'Test');
+    const action = createExplainRuleAction(
+      d,
+      'test',
+      'Spelling',
+      'Spelling',
+      'Test',
+      uri('/test/doc.md'),
+    );
+    // The action must never carry a WorkspaceEdit — explanation is read-only.
+    expect(action.edit).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // handleDismissCommand
 // ---------------------------------------------------------------------------
 
@@ -198,7 +294,7 @@ describe('handleDismissCommand', () => {
 // ---------------------------------------------------------------------------
 
 describe('GrammarCodeActionProvider', () => {
-  it('provides dismiss actions for grammar diagnostics', () => {
+  it('provides dismiss + explain-rule actions for grammar diagnostics', () => {
     const storage = new InMemoryStorage();
     const store = new DismissalStore(storage);
     const provider = new GrammarCodeActionProvider(store);
@@ -210,8 +306,11 @@ describe('GrammarCodeActionProvider', () => {
     const token = { isCancellationRequested: false } as CancellationToken;
 
     const actions = provider.provideCodeActions(doc, r, context, token);
-    expect(actions).toHaveLength(1);
-    expect(actions[0].title).toBe('Dismiss as false positive');
+    // One grammar diagnostic → 2 actions: dismiss + explain-rule.
+    expect(actions).toHaveLength(2);
+    const titles = actions.map((a) => a.title);
+    expect(titles).toContain('Dismiss as false positive');
+    expect(titles).toContain('Explain this rule in my own words');
   });
 
   it('does not provide actions for non-grammar diagnostics', () => {
@@ -246,7 +345,7 @@ describe('GrammarCodeActionProvider', () => {
     expect(actions).toHaveLength(0);
   });
 
-  it('provides actions for multiple grammar diagnostics', () => {
+  it('provides actions for multiple grammar diagnostics (2 diags → 4 actions)', () => {
     const storage = new InMemoryStorage();
     const store = new DismissalStore(storage);
     const provider = new GrammarCodeActionProvider(store);
@@ -261,11 +360,11 @@ describe('GrammarCodeActionProvider', () => {
     const token = { isCancellationRequested: false } as CancellationToken;
 
     const actions = provider.provideCodeActions(doc, r, context, token);
-    expect(actions).toHaveLength(2);
-    // All actions should be dismiss-only (no edits).
+    // 2 diagnostics × 2 actions each = 4 total.
+    expect(actions).toHaveLength(4);
+    // All actions should have no edits.
     for (const action of actions) {
       expect(action.edit).toBeUndefined();
-      expect(action.title).toBe('Dismiss as false positive');
     }
   });
 
@@ -282,11 +381,36 @@ describe('GrammarCodeActionProvider', () => {
     const token = { isCancellationRequested: false } as CancellationToken;
 
     const actions = provider.provideCodeActions(doc, r, context, token);
-    expect(actions).toHaveLength(1);
+    // Find the dismiss action and check its problemText.
+    const dismissAction = actions.find((a) => a.command?.command === DISMISS_COMMAND_ID);
+    expect(dismissAction).toBeDefined();
 
-    const args = actions[0].command!.arguments![0] as DismissCommandArgs;
+    const args = dismissAction!.command!.arguments![0] as DismissCommandArgs;
     expect(args.identity.problemText).toBe('colour');
     expect(args.identity.lintKind).toBe('Spelling');
+  });
+
+  it('extracts sentence context for the explain-rule action', () => {
+    const storage = new InMemoryStorage();
+    const store = new DismissalStore(storage);
+    const provider = new GrammarCodeActionProvider(store);
+
+    const doc = testDoc('colour is nice') as unknown as vscode.TextDocument;
+    const r = range(0, 0, 0, 6);
+
+    const d = diag(r, 'Did you mean "color"?', 'Harper', 'Spelling');
+    const context = makeContext([d]);
+    const token = { isCancellationRequested: false } as CancellationToken;
+
+    const actions = provider.provideCodeActions(doc, r, context, token);
+    const explainAction = actions.find((a) => a.command?.command === EXPLAIN_RULE_COMMAND_ID);
+    expect(explainAction).toBeDefined();
+
+    const args = explainAction!.command!.arguments![0] as ExplainRuleCommandArgs;
+    // The sentence extraction should capture the full text (no sentence boundary).
+    expect(args.sentence).toContain('colour');
+    expect(args.lintKind).toBe('Spelling');
+    expect(args.message).toBe('Did you mean "color"?');
   });
 
   it('never produces any action with an edit property', () => {
@@ -303,11 +427,11 @@ describe('GrammarCodeActionProvider', () => {
 
     const actions = provider.provideCodeActions(doc, r, context, token);
     for (const action of actions) {
-      // Critical: the quick-fix must NEVER carry a prose rewrite.
+      // Critical: every action must NEVER carry a prose rewrite.
       expect(action.edit).toBeUndefined();
-      // Only a command (dismiss) is provided.
+      // Every action must have a command (dismiss or explain-rule).
       expect(action.command).toBeDefined();
-      expect(action.command!.command).toBe(DISMISS_COMMAND_ID);
+      expect([DISMISS_COMMAND_ID, EXPLAIN_RULE_COMMAND_ID]).toContain(action.command!.command);
     }
   });
 

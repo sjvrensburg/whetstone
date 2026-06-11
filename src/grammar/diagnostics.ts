@@ -144,9 +144,7 @@ function mapSpan(
  * Enforces the quietness invariant: only `hint` and `info` are produced,
  * never `error` or `warning`.
  */
-export function resolveSeverity(
-  setting: 'hint' | 'info' | 'warning',
-): GrammarDiagnosticSeverity {
+export function resolveSeverity(setting: 'hint' | 'info' | 'warning'): GrammarDiagnosticSeverity {
   // The setting can be 'warning' but we clamp to 'info' — the F4 quietness
   // guarantee means grammar diagnostics never reach warning/error severity.
   if (setting === 'hint') {
@@ -180,9 +178,7 @@ export function lintsToDiagnostics(
   return lints.map((lint): GrammarDiagnostic => {
     // If we have a source map (LaTeX), translate the span back to source coords.
     // If not (Markdown), the lint span is already in source coordinates.
-    const span = sourceMap
-      ? mapSpan(lint.span, sourceMap, sourceLength)
-      : lint.span;
+    const span = sourceMap ? mapSpan(lint.span, sourceMap, sourceLength) : lint.span;
 
     // Clamp to source bounds.
     const clampedStart = Math.max(0, Math.min(span.start, sourceLength));

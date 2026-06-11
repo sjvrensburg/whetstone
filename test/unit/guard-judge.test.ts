@@ -54,6 +54,7 @@ function stubJudgeProvider(judgeResult: ProviderResult<GuardVerdict>): CoachingP
     id: 'test',
     coach: vi.fn(async () => ({ ok: true as const, value: cleanCoaching })),
     judge: vi.fn(async () => judgeResult),
+    explainRule: vi.fn(),
   };
 }
 
@@ -62,7 +63,10 @@ function throwingJudgeProvider(error: Error): CoachingProvider {
   return {
     id: 'test',
     coach: vi.fn(),
-    judge: vi.fn(async () => { throw error; }),
+    judge: vi.fn(async () => {
+      throw error;
+    }),
+    explainRule: vi.fn(),
   };
 }
 
@@ -71,8 +75,13 @@ function hangingJudgeProvider(): CoachingProvider {
   return {
     id: 'test',
     coach: vi.fn(),
-    judge: vi.fn(async (): Promise<ProviderResult<GuardVerdict>> =>
-      new Promise((_resolve, _reject) => { /* never resolves */ })),
+    judge: vi.fn(
+      async (): Promise<ProviderResult<GuardVerdict>> =>
+        new Promise((_resolve, _reject) => {
+          /* never resolves */
+        }),
+    ),
+    explainRule: vi.fn(),
   };
 }
 
@@ -217,8 +226,12 @@ describe('majorityJudge', () => {
         if (callIndex === 2) {
           return { ok: true as const, value: { refused: false, reason: '' } };
         }
-        return { ok: true as const, value: { refused: true, reason: 'paste-ready prose detected' } };
+        return {
+          ok: true as const,
+          value: { refused: true, reason: 'paste-ready prose detected' },
+        };
       }),
+      explainRule: vi.fn(),
     };
 
     const result = await majorityJudge(provider, cleanCoaching, 3);
@@ -240,6 +253,7 @@ describe('majorityJudge', () => {
         }
         return { ok: true as const, value: { refused: false, reason: '' } };
       }),
+      explainRule: vi.fn(),
     };
 
     const result = await majorityJudge(provider, cleanCoaching, 3);
@@ -261,6 +275,7 @@ describe('majorityJudge', () => {
         }
         return { ok: true as const, value: { refused: true, reason: 'suspicious' } };
       }),
+      explainRule: vi.fn(),
     };
 
     const result = await majorityJudge(provider, cleanCoaching, 2);
@@ -303,8 +318,12 @@ describe('majorityJudge', () => {
         if (callIndex === 1) {
           return { ok: true as const, value: { refused: false, reason: '' } };
         }
-        return { ok: false as const, error: { kind: 'network' as const, message: 'connection lost' } };
+        return {
+          ok: false as const,
+          error: { kind: 'network' as const, message: 'connection lost' },
+        };
       }),
+      explainRule: vi.fn(),
     };
 
     const result = await majorityJudge(provider, cleanCoaching, 3);
@@ -437,6 +456,7 @@ describe('RefusalGuard.screen() with judge', () => {
         }
         return { ok: true as const, value: { refused: false, reason: '' } };
       }),
+      explainRule: vi.fn(),
     };
 
     const guard = new RefusalGuard({

@@ -1,9 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  computeReport,
-  SCOPING_NOTE,
-  DECLARABLE_TYPES,
-} from '../../../src/ledger/report';
+import { computeReport, SCOPING_NOTE, DECLARABLE_TYPES } from '../../../src/ledger/report';
 import type { LedgerEvent, LedgerEventType, TransparencyReport } from '../../../src/shared/types';
 import { chainHash } from '../../../src/shared/crypto';
 
@@ -24,9 +20,7 @@ function makeEvent(
 }
 
 /** Build a chain of events where each links to the previous. */
-function makeEventChain(
-  specs: Array<{ type: LedgerEventType; payload?: unknown }>,
-): LedgerEvent[] {
+function makeEventChain(specs: Array<{ type: LedgerEventType; payload?: unknown }>): LedgerEvent[] {
   const events: LedgerEvent[] = [];
   let prevHash = '';
   for (let i = 0; i < specs.length; i++) {
@@ -106,11 +100,32 @@ describe('computeReport — counts by type', () => {
   it('counts match a fixture ledger with mixed events', () => {
     const events = makeEventChain([
       { type: 'ai_consult', payload: { observationCount: 3 } },
-      { type: 'cloud_send', payload: { provider: 'zai', model: 'glm-5.1', purpose: 'coaching', retention: '30 days', ts: '2026-06-11T10:00:00Z' } },
+      {
+        type: 'cloud_send',
+        payload: {
+          provider: 'zai',
+          model: 'glm-5.1',
+          purpose: 'coaching',
+          retention: '30 days',
+          ts: '2026-06-11T10:00:00Z',
+        },
+      },
       { type: 'ai_consult', payload: { observationCount: 2 } },
-      { type: 'cloud_send', payload: { provider: 'zai', model: 'glm-5.1', purpose: 'coaching', retention: '30 days', ts: '2026-06-11T11:00:00Z' } },
+      {
+        type: 'cloud_send',
+        payload: {
+          provider: 'zai',
+          model: 'glm-5.1',
+          purpose: 'coaching',
+          retention: '30 days',
+          ts: '2026-06-11T11:00:00Z',
+        },
+      },
       { type: 'suggestion_acted', payload: { observationIndex: 0 } },
-      { type: 'external_insert', payload: { size: 500, location: 'paragraph 3', ts: '2026-06-11T12:00:00Z' } },
+      {
+        type: 'external_insert',
+        payload: { size: 500, location: 'paragraph 3', ts: '2026-06-11T12:00:00Z' },
+      },
       { type: 'ledger_paused', payload: {} },
       { type: 'ledger_resumed', payload: {} },
     ]);
@@ -142,7 +157,10 @@ describe('computeReport — declarable vs non-declarable split', () => {
     const events = makeEventChain([
       { type: 'suggestion_acted', payload: { observationIndex: 0 } },
       { type: 'suggestion_acted', payload: { observationIndex: 1 } },
-      { type: 'external_insert', payload: { size: 200, location: 'intro', ts: '2026-06-11T10:00:00Z' } },
+      {
+        type: 'external_insert',
+        payload: { size: 200, location: 'intro', ts: '2026-06-11T10:00:00Z' },
+      },
       { type: 'ledger_paused', payload: {} },
     ]);
 
@@ -154,12 +172,12 @@ describe('computeReport — declarable vs non-declarable split', () => {
 
   it('ai_consult and cloud_send are declarable; everything else is not', () => {
     const events = makeEventChain([
-      { type: 'ai_consult' },          // declarable
-      { type: 'cloud_send' },          // declarable
-      { type: 'suggestion_acted' },    // non-declarable
-      { type: 'external_insert' },     // non-declarable
-      { type: 'ledger_paused' },       // non-declarable
-      { type: 'ledger_resumed' },      // non-declarable
+      { type: 'ai_consult' }, // declarable
+      { type: 'cloud_send' }, // declarable
+      { type: 'suggestion_acted' }, // non-declarable
+      { type: 'external_insert' }, // non-declarable
+      { type: 'ledger_paused' }, // non-declarable
+      { type: 'ledger_resumed' }, // non-declarable
     ]);
 
     const report = computeReport(events, INTACT);
@@ -295,7 +313,16 @@ describe('computeReport — no overclaim language', () => {
   it('no field in the report contains overclaim language', () => {
     const events = makeEventChain([
       { type: 'ai_consult', payload: { observationCount: 3 } },
-      { type: 'cloud_send', payload: { ts: '2026-06-11T10:00:00Z', provider: 'zai', model: 'glm-5.1', purpose: 'coaching', retention: '30 days' } },
+      {
+        type: 'cloud_send',
+        payload: {
+          ts: '2026-06-11T10:00:00Z',
+          provider: 'zai',
+          model: 'glm-5.1',
+          purpose: 'coaching',
+          retention: '30 days',
+        },
+      },
     ]);
     const report = computeReport(events, INTACT);
 

@@ -97,4 +97,15 @@ export interface CoachingProvider {
    * Returns a verdict on whether the response contains paste-ready prose.
    */
   judge(candidate: StructuredCoaching): Promise<ProviderResult<GuardVerdict>>;
+
+  /**
+   * Produce a plain-language explanation of a grammar rule in the context of
+   * the writer's own sentence. Returns explanation text — never a rewrite or
+   * corrected version (ADR-005, PRD F4). Used by the "explain this rule"
+   * action (task 15), which routes through the consent gate before calling.
+   */
+  explainRule(
+    sentence: string,
+    lintMeta: { lintKind: string; lintKindPretty: string; message: string },
+  ): Promise<ProviderResult<string>>;
 }

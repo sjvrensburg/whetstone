@@ -241,10 +241,10 @@ describe('ExternalInsertDetector', () => {
 
   it('flags only the paste-shaped changes in a batch', async () => {
     const changes = [
-      insertChange(0, 'a'),                // typing — not flagged
-      insertChange(1, 'b'.repeat(60)),     // paste — flagged
-      deleteChange(61, 5),                  // deletion — not flagged
-      insertChange(56, 'c'.repeat(80)),     // paste — flagged
+      insertChange(0, 'a'), // typing — not flagged
+      insertChange(1, 'b'.repeat(60)), // paste — flagged
+      deleteChange(61, 5), // deletion — not flagged
+      insertChange(56, 'c'.repeat(80)), // paste — flagged
     ];
 
     await detector.onDocumentChange(changes, 'file:///doc.md');
@@ -265,17 +265,11 @@ describe('ExternalInsertDetector', () => {
     });
 
     // 80 chars — below custom threshold.
-    await customDetector.onDocumentChange(
-      [insertChange(0, 'a'.repeat(80))],
-      'file:///doc.md',
-    );
+    await customDetector.onDocumentChange([insertChange(0, 'a'.repeat(80))], 'file:///doc.md');
     expect(appendedEvents.length).toBe(0);
 
     // 120 chars — above custom threshold.
-    await customDetector.onDocumentChange(
-      [insertChange(0, 'a'.repeat(120))],
-      'file:///doc.md',
-    );
+    await customDetector.onDocumentChange([insertChange(0, 'a'.repeat(120))], 'file:///doc.md');
     expect(appendedEvents.length).toBe(1);
     expect((appendedEvents[0].payload as { size: number }).size).toBe(120);
   });
@@ -377,19 +371,13 @@ describe('ExternalInsertDetector — integration with LedgerImpl', () => {
     await detector.onDocumentChange([insertChange(2, 'l')], 'file:///doc.md');
 
     // A paste (event seq 0).
-    await detector.onDocumentChange(
-      [insertChange(3, 'a'.repeat(200))],
-      'file:///doc.md',
-    );
+    await detector.onDocumentChange([insertChange(3, 'a'.repeat(200))], 'file:///doc.md');
 
     // More typing (no events).
     await detector.onDocumentChange([insertChange(203, ' ')], 'file:///doc.md');
 
     // Another paste (event seq 1).
-    await detector.onDocumentChange(
-      [insertChange(204, 'b'.repeat(150))],
-      'file:///doc.md',
-    );
+    await detector.onDocumentChange([insertChange(204, 'b'.repeat(150))], 'file:///doc.md');
 
     const events = readLedgerEvents();
     expect(events.length).toBe(2);

@@ -34,10 +34,7 @@ export const SCOPING_NOTE =
  * they involve external AI services (ADR-002: paste-ready disclosure with
  * declarable-vs-non-declarable split).
  */
-export const DECLARABLE_TYPES: ReadonlySet<LedgerEventType> = new Set([
-  'ai_consult',
-  'cloud_send',
-]);
+export const DECLARABLE_TYPES: ReadonlySet<LedgerEventType> = new Set(['ai_consult', 'cloud_send']);
 
 // ---------------------------------------------------------------------------
 // Helpers

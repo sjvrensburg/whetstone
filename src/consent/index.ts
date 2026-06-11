@@ -107,10 +107,7 @@ export function retentionFor(provider: string): string {
  * model); the guard judge is an internal call that doesn't need its own
  * consent disclosure.
  */
-export function modelForPurpose(
-  provider: string,
-  _purpose: ConsentPurpose,
-): string {
+export function modelForPurpose(provider: string, _purpose: ConsentPurpose): string {
   const defaults = PROVIDER_DEFAULTS[provider];
   if (!defaults) {
     throw new Error(`Unknown provider: "${provider}".`);

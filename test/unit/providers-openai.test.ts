@@ -13,8 +13,10 @@ import { COACHING_JSON_SCHEMA, isStructuredCoaching } from '../../src/coaching/s
 import type { CoachingRequest, GuardVerdict, StructuredCoaching } from '../../src/shared/types';
 import {
   buildCoachMessages,
+  buildExplainRuleMessages,
   buildJudgeMessages,
   COACHING_SYSTEM_PROMPT,
+  EXPLAIN_RULE_SYSTEM_PROMPT,
   JUDGE_SYSTEM_PROMPT,
 } from '../../src/providers/prompts';
 import { OpenAICompatibleProvider } from '../../src/providers/openaiCompatible';
@@ -313,7 +315,9 @@ describe('OpenAICompatibleProvider', () => {
 
     it('rejects a response with empty/null content', async () => {
       mockCreate.mockResolvedValue({
-        choices: [{ index: 0, message: { role: 'assistant', content: null }, finish_reason: 'stop' }],
+        choices: [
+          { index: 0, message: { role: 'assistant', content: null }, finish_reason: 'stop' },
+        ],
       });
 
       const provider = makeProvider(mockCreate);
@@ -327,7 +331,11 @@ describe('OpenAICompatibleProvider', () => {
     it('rejects a response with non-JSON content', async () => {
       mockCreate.mockResolvedValue({
         choices: [
-          { index: 0, message: { role: 'assistant', content: 'This is plain text, not JSON.' }, finish_reason: 'stop' },
+          {
+            index: 0,
+            message: { role: 'assistant', content: 'This is plain text, not JSON.' },
+            finish_reason: 'stop',
+          },
         ],
       });
 
@@ -556,9 +564,7 @@ describe('OpenAICompatibleProvider', () => {
     ])('falls back on keyword "%s"', async (_keyword, msg) => {
       const err = new Error(msg) as Error & { status: number };
       err.status = 400;
-      mockCreate
-        .mockRejectedValueOnce(err)
-        .mockResolvedValueOnce(toolCallCoachingResponse());
+      mockCreate.mockRejectedValueOnce(err).mockResolvedValueOnce(toolCallCoachingResponse());
 
       const provider = makeProvider(mockCreate);
       const result = await provider.coach(COACHING_REQUEST);
@@ -603,17 +609,15 @@ describe('OpenAICompatibleProvider', () => {
       const err = new Error('json_schema not supported') as Error & { status: number };
       err.status = 400;
       // Fallback response has no tool_calls
-      mockCreate
-        .mockRejectedValueOnce(err)
-        .mockResolvedValueOnce({
-          choices: [
-            {
-              index: 0,
-              message: { role: 'assistant', content: null, tool_calls: [] },
-              finish_reason: 'stop',
-            },
-          ],
-        });
+      mockCreate.mockRejectedValueOnce(err).mockResolvedValueOnce({
+        choices: [
+          {
+            index: 0,
+            message: { role: 'assistant', content: null, tool_calls: [] },
+            finish_reason: 'stop',
+          },
+        ],
+      });
 
       const provider = makeProvider(mockCreate);
       const result = await provider.coach(COACHING_REQUEST);
@@ -627,27 +631,25 @@ describe('OpenAICompatibleProvider', () => {
     it('rejects a tool_call response with invalid JSON arguments', async () => {
       const err = new Error('json_schema not supported') as Error & { status: number };
       err.status = 400;
-      mockCreate
-        .mockRejectedValueOnce(err)
-        .mockResolvedValueOnce({
-          choices: [
-            {
-              index: 0,
-              message: {
-                role: 'assistant',
-                content: null,
-                tool_calls: [
-                  {
-                    id: 'call_bad',
-                    type: 'function' as const,
-                    function: { name: 'produce_coaching', arguments: 'not-json' },
-                  },
-                ],
-              },
-              finish_reason: 'tool_calls',
+      mockCreate.mockRejectedValueOnce(err).mockResolvedValueOnce({
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: 'assistant',
+              content: null,
+              tool_calls: [
+                {
+                  id: 'call_bad',
+                  type: 'function' as const,
+                  function: { name: 'produce_coaching', arguments: 'not-json' },
+                },
+              ],
             },
-          ],
-        });
+            finish_reason: 'tool_calls',
+          },
+        ],
+      });
 
       const provider = makeProvider(mockCreate);
       const result = await provider.coach(COACHING_REQUEST);
@@ -661,27 +663,25 @@ describe('OpenAICompatibleProvider', () => {
     it('judge falls back to tool_call and rejects invalid JSON arguments', async () => {
       const err = new Error('json_schema unsupported') as Error & { status: number };
       err.status = 400;
-      mockCreate
-        .mockRejectedValueOnce(err)
-        .mockResolvedValueOnce({
-          choices: [
-            {
-              index: 0,
-              message: {
-                role: 'assistant',
-                content: null,
-                tool_calls: [
-                  {
-                    id: 'call_bad_judge',
-                    type: 'function' as const,
-                    function: { name: 'produce_verdict', arguments: '{bad json' },
-                  },
-                ],
-              },
-              finish_reason: 'tool_calls',
+      mockCreate.mockRejectedValueOnce(err).mockResolvedValueOnce({
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: 'assistant',
+              content: null,
+              tool_calls: [
+                {
+                  id: 'call_bad_judge',
+                  type: 'function' as const,
+                  function: { name: 'produce_verdict', arguments: '{bad json' },
+                },
+              ],
             },
-          ],
-        });
+            finish_reason: 'tool_calls',
+          },
+        ],
+      });
 
       const provider = makeProvider(mockCreate);
       const result = await provider.judge(VALID_COACHING);
@@ -857,6 +857,43 @@ describe('Provider prompts', () => {
     it('judge prompt defaults to refused when unsure', () => {
       expect(JUDGE_SYSTEM_PROMPT).toContain('Default to refused');
       expect(JUDGE_SYSTEM_PROMPT).toContain('unsure');
+    });
+
+    it('explain-rule prompt emphasises never providing a rewrite', () => {
+      expect(EXPLAIN_RULE_SYSTEM_PROMPT).toContain(
+        'NEVER provide a corrected or rewritten version',
+      );
+      expect(EXPLAIN_RULE_SYSTEM_PROMPT).toContain('NEVER suggest replacement text');
+      expect(EXPLAIN_RULE_SYSTEM_PROMPT).toContain('Focus on the RULE, not the FIX');
+    });
+  });
+
+  describe('buildExplainRuleMessages', () => {
+    it('builds system + user messages with sentence and lint metadata', () => {
+      const messages = buildExplainRuleMessages('The researcher have submitted the paper.', {
+        lintKind: 'SubjectVerbAgreement',
+        lintKindPretty: 'Subject-Verb Agreement',
+        message: 'Singular subject requires singular verb.',
+      });
+
+      expect(messages).toHaveLength(2);
+      expect(messages[0].role).toBe('system');
+      expect(messages[0].content).toBe(EXPLAIN_RULE_SYSTEM_PROMPT);
+      expect(messages[1].role).toBe('user');
+      expect(messages[1].content).toContain('The researcher have submitted');
+      expect(messages[1].content).toContain('Subject-Verb Agreement');
+      expect(messages[1].content).toContain('Singular subject requires singular verb');
+    });
+
+    it('wraps the sentence in a code fence for injection resistance', () => {
+      const messages = buildExplainRuleMessages('She dont know the answer.', {
+        lintKind: 'Spelling',
+        lintKindPretty: 'Spelling',
+        message: 'Did you mean "don\'t"?',
+      });
+
+      expect(messages[1].content).toContain('```');
+      expect(messages[1].content).toContain('She dont know');
     });
   });
 });

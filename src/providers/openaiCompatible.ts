@@ -18,7 +18,12 @@
 import OpenAI from 'openai';
 import { COACHING_JSON_SCHEMA, isStructuredCoaching } from '../coaching/schema';
 import type { CoachingRequest, GuardVerdict, StructuredCoaching } from '../shared/types';
-import { buildCoachMessages, buildJudgeMessages, type ChatMessage } from './prompts';
+import {
+  buildCoachMessages,
+  buildExplainRuleMessages,
+  buildJudgeMessages,
+  type ChatMessage,
+} from './prompts';
 import type { CoachingProvider, ProviderConfig, ProviderError, ProviderResult } from './types';
 
 // ---------------------------------------------------------------------------
@@ -77,10 +82,7 @@ function hasStatus(error: unknown): error is Error & { status: number } {
  */
 function mapError(error: unknown, apiKey: string): ProviderError {
   // SDK-specific connection errors (best-effort; tests may not have the exact class)
-  if (
-    typeof OpenAI !== 'undefined' &&
-    error instanceof OpenAI.APIConnectionTimeoutError
-  ) {
+  if (typeof OpenAI !== 'undefined' && error instanceof OpenAI.APIConnectionTimeoutError) {
     return { kind: 'timeout', message: 'Request timed out. Please try again.', cause: error };
   }
   if (typeof OpenAI !== 'undefined' && error instanceof OpenAI.APIConnectionError) {
@@ -369,9 +371,7 @@ export class OpenAICompatibleProvider implements CoachingProvider {
     }
   }
 
-  private async judgeWithToolCall(
-    messages: ChatMessage[],
-  ): Promise<ProviderResult<GuardVerdict>> {
+  private async judgeWithToolCall(messages: ChatMessage[]): Promise<ProviderResult<GuardVerdict>> {
     try {
       const response = (await this.client.chat.completions.create({
         model: this.config.judgeModel,
@@ -415,6 +415,37 @@ export class OpenAICompatibleProvider implements CoachingProvider {
     }
 
     return { ok: true, value: extracted.value };
+  }
+
+  // -----------------------------------------------------------------------
+  // explainRule()
+  // -----------------------------------------------------------------------
+
+  async explainRule(
+    sentence: string,
+    lintMeta: { lintKind: string; lintKindPretty: string; message: string },
+  ): Promise<ProviderResult<string>> {
+    const messages = buildExplainRuleMessages(sentence, lintMeta);
+
+    try {
+      const response = (await this.client.chat.completions.create({
+        model: this.config.coachModel,
+        messages,
+        // Plain text response — no structured output for explanations.
+      })) as { choices: Array<{ message: CompletionMessage }> };
+
+      const content = response.choices[0]?.message?.content;
+      if (!content || content.trim().length === 0) {
+        return fail<string>({
+          kind: 'validation',
+          message: 'Empty explanation returned by provider.',
+        });
+      }
+
+      return { ok: true, value: content.trim() };
+    } catch (error) {
+      return fail<string>(mapError(error, this.config.apiKey));
+    }
   }
 }
 

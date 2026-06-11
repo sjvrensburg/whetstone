@@ -64,9 +64,7 @@ export interface BriefStore {
 // ---------------------------------------------------------------------------
 
 /** The outcome of a brief capture or edit flow. */
-export type CaptureResult =
-  | { ok: true; brief: Brief }
-  | { ok: false; reason: string };
+export type CaptureResult = { ok: true; brief: Brief } | { ok: false; reason: string };
 
 // ---------------------------------------------------------------------------
 // Field definitions

@@ -64,10 +64,7 @@ export async function resolveApiKey(source: ApiKeySource): Promise<string | unde
  * Applies per-provider defaults for base URL and model names, then overlays
  * any user-specified model overrides from settings.
  */
-export function resolveProviderConfig(
-  settings: WhetstoneSettings,
-  apiKey: string,
-): ProviderConfig {
+export function resolveProviderConfig(settings: WhetstoneSettings, apiKey: string): ProviderConfig {
   const defaults = PROVIDER_DEFAULTS[settings.activeProvider];
   if (!defaults) {
     throw new Error(`Unknown provider: "${settings.activeProvider}"`);

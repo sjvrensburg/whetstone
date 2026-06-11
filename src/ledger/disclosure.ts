@@ -96,9 +96,7 @@ function formatProviders(usages: ProviderUsage[]): string {
     return 'no cloud AI';
   }
 
-  return usages
-    .map((u) => `${u.provider} (${u.model}) for ${u.purpose}`)
-    .join('; ');
+  return usages.map((u) => `${u.provider} (${u.model}) for ${u.purpose}`).join('; ');
 }
 
 // ---------------------------------------------------------------------------
@@ -134,8 +132,7 @@ export function computeDisclosureText(events: LedgerEvent[]): string {
     ].join(' ');
   }
 
-  const sessionPhrase =
-    sessions === 1 ? '1 coaching session' : `${sessions} coaching sessions`;
+  const sessionPhrase = sessions === 1 ? '1 coaching session' : `${sessions} coaching sessions`;
 
   return [
     `The author(s) used ${TOOL_NAME}, ${TOOL_DESCRIPTION}, for ${sessionPhrase} during the preparation of this manuscript.`,

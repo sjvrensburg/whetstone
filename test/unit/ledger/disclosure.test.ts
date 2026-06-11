@@ -24,9 +24,7 @@ function makeEvent(
   return { ...entry, hash };
 }
 
-function makeEventChain(
-  specs: Array<{ type: LedgerEventType; payload?: unknown }>,
-): LedgerEvent[] {
+function makeEventChain(specs: Array<{ type: LedgerEventType; payload?: unknown }>): LedgerEvent[] {
   const events: LedgerEvent[] = [];
   let prevHash = '';
   for (let i = 0; i < specs.length; i++) {

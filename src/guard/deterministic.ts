@@ -15,11 +15,7 @@
  * `screen()` boundary can short-circuit on first failure.
  */
 
-import {
-  MAX_OBSERVATIONS,
-  QUESTION_MAX_LENGTH,
-  REFLECTION_MAX_LENGTH,
-} from '../shared/constants';
+import { MAX_OBSERVATIONS, QUESTION_MAX_LENGTH, REFLECTION_MAX_LENGTH } from '../shared/constants';
 import type { DocumentContext, StructuredCoaching } from '../shared/types';
 
 // ---------------------------------------------------------------------------
@@ -151,10 +147,7 @@ export function extractNgrams(text: string, n: number): Map<string, number> {
  * Returns a value in [0, 1]: 0 means no overlap, 1 means every candidate
  * n-gram appears in the source.
  */
-export function ngramOverlap(
-  candidate: Map<string, number>,
-  source: Map<string, number>,
-): number {
+export function ngramOverlap(candidate: Map<string, number>, source: Map<string, number>): number {
   if (candidate.size === 0) return 0;
 
   let matching = 0;

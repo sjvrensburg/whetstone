@@ -116,9 +116,7 @@ describe('renderReportDocument', () => {
 
   it('renders external-insertion log when present', () => {
     const report = makeReport({
-      externalInserts: [
-        { ts: '2026-06-11T12:00:00Z', size: 500, location: 'paragraph 3' },
-      ],
+      externalInserts: [{ ts: '2026-06-11T12:00:00Z', size: 500, location: 'paragraph 3' }],
     });
     const doc = renderReportDocument(report);
 
@@ -154,9 +152,7 @@ describe('renderReportDocument', () => {
           retention: '30 days',
         },
       ],
-      externalInserts: [
-        { ts: '2026-06-11T12:00:00Z', size: 500, location: 'p3' },
-      ],
+      externalInserts: [{ ts: '2026-06-11T12:00:00Z', size: 500, location: 'p3' }],
     });
     const doc = renderReportDocument(report);
 

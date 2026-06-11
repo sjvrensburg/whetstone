@@ -176,10 +176,9 @@ export class DirectLinterBackend implements LinterBackend {
  * prevents tsc from rewriting the call, preserving the native `import()`
  * which Node.js supports even from CJS contexts (Node ≥ 12).
  */
-const nativeImport = new Function(
-  'modulePath',
-  'return import(modulePath)',
-) as (path: string) => Promise<Record<string, unknown>>;
+const nativeImport = new Function('modulePath', 'return import(modulePath)') as (
+  path: string,
+) => Promise<Record<string, unknown>>;
 
 /**
  * Create a `DirectLinterBackend` using the real harper.js WASM binary.

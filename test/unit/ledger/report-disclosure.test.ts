@@ -187,9 +187,9 @@ describe('LedgerImpl.exportDisclosure() — integration', () => {
     const disclosure = await ledger.exportDisclosure();
 
     // Three ICMJE elements.
-    expect(disclosure).toContain(TOOL_NAME);                // 1. Tool name
-    expect(disclosure).toContain('1 coaching session');      // 2. Per-use purpose
-    expect(disclosure).toContain('editorial control');       // 3. Oversight extent
+    expect(disclosure).toContain(TOOL_NAME); // 1. Tool name
+    expect(disclosure).toContain('1 coaching session'); // 2. Per-use purpose
+    expect(disclosure).toContain('editorial control'); // 3. Oversight extent
     expect(disclosure).toContain(SCOPING_NOTE);
   });
 
