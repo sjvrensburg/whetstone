@@ -25,6 +25,7 @@ import { revealObservationSpan } from './coachingView';
 import type { ObservationItem } from './coachingView';
 import type { LedgerTreeDataProvider } from './ledgerView';
 import type { TelemetrySink } from '../telemetry';
+import type { ClaimFirstGate, ClaimPrompter } from '../friction';
 
 // ---------------------------------------------------------------------------
 // DI seam — all services the commands need, injected for testability
@@ -62,6 +63,10 @@ export interface UICommandDeps {
    * disclosure generation events. Optional so existing tests are unaffected.
    */
   telemetry?: TelemetrySink;
+  /** The claim-first commitment gate (instrument C, task 22). */
+  claimFirstGate: ClaimFirstGate;
+  /** The UI seam for the claim-first input prompt. */
+  claimPrompter: ClaimPrompter;
 }
 
 /** The ledger control surface commands need (extends the read-only view). */
@@ -126,17 +131,25 @@ async function handleCoachSelection(deps: UICommandDeps): Promise<void> {
   // --- Resolve coaching deps (lazy — key is now available) ---
   const coachingDeps = await deps.buildCoachingDeps();
 
+  // --- Claim-first gate (instrument C, task 22): runs before coaching ---
+  const claimResult = await deps.claimFirstGate.gate(deps.claimPrompter);
+  if (!claimResult.ok) {
+    vscode.window.showInformationMessage(claimResult.reason);
+    return;
+  }
+
   // --- Resolve document language ---
   const lang = editor.document.languageId;
   const documentLanguage: DocumentLanguage = lang === 'latex' ? 'latex' : 'markdown';
 
-  // --- Build input (with optional brief) ---
+  // --- Build input (with optional brief + claim) ---
   const brief = await deps.briefCapture.read();
   const input: CoachingTurnInput = {
     selectionText: selectedText,
     anchorBase: editor.document.offsetAt(selection.start),
     documentLanguage,
     brief,
+    ...(claimResult.claim ? { claim: claimResult.claim } : {}),
   };
 
   // --- Run coaching turn (task 12 orchestration: provider → guard → ledger) ---

@@ -185,6 +185,7 @@ describe('runCoachingTurn — passing turn', () => {
       providerId: 'test-provider',
       observationCount: 1,
       hadBrief: false,
+      hadClaim: false,
       anchorBase: 42,
       documentLanguage: 'markdown',
     });

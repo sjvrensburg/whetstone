@@ -58,6 +58,9 @@ export interface CoachingRequest {
   brief?: Brief;
   /** The source language of the document the selection came from. */
   documentLanguage: DocumentLanguage;
+  /** Optional writer's claim (instrument C, task 22). When present, the coach
+   * uses it as context to respond to the writer's own stated point. */
+  claim?: string;
 }
 
 /**
@@ -104,7 +107,8 @@ export type LedgerEventType =
   | 'ledger_paused'
   | 'ledger_resumed'
   | 'paste_quarantine'
-  | 'paste_claim';
+  | 'paste_claim'
+  | 'claim_captured';
 
 /**
  * One entry in the append-only hash chain. `hash` is

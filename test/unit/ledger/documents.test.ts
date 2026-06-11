@@ -18,6 +18,7 @@ function makeReport(overrides: Partial<TransparencyReport> = {}): TransparencyRe
       ledger_resumed: 0,
       paste_quarantine: 0,
       paste_claim: 0,
+      claim_captured: 0,
     },
     cloudSends: [],
     integrity: { intact: true },
@@ -68,6 +69,7 @@ describe('renderReportDocument', () => {
         ledger_resumed: 0,
         paste_quarantine: 0,
         paste_claim: 0,
+        claim_captured: 0,
       },
     });
     const doc = renderReportDocument(report);
@@ -148,6 +150,7 @@ describe('renderReportDocument', () => {
         ledger_resumed: 0,
         paste_quarantine: 0,
         paste_claim: 0,
+        claim_captured: 0,
       },
       cloudSends: [
         {

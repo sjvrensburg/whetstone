@@ -20,6 +20,8 @@ import type { Observation, StructuredCoaching, Brief } from '../../src/shared/ty
 import type { CoachingTurnDeps } from '../../src/coaching';
 import type { ConsentResult } from '../../src/consent';
 import { TelemetrySink } from '../../src/telemetry';
+import { ClaimFirstGate } from '../../src/friction/claimFirst';
+import { Dial } from '../../src/friction/dial';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -70,6 +72,12 @@ function makeDeps(overrides: Partial<UICommandDeps> = {}): UICommandDeps {
   const reportData = { countsByType: {} as Record<string, number>, integrity: { intact: true } };
   const disclosureText = 'Disclosure text';
 
+  // Default dial at level 1 (Coach) — claimFirst is 'off' at this level
+  const dial = new Dial({ level: 1, floor: 0, overrides: {} });
+  const mockLedger = {
+    append: vi.fn(async () => undefined),
+  };
+
   return {
     consentGate: {
       ensureConsent: vi.fn(async () => consentResult),
@@ -86,9 +94,7 @@ function makeDeps(overrides: Partial<UICommandDeps> = {}): UICommandDeps {
           guard: {
             screen: vi.fn(async () => ({ ok: true, coaching: makeCoaching() })),
           },
-          ledger: {
-            append: vi.fn(async () => undefined),
-          },
+          ledger: mockLedger,
         }) as unknown as CoachingTurnDeps,
     ),
     briefCapture: {
@@ -117,6 +123,10 @@ function makeDeps(overrides: Partial<UICommandDeps> = {}): UICommandDeps {
     getActiveEditor: vi.fn(() => makeEditor()),
     openReportDocument: vi.fn(async () => undefined),
     openDisclosureDocument: vi.fn(async () => undefined),
+    claimFirstGate: new ClaimFirstGate({ dial, ledger: mockLedger as unknown as UICommandDeps['ledger'], now: () => '2026-06-11T00:00:00.000Z' }),
+    claimPrompter: {
+      showClaimInput: vi.fn(async () => 'My argument is about X.'),
+    },
     ...overrides,
   };
 }

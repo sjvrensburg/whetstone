@@ -63,6 +63,10 @@ export interface CoachingTurnInput {
   documentLanguage: DocumentLanguage;
   /** Optional writing brief (F5); coaching works fully without it. */
   brief?: Brief;
+  /** Optional writer's claim (instrument C, task 22). When present, the
+   * coaching turn uses it as context so the coach can respond to the
+   * writer's own stated point. */
+  claim?: string;
 }
 
 /** Machine-readable error categories for a failed coaching turn. */
@@ -114,6 +118,7 @@ export function buildCoachingRequest(input: CoachingTurnInput): CoachingRequest 
     anchorBase: input.anchorBase,
     documentLanguage: input.documentLanguage,
     ...(input.brief ? { brief: input.brief } : {}),
+    ...(input.claim ? { claim: input.claim } : {}),
   };
 }
 
@@ -168,6 +173,7 @@ function buildAiConsultPayload(
     providerId,
     observationCount: coaching.observations.length,
     hadBrief: !!input.brief,
+    hadClaim: !!input.claim,
     anchorBase: input.anchorBase,
     documentLanguage: input.documentLanguage,
   };

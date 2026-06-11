@@ -51,6 +51,7 @@ function zeroedCounts(): Record<LedgerEventType, number> {
     ledger_resumed: 0,
     paste_quarantine: 0,
     paste_claim: 0,
+    claim_captured: 0,
   };
 }
 

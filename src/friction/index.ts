@@ -38,3 +38,6 @@ export type {
 
 export { FrictionStatusBar, showLevelQuickPick, createFrictionControlCommands } from './control';
 export type { FrictionControlDeps } from './control';
+
+export { ClaimFirstGate, CLAIM_PROMPT, CLAIM_PLACEHOLDER, CLAIM_TITLE } from './claimFirst';
+export type { ClaimPrompter, ClaimGateResult, ClaimFirstGateDeps } from './claimFirst';

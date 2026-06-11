@@ -13,6 +13,8 @@ import { ConsentGate } from './consent';
 import { BriefCapture, BriefFileStore } from './brief';
 import { Dial } from './friction/dial';
 import { FrictionStatusBar, createFrictionControlCommands } from './friction/control';
+import { ClaimFirstGate } from './friction/claimFirst';
+import { CLAIM_PROMPT, CLAIM_PLACEHOLDER, CLAIM_TITLE } from './friction/claimFirst';
 
 /**
  * Extension host entry point. Owns lifecycle only: it builds the dependency
@@ -56,6 +58,10 @@ export function activate(context: vscode.ExtensionContext): void {
     floor: settings.frictionFloor,
     overrides: settings.frictionOverrides,
   });
+
+  // Claim-first gate (instrument C, task 22)
+  const claimFirstGate = new ClaimFirstGate({ dial, ledger, now: () => new Date().toISOString() });
+
   const frictionBar = new FrictionStatusBar(dial);
   context.subscriptions.push(frictionBar);
 
@@ -155,6 +161,17 @@ export function activate(context: vscode.ExtensionContext): void {
       const text = await ledger.exportDisclosure();
       const doc = await vscode.workspace.openTextDocument({ content: text });
       await vscode.window.showTextDocument(doc);
+    },
+    claimFirstGate,
+    claimPrompter: {
+      showClaimInput: () =>
+        Promise.resolve(
+          vscode.window.showInputBox({
+            title: CLAIM_TITLE,
+            prompt: CLAIM_PROMPT,
+            placeHolder: CLAIM_PLACEHOLDER,
+          }),
+        ),
     },
   };
 
