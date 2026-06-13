@@ -23,12 +23,12 @@ body {
   min-height: 100vh;
 }
 
-/* Header + pinned claim */
+/* Top bar */
 .ws-header {
   display: flex;
   align-items: center;
-  gap: 1rem;
-  padding: 0.6rem 1.2rem;
+  gap: 0.8rem;
+  padding: 0.5rem 1.1rem;
   border-bottom: 1px solid var(--ws-border);
   background: #fff;
   position: sticky;
@@ -36,26 +36,45 @@ body {
   z-index: 5;
 }
 
-.ws-title {
+.ws-brand {
   font-weight: bold;
   letter-spacing: 0.04em;
-}
-
-.ws-claim-header {
-  flex: 1;
-  font-style: italic;
-  min-width: 0;
-}
-.ws-claim-label {
   color: var(--ws-accent);
-  font-style: normal;
-  font-size: 0.85em;
-}
-.ws-claim-text {
-  overflow-wrap: anywhere;
 }
 
-.ws-export {
+.ws-doc-title {
+  font: inherit;
+  font-size: 1rem;
+  font-weight: bold;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 0.25rem 0.5rem;
+  min-width: 12rem;
+  max-width: 26rem;
+  background: transparent;
+  color: var(--ws-ink);
+}
+.ws-doc-title:hover {
+  border-color: var(--ws-border);
+}
+.ws-doc-title:focus {
+  outline: none;
+  border-color: var(--ws-accent);
+  background: #fff;
+}
+
+.ws-save-state {
+  font-size: 0.75rem;
+  color: #999;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  min-width: 4rem;
+}
+
+.ws-header-spacer {
+  flex: 1;
+}
+
+.ws-btn {
   border: 1px solid var(--ws-border);
   background: #fff;
   padding: 0.35rem 0.8rem;
@@ -64,16 +83,152 @@ body {
   font: inherit;
   font-size: 0.85em;
 }
-.ws-export:hover {
+.ws-btn:hover {
   border-color: var(--ws-accent);
 }
+.ws-btn-primary {
+  background: var(--ws-accent);
+  color: #fff;
+  border-color: var(--ws-accent);
+}
+.ws-btn-primary:hover {
+  background: var(--ws-amber);
+  border-color: var(--ws-amber);
+}
+.ws-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
 
-/* Editor */
-.ws-editor-host {
+/* 3-column body: sidebar · editor · rail */
+.ws-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+/* Left: document sidebar */
+.ws-sidebar {
+  width: 15rem;
+  flex-shrink: 0;
+  border-right: 1px solid var(--ws-border);
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+.ws-sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.7rem 0.9rem 0.5rem;
+}
+.ws-sidebar-title {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #999;
+}
+.ws-newdoc {
+  font: inherit;
+  font-size: 0.8rem;
+  border: 1px solid var(--ws-border);
+  border-radius: 4px;
+  background: #fff;
+  padding: 0.2rem 0.55rem;
+  cursor: pointer;
+  color: var(--ws-accent);
+}
+.ws-newdoc:hover {
+  border-color: var(--ws-accent);
+}
+.ws-doclist {
+  list-style: none;
+  margin: 0;
+  padding: 0 0.4rem;
+  overflow-y: auto;
+}
+.ws-docitem {
+  display: flex;
+  align-items: stretch;
+  border-radius: 5px;
+  margin-bottom: 0.15rem;
+}
+.ws-docitem.is-active {
+  background: rgba(138, 90, 0, 0.08);
+}
+.ws-docitem:hover {
+  background: rgba(138, 90, 0, 0.05);
+}
+.ws-docitem-main {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  text-align: left;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  padding: 0.45rem 0.5rem;
+}
+.ws-docitem-title {
+  font-size: 0.85rem;
+  color: var(--ws-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ws-docitem.is-active .ws-docitem-title {
+  font-weight: bold;
+}
+.ws-docitem-time {
+  font-size: 0.7rem;
+  color: #aaa;
+}
+.ws-docitem-del {
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: #bbb;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0 0.5rem;
+  opacity: 0;
+}
+.ws-docitem:hover .ws-docitem-del {
+  opacity: 1;
+}
+.ws-docitem-del:hover {
+  color: #c0392b;
+}
+
+/* Center: editor column */
+.ws-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+.ws-claim-line {
   max-width: 46rem;
-  padding: 2rem 1rem;
+  width: 100%;
+  margin: 0 auto;
+  padding: 0.9rem 1rem 0;
+  font-style: italic;
+  min-height: 1.2rem;
+}
+.ws-claim-line:empty {
+  padding: 0;
+}
+
+.ws-editor-host {
+  width: 100%;
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 1rem 1rem 3rem;
 }
 
 .cm-editor {
@@ -139,24 +294,25 @@ body {
   cursor: pointer;
 }
 
-/* Journal debug panel */
-.ws-footer {
-  border-top: 1px solid var(--ws-border);
-  background: #fff;
+/* Journal debug panel (lives in the right rail) */
+.ws-journal {
   font-family: ui-monospace, monospace;
-  font-size: 0.75rem;
+  font-size: 0.72rem;
 }
-
 .ws-journal summary {
-  padding: 0.4rem 1.2rem;
+  padding: 0.2rem 0;
   cursor: pointer;
   color: #777;
 }
 .ws-journal-list {
-  max-height: 14rem;
+  max-height: 22rem;
   overflow-y: auto;
-  margin: 0;
-  padding: 0 1.2rem 0.6rem 2.4rem;
+  margin: 0.3rem 0 0;
+  padding: 0 0 0 1.2rem;
+}
+.ws-journal-list li {
+  margin-bottom: 0.2rem;
+  word-break: break-word;
 }
 
 /* Disclosure modal */
@@ -204,22 +360,65 @@ body {
   cursor: pointer;
 }
 
-/* Layout: editor + coach panel */
-.ws-main {
-  flex: 1;
-  display: flex;
-  max-width: 64rem;
-  width: 100%;
-  margin: 0 auto;
-  gap: 1rem;
-}
-
-.ws-coach-host {
-  width: 17rem;
+/* Right: unified assistant rail */
+.ws-rail {
+  width: 19rem;
   flex-shrink: 0;
-  padding: 2rem 1rem 2rem 0;
+  border-left: 1px solid var(--ws-border);
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+.ws-rail-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--ws-border);
+}
+.ws-rail-tab {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.6rem 0.4rem;
+  color: #888;
+  border-bottom: 2px solid transparent;
+}
+.ws-rail-tab.is-active {
+  color: var(--ws-accent);
+  border-bottom-color: var(--ws-accent);
+  font-weight: bold;
+}
+.ws-rail-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ws-amber);
+}
+.ws-rail-panes {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.ws-rail-pane {
+  display: none;
+  padding: 0.9rem;
   font-size: 0.85rem;
   color: #555;
+}
+.ws-rail-pane.is-active {
+  display: block;
+}
+.ws-coach-results:empty::before {
+  content: 'Select a passage and press Coach, or chat below.';
+  color: #aaa;
+  font-style: italic;
 }
 
 .ws-coach-card {
