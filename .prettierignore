@@ -1,0 +1,9 @@
+dist
+out
+coverage
+node_modules
+.vscode-test
+*.vsix
+.compozy
+.claude
+package-lock.json
