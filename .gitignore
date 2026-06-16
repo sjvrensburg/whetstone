@@ -7,3 +7,6 @@ coverage/
 *.log
 .DS_Store
 .claude/settings.local.json
+
+# Compozy workflow artifacts (local design history, ADRs, task specs)
+.compozy/
