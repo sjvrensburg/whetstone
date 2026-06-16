@@ -10,3 +10,7 @@ coverage/
 
 # Compozy workflow artifacts (local design history, ADRs, task specs)
 .compozy/
+
+# Rust (whetstone-tui)
+target/
+**/*.rs.bk

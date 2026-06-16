@@ -1,0 +1,35 @@
+---
+title: "Whetstone TUI — smoke test"
+author: "You"
+format: html
+claim: "Friction aids honest academic writing more than proof does."
+---
+
+# Introduction
+
+This is a sample Quarto document for testing the Whetstone TUI editor.
+Edit on the left; the rendered preview (with Unicode math) updates on the right.
+
+## Inline and display math
+
+Euler's identity is $e^{i\pi} + 1 = 0$, and the mass-energy equivalence is
+$E = mc^2$. The Gaussian integral is a display equation:
+
+$$\int_{-\infty}^{\infty} e^{-x^2}\, dx = \sqrt{\pi}$$
+
+A sum with limits:
+
+$$\sum_{i=1}^{n} x_i = x_1 + x_2 + \cdots + x_n$$
+
+## A Quarto code cell
+
+```{r}
+x <- c(1, 2, 3)
+mean(x)
+```
+
+## Try it
+
+- Type to edit. Arrows / Home / End to move.
+- **Ctrl+S** saves. **Ctrl+Q** (or Ctrl+C) quits.
+- Paste (≥40 chars) — quarantine marking comes in M4.
