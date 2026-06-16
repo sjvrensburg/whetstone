@@ -5,10 +5,11 @@
 //! vendored [`super::math::latex_to_unicode`].
 
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 
 use super::math::latex_to_unicode;
+use crate::ui::Theme;
 
 /// Strip a leading YAML frontmatter block (`---\n…\n---` / `...`) from `src`.
 /// Returns `src` unchanged if there is no frontmatter. Used so the preview
@@ -84,7 +85,7 @@ pub fn frontmatter_claim(src: &str) -> Option<String> {
 /// Render markdown source to ratatui [`Text`], with inline/display math
 /// converted to Unicode. Best-effort styling: headings, bold/italic,
 /// inline + block code, lists, blockquotes, task-list markers.
-pub fn render_to_text(src: &str) -> Text<'static> {
+pub fn render_to_text(src: &str, theme: &Theme) -> Text<'static> {
     let body = strip_frontmatter(src);
     let opts = Options::ENABLE_TABLES
         | Options::ENABLE_STRIKETHROUGH
@@ -104,7 +105,7 @@ pub fn render_to_text(src: &str) -> Text<'static> {
 
             Event::Start(Tag::Heading { level, .. }) => {
                 flush_line(&mut lines, &mut cur);
-                style = heading_style(level);
+                style = heading_style(level, theme);
             }
             Event::End(TagEnd::Heading(_)) => {
                 flush_line(&mut lines, &mut cur);
@@ -125,14 +126,14 @@ pub fn render_to_text(src: &str) -> Text<'static> {
             Event::Start(Tag::CodeBlock(_)) => {
                 flush_line(&mut lines, &mut cur);
                 in_code_block = true;
-                style = code_style();
+                style = code_style(theme);
             }
             Event::End(TagEnd::CodeBlock) => {
                 flush_line(&mut lines, &mut cur);
                 in_code_block = false;
                 style = Style::default();
             }
-            Event::Code(s) => cur.push(Span::styled(s.into_string(), code_style())),
+            Event::Code(s) => cur.push(Span::styled(s.into_string(), code_style(theme))),
 
             Event::Text(s) => {
                 if in_code_block {
@@ -140,19 +141,19 @@ pub fn render_to_text(src: &str) -> Text<'static> {
                         if i > 0 {
                             flush_line(&mut lines, &mut cur);
                         }
-                        cur.push(Span::styled(line.to_string(), code_style()));
+                        cur.push(Span::styled(line.to_string(), code_style(theme)));
                     }
                 } else {
                     cur.push(Span::styled(s.into_string(), style));
                 }
             }
 
-            Event::InlineMath(s) => cur.push(Span::styled(latex_to_unicode(&s), math_style())),
+            Event::InlineMath(s) => cur.push(Span::styled(latex_to_unicode(&s), math_style(theme))),
             Event::DisplayMath(s) => {
                 flush_line(&mut lines, &mut cur);
                 lines.push(Line::from(vec![Span::styled(
                     latex_to_unicode(&s),
-                    math_style(),
+                    math_style(theme),
                 )]));
             }
 
@@ -167,7 +168,7 @@ pub fn render_to_text(src: &str) -> Text<'static> {
             }
             Event::End(TagEnd::Item) => flush_line(&mut lines, &mut cur),
 
-            Event::Start(Tag::BlockQuote(_)) => style = style.fg(Color::DarkGray),
+            Event::Start(Tag::BlockQuote(_)) => style = style.fg(theme.quote),
             Event::End(TagEnd::BlockQuote(_)) => style = Style::default(),
 
             Event::TaskListMarker(checked) => {
@@ -185,29 +186,28 @@ fn flush_line(lines: &mut Vec<Line<'static>>, cur: &mut Vec<Span<'static>>) {
     lines.push(Line::from(std::mem::take(cur)));
 }
 
-fn heading_style(level: HeadingLevel) -> Style {
+fn heading_style(level: HeadingLevel, theme: &Theme) -> Style {
     let color = match level {
-        HeadingLevel::H1 => Color::Cyan,
-        HeadingLevel::H2 => Color::LightCyan,
-        HeadingLevel::H3 => Color::Blue,
-        _ => Color::LightBlue,
+        HeadingLevel::H1 | HeadingLevel::H3 => theme.heading,
+        _ => theme.heading_alt,
     };
     Style::default().fg(color).add_modifier(Modifier::BOLD)
 }
 
-fn math_style() -> Style {
+fn math_style(theme: &Theme) -> Style {
     Style::default()
-        .fg(Color::Magenta)
+        .fg(theme.math)
         .add_modifier(Modifier::ITALIC)
 }
 
-fn code_style() -> Style {
-    Style::default().fg(Color::Yellow)
+fn code_style(theme: &Theme) -> Style {
+    Style::default().fg(theme.code)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::theme::THEMES;
 
     fn all_text(t: &Text<'_>) -> String {
         t.lines
@@ -239,21 +239,21 @@ mod tests {
 
     #[test]
     fn renders_inline_math_as_unicode() {
-        let t = render_to_text("Energy is $E = mc^2$ here.");
+        let t = render_to_text("Energy is $E = mc^2$ here.", &THEMES[0]);
         let rendered = all_text(&t);
         assert!(rendered.contains("E = mc²"), "got: {rendered}");
     }
 
     #[test]
     fn renders_display_math_on_its_own_line() {
-        let t = render_to_text("Intro.\n\n$$\\sum_{i=1}^{n} x_i$$\n\nOutro.");
+        let t = render_to_text("Intro.\n\n$$\\sum_{i=1}^{n} x_i$$\n\nOutro.", &THEMES[0]);
         let rendered = all_text(&t);
         assert!(rendered.contains('∑'), "got: {rendered}");
     }
 
     #[test]
     fn renders_heading_and_bold() {
-        let t = render_to_text("# Title\n**bold**");
+        let t = render_to_text("# Title\n**bold**", &THEMES[0]);
         let rendered = all_text(&t);
         assert!(rendered.contains("Title"));
         assert!(rendered.contains("bold"));
