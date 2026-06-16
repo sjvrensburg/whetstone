@@ -4,6 +4,8 @@
 //! hands complete `data:` lines to [`parse_sse_chunk`], which extracts the
 //! `choices[0].delta.content` tokens.
 
+use std::time::Duration;
+
 use anyhow::Result;
 use futures::StreamExt;
 use serde::Serialize;
@@ -20,10 +22,16 @@ pub struct CoachClient {
 
 impl CoachClient {
     pub fn new(config: CoachConfig) -> Self {
-        Self {
-            http: reqwest::Client::new(),
-            config,
-        }
+        // Bound the connect and per-read time so a stalled provider surfaces as
+        // an error (clearing the busy state) instead of hanging the coach
+        // forever. `read_timeout` fires only on a gap with no bytes, so it does
+        // not cut off a slow-but-progressing stream.
+        let http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(15))
+            .read_timeout(Duration::from_secs(120))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        Self { http, config }
     }
 
     pub fn config(&self) -> &CoachConfig {
@@ -59,11 +67,32 @@ impl CoachClient {
         let resp = resp.error_for_status()?;
 
         let mut stream = resp.bytes_stream();
+        let mut bytes: Vec<u8> = Vec::new();
         let mut buf = String::new();
         let mut full = String::new();
         while let Some(chunk) = stream.next().await {
             let chunk = chunk?;
-            buf.push_str(std::str::from_utf8(&chunk)?);
+            bytes.extend_from_slice(&chunk);
+            // Move only complete lines (through the last newline) into the text
+            // buffer. Partial trailing bytes — possibly a multibyte char split
+            // across this network chunk and the next — stay in `bytes`, so a
+            // split codepoint never aborts the stream. A line delimited by '\n'
+            // is always a whole codepoint sequence, so the conversion is exact.
+            if let Some(last_nl) = bytes.iter().rposition(|&b| b == b'\n') {
+                let complete: Vec<u8> = bytes.drain(..=last_nl).collect();
+                buf.push_str(&String::from_utf8_lossy(&complete));
+                for delta in parse_sse_chunk(&mut buf) {
+                    on_delta(&delta);
+                    full.push_str(&delta);
+                }
+            }
+        }
+        // Flush a final `data:` line that arrived without a trailing newline.
+        if !bytes.is_empty() {
+            buf.push_str(&String::from_utf8_lossy(&bytes));
+        }
+        if !buf.trim().is_empty() {
+            buf.push('\n');
             for delta in parse_sse_chunk(&mut buf) {
                 on_delta(&delta);
                 full.push_str(&delta);

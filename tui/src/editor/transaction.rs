@@ -71,6 +71,33 @@ impl ChangeSet {
         }
         pos
     }
+
+    /// Map a quarantine region's *trailing* edge through this change set.
+    ///
+    /// Differs from [`Self::map_pos`] at a boundary: a **pure insertion**
+    /// exactly at the edge does NOT extend the region (the inserted text is the
+    /// writer's own new content — a paste or typing right after the block — not
+    /// part of the original), but a **replacement/deletion** spanning the edge
+    /// maps to the END of the inserted text so the region still tracks a
+    /// rewrite-in-place. An interior insertion still pushes the edge right.
+    pub fn map_region_end(&self, pos: usize) -> usize {
+        let mut pos = pos;
+        for c in &self.changes {
+            if c.from <= pos {
+                if c.to >= pos {
+                    return if c.from == c.to {
+                        // Pure insertion at the boundary → stay outside.
+                        c.from
+                    } else {
+                        // Replacement/deletion covering pos → end of the insert.
+                        c.from + c.inserted_len()
+                    };
+                }
+                pos = pos - (c.to - c.from) + c.inserted_len();
+            }
+        }
+        pos
+    }
 }
 
 #[cfg(test)]
@@ -124,6 +151,40 @@ mod tests {
         });
         assert_eq!(cs.map_pos(2, -1), 2); // leading edge unaffected
         assert_eq!(cs.map_pos(5, 1), 6); // trailing edge shifts right by 1
+    }
+
+    #[test]
+    fn region_end_not_extended_by_boundary_insertion() {
+        // Pure insertion exactly at the region's trailing edge (offset 5) must
+        // not grow the region — the inserted text is the writer's own.
+        let cs = ChangeSet::single(Change {
+            from: 5,
+            to: 5,
+            insert: "new text".into(),
+        });
+        assert_eq!(cs.map_region_end(5), 5);
+    }
+
+    #[test]
+    fn region_end_tracks_replacement_to_its_end() {
+        // Replacing the whole region [0,5) with 3 chars maps the end to 3.
+        let cs = ChangeSet::single(Change {
+            from: 0,
+            to: 5,
+            insert: "xyz".into(),
+        });
+        assert_eq!(cs.map_region_end(5), 3);
+    }
+
+    #[test]
+    fn region_end_extended_by_interior_insertion() {
+        // Typing inside the region still pushes the trailing edge right.
+        let cs = ChangeSet::single(Change {
+            from: 3,
+            to: 3,
+            insert: "K".into(),
+        });
+        assert_eq!(cs.map_region_end(5), 6);
     }
 
     #[test]

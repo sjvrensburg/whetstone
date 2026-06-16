@@ -44,10 +44,13 @@ pub fn is_disconnect(response: &str) -> bool {
     if t.split_whitespace().count() < 5 {
         return true;
     }
+    // Match a placeholder only when it is the WHOLE answer (modulo trailing
+    // punctuation), never as a prefix: "None of the prior work…" or a name
+    // like "Nathan argues…" must not be flagged just because they start with
+    // "none"/"na".
     let lower = t.to_lowercase();
-    DISCONNECT_PATTERNS
-        .iter()
-        .any(|p| lower == *p || lower.starts_with(p))
+    let normalized = lower.trim_end_matches(|c: char| !c.is_alphanumeric());
+    DISCONNECT_PATTERNS.contains(&normalized)
 }
 
 /// Classify a teach-back summary.
@@ -82,8 +85,17 @@ mod tests {
         assert!(is_disconnect(""));
         assert!(is_disconnect("   "));
         assert!(is_disconnect("yes")); // too short
-        assert!(is_disconnect("I don't know what to say here"));
+        assert!(is_disconnect("I don't know.")); // exact placeholder (+ punctuation)
         assert!(is_disconnect("skip"));
+        assert!(is_disconnect("None.")); // exact placeholder, trimmed
+        // A genuine summary that merely STARTS with a placeholder word is NOT a
+        // disconnect (regression: prefix-matching false-positives).
+        assert!(!is_disconnect(
+            "None of the prior work addresses this gap, so I argue otherwise."
+        ));
+        assert!(!is_disconnect(
+            "Passive constructions weaken my central claim throughout."
+        ));
     }
 
     #[test]

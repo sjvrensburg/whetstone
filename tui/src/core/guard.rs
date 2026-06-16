@@ -22,6 +22,7 @@ use crate::core::coaching::{
     MAX_OBSERVATIONS, QUESTION_MAX_LENGTH, REFLECTION_MAX_LENGTH, StructuredCoaching,
     parse_structured_coaching,
 };
+use crate::core::labels::assert_no_forbidden_labels;
 use crate::core::ngram::{extract_ngrams, ngram_overlap};
 
 // ---------------------------------------------------------------------------
@@ -254,6 +255,9 @@ pub fn screen_chat_reply(reply: &str, context_text: &str) -> CheckResult {
     if reply.trim().is_empty() {
         return Err("empty reply".to_string());
     }
+    // Forbidden-label guard: no user-facing artifact may imply proof-of-
+    // personhood (CLAUDE.md / ADR-009). The coach reply is user-facing.
+    assert_no_forbidden_labels(reply, "coach reply")?;
     if reply.chars().count() > CHAT_REPLY_MAX_LENGTH {
         return Err(format!(
             "reply exceeds {CHAT_REPLY_MAX_LENGTH} characters — too long to be coaching"
@@ -383,6 +387,16 @@ mod tests {
     #[test]
     fn chat_reply_rewrite_shape_rejected() {
         assert!(screen_chat_reply("Here's a draft you could use: ...", "ctx").is_err());
+    }
+
+    #[test]
+    fn chat_reply_with_forbidden_label_rejected() {
+        let err = screen_chat_reply(
+            "Your authorship score shows you are a verified human.",
+            "ctx",
+        )
+        .unwrap_err();
+        assert!(err.to_lowercase().contains("forbidden"));
     }
 
     #[test]

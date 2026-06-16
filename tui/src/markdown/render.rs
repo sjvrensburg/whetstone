@@ -14,12 +14,22 @@ use super::math::latex_to_unicode;
 /// Returns `src` unchanged if there is no frontmatter. Used so the preview
 /// doesn't render raw YAML as prose.
 pub fn strip_frontmatter(src: &str) -> &str {
+    // CRLF-tolerant: a leading `---` line may end with `\r\n`. `fence` compares
+    // a line's bytes to a fence marker, ignoring a trailing `\r`.
+    fn fence(line: &[u8]) -> bool {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        line == b"---" || line == b"..."
+    }
     let bytes = src.as_bytes();
     let first_end = bytes
         .iter()
         .position(|&b| b == b'\n')
         .unwrap_or(bytes.len());
-    if &bytes[..first_end] != b"---" {
+    if bytes[..first_end]
+        .strip_suffix(b"\r")
+        .unwrap_or(&bytes[..first_end])
+        != b"---"
+    {
         return src;
     }
     let mut start = if first_end < bytes.len() {
@@ -32,14 +42,10 @@ pub fn strip_frontmatter(src: &str) -> &str {
             Some(p) => start + p,
             None => {
                 // Last line with no trailing newline.
-                return if &bytes[start..] == b"---" || &bytes[start..] == b"..." {
-                    ""
-                } else {
-                    src // no closing fence
-                };
+                return if fence(&bytes[start..]) { "" } else { src };
             }
         };
-        if &bytes[start..end] == b"---" || &bytes[start..end] == b"..." {
+        if fence(&bytes[start..end]) {
             return &src[end + 1..];
         }
         start = end + 1;
@@ -215,6 +221,12 @@ mod tests {
     fn strips_yaml_frontmatter() {
         let src = "---\ntitle: Hi\nauthor: Me\n---\n\n# Body\nText.";
         assert_eq!(strip_frontmatter(src), "\n# Body\nText.");
+    }
+
+    #[test]
+    fn strips_crlf_frontmatter() {
+        let src = "---\r\ntitle: Hi\r\n---\r\n\r\n# Body";
+        assert_eq!(strip_frontmatter(src), "\r\n# Body");
     }
 
     #[test]

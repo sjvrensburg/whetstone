@@ -105,6 +105,65 @@ pub struct FrictionPolicy {
     pub preset: u8,
 }
 
+impl Default for FrictionPolicy {
+    /// v1 default: no institutional floor, writer preset `1` (Coach).
+    fn default() -> Self {
+        Self {
+            floor: 0,
+            preset: 1,
+        }
+    }
+}
+
+impl FrictionPolicy {
+    pub fn new(floor: u8, preset: u8) -> Self {
+        Self {
+            floor: floor.min(3),
+            preset: preset.min(3),
+        }
+    }
+
+    /// The effective friction level: the higher of the institutional floor and
+    /// the writer's preset, clamped to `0..=3`.
+    pub fn level(&self) -> u8 {
+        self.floor.max(self.preset).min(3)
+    }
+
+    /// Quarantine trigger: pastes at or above this many chars are tracked.
+    /// Higher friction quarantines smaller pastes.
+    pub fn paste_threshold(&self) -> usize {
+        match self.level() {
+            0 => 120,
+            1 => 40,
+            2 => 24,
+            _ => 12,
+        }
+    }
+
+    /// Claim-to-own survival floor: the mark clears when fewer than this
+    /// fraction of the original's trigrams survive. Higher friction tightens
+    /// the gate (demands more rewriting).
+    pub fn claim_survival_threshold(&self) -> f64 {
+        match self.level() {
+            0 => 0.7,
+            1 => 0.5,
+            2 => 0.4,
+            _ => 0.3,
+        }
+    }
+
+    /// Teach-back cadence: fire a checkpoint every N new paragraphs. `None`
+    /// disables the instrument (level 0, Quiet).
+    pub fn teachback_interval(&self) -> Option<usize> {
+        match self.level() {
+            0 => None,
+            1 => Some(3),
+            2 => Some(2),
+            _ => Some(1),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Meta accessors — typed reads over the scalar map.
 // ---------------------------------------------------------------------------

@@ -3,14 +3,19 @@
 //! Ports the editor-agnostic core of `composer/src/editor/quarantine.ts` onto
 //! our rope-backed transactions. A paste of ≥ [`PASTE_THRESHOLD`] chars is
 //! recorded as a tracked [`Region`]; every subsequent transaction remaps the
-//! region via [`ChangeSet::map_pos`] (inclusive boundaries) and, when little
-//! of the original survives, auto-clears it (`is_claimed_to_own`). The UI layer
-//! journals the returned [`Outcome`]s as metadata-only events.
+//! region (leading edge via [`ChangeSet::map_pos`], trailing edge via
+//! [`ChangeSet::map_region_end`], so text inserted right at a boundary stays
+//! outside the region) and, when little of the original survives, auto-clears
+//! it (`is_claimed_to_own`). The UI layer journals the returned [`Outcome`]s as
+//! metadata-only events.
 
-use crate::core::ownership::{is_claimed_to_own, survival_ratio};
+use crate::core::ownership::{
+    CLAIM_SURVIVAL_THRESHOLD, is_claimed_to_own_thresholded, survival_ratio,
+};
 use crate::editor::transaction::ChangeSet;
 
-/// Pastes at or above this many chars are quarantined.
+/// Pastes at or above this many chars are quarantined (friction level 1
+/// default; the friction dial overrides this per-instance).
 pub const PASTE_THRESHOLD: usize = 40;
 
 /// A tracked quarantined span. Positions are char offsets in the live document.
@@ -38,15 +43,37 @@ pub enum Outcome {
     Revised { id: String, survival: f64 },
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Quarantine {
     regions: Vec<Region>,
     next_id: u64,
+    /// Friction-dial trigger: pastes at or above this many chars are tracked.
+    paste_threshold: usize,
+    /// Friction-dial claim-to-own survival floor (see `ownership`).
+    claim_threshold: f64,
+}
+
+impl Default for Quarantine {
+    fn default() -> Self {
+        Self {
+            regions: Vec::new(),
+            next_id: 0,
+            paste_threshold: PASTE_THRESHOLD,
+            claim_threshold: CLAIM_SURVIVAL_THRESHOLD,
+        }
+    }
 }
 
 impl Quarantine {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Apply friction-dial thresholds (ADR-008): the paste-quarantine trigger
+    /// and the claim-to-own survival floor.
+    pub fn set_thresholds(&mut self, paste_threshold: usize, claim_threshold: f64) {
+        self.paste_threshold = paste_threshold;
+        self.claim_threshold = claim_threshold;
     }
 
     pub fn regions(&self) -> &[Region] {
@@ -64,7 +91,7 @@ impl Quarantine {
     /// Record a freshly-pasted span. Returns its region id if it met the
     /// threshold (else `None` — the paste was too small to quarantine).
     pub fn record_paste(&mut self, from: usize, to: usize, text: &str) -> Option<String> {
-        if text.chars().count() < PASTE_THRESHOLD {
+        if text.chars().count() < self.paste_threshold {
             return None;
         }
         self.next_id += 1;
@@ -85,8 +112,13 @@ impl Quarantine {
         let mut outcomes = Vec::new();
         let mut keep = Vec::new();
         for mut r in self.regions.drain(..) {
+            // The leading edge stays left of any boundary insertion; the
+            // trailing edge uses region-end mapping, so text pasted or typed
+            // exactly after the block neither extends it nor double-marks it
+            // (a paste-after-paste yields two independent regions), while a
+            // replacement/deletion spanning the edge is still tracked.
             let new_from = cs.map_pos(r.from, -1);
-            let new_to = cs.map_pos(r.to, 1);
+            let new_to = cs.map_region_end(r.to);
             if new_from >= new_to {
                 outcomes.push(Outcome::Claimed {
                     id: r.id,
@@ -99,7 +131,7 @@ impl Quarantine {
             r.to = new_to;
             let slice: String = current.chars().skip(r.from).take(r.to - r.from).collect();
             let surv = survival_ratio(&slice, &r.original);
-            if is_claimed_to_own(&slice, &r.original) {
+            if is_claimed_to_own_thresholded(&slice, &r.original, self.claim_threshold) {
                 outcomes.push(Outcome::Claimed {
                     id: r.id,
                     survival: surv,
@@ -190,6 +222,27 @@ mod tests {
                 .any(|o| matches!(o, Outcome::Claimed { deleted: true, .. }))
         );
         assert!(q.regions().is_empty());
+    }
+
+    #[test]
+    fn paste_at_trailing_edge_does_not_merge_regions() {
+        // Regression: pasting right at an existing region's trailing edge must
+        // not absorb the new text into the old region (which would tie it to the
+        // wrong original and let it escape when the old block is rewritten).
+        let mut q = Quarantine::new();
+        let len = PASTE.chars().count();
+        q.record_paste(0, len, PASTE).unwrap();
+        // Insert a second block exactly at the first region's end.
+        let cs = ChangeSet::single(Change {
+            from: len,
+            to: len,
+            insert: PASTE.into(),
+        });
+        let combined = format!("{PASTE}{PASTE}");
+        q.apply(&cs, &combined);
+        // First region's trailing edge stayed put (did not swallow the paste).
+        let r = q.regions().first().unwrap();
+        assert_eq!((r.from, r.to), (0, len));
     }
 
     #[test]

@@ -23,13 +23,15 @@ use ratatui::widgets::{
 
 use crate::coach::{CoachClient, CoachConfig};
 use crate::core::disclosure::render_disclosure;
-use crate::core::guard::screen_chat_reply;
-use crate::core::mirror::compute_mirror;
-use crate::core::process_event::{Location, MetaValue, ProcessEvent, ProcessEventType};
+use crate::core::guard::{screen_chat_reply, screen_injection};
+use crate::core::mirror::{MirrorSnapshot, compute_mirror};
+use crate::core::process_event::{
+    FrictionPolicy, Location, MetaValue, ProcessEvent, ProcessEventType,
+};
 use crate::core::prompts::{ChatTurn, ChatTurnRole, build_chat_messages};
 use crate::editor::buffer::Buffer;
 use crate::editor::quarantine::{Outcome, Quarantine, Region};
-use crate::editor::transaction::ChangeSet;
+use crate::editor::transaction::{Change, ChangeSet};
 use crate::grammar::{Diagnostic, Linter, Severity};
 use crate::instruments;
 use crate::markdown::render::render_to_text;
@@ -77,6 +79,11 @@ pub struct App {
     teachback_input: String,
     last_para_count: usize,
     next_teachback: usize,
+    /// Friction dial (ADR-008): drives the quarantine, claim, and teach-back
+    /// instruments. Set from `WHETSTONE_FRICTION` (0–3) at startup.
+    friction: FrictionPolicy,
+    /// Bumped on every buffer mutation; keys the preview render cache.
+    edit_version: u64,
 
     tokio: tokio::runtime::Handle,
     client: Option<CoachClient>,
@@ -86,10 +93,18 @@ pub struct App {
     coach_input: String,
     coach_streaming: String,
     coach_busy: bool,
+    /// Size (chars) of the in-flight consult's message+context, for journaling
+    /// the `coach_consult` event when the reply resolves.
+    coach_pending_size: u32,
     focus: Focus,
     coach_inner: Rect,
     coach_scroll: usize,
     coach_input_rect: Rect,
+
+    /// Cached preview render: `(edit_version, width, text, wrapped_height)`.
+    preview_cache: Option<(u64, u16, Text<'static>, usize)>,
+    /// Cached process mirror: `(event_seq, snapshot)`.
+    mirror_cache: Option<(u64, MirrorSnapshot)>,
 }
 
 impl App {
@@ -114,6 +129,25 @@ impl App {
         let claim = crate::markdown::render::frontmatter_claim(&text);
         let gated = text.trim().is_empty();
         let pc0 = instruments::paragraph_count(&text);
+
+        // Friction dial (ADR-008): institutional floor 0, writer preset from
+        // WHETSTONE_FRICTION (0–3, default 1). Drives the instruments below.
+        let friction = FrictionPolicy::new(
+            0,
+            std::env::var("WHETSTONE_FRICTION")
+                .ok()
+                .and_then(|s| s.trim().parse::<u8>().ok())
+                .unwrap_or(1),
+        );
+        let mut quarantine = Quarantine::new();
+        quarantine.set_thresholds(
+            friction.paste_threshold(),
+            friction.claim_survival_threshold(),
+        );
+        let next_teachback = match friction.teachback_interval() {
+            Some(iv) => ((pc0 / iv) + 1) * iv,
+            None => usize::MAX,
+        };
 
         let client = coach_config.map(CoachClient::new);
         let (coach_tx, coach_rx) = mpsc::channel();
@@ -144,20 +178,25 @@ impl App {
             coach_input: String::new(),
             coach_streaming: String::new(),
             coach_busy: false,
+            coach_pending_size: 0,
             focus: Focus::Editor,
             coach_inner: Rect::default(),
             coach_scroll: 0,
             coach_input_rect: Rect::default(),
             journal: Vec::new(),
             event_seq: 0,
-            quarantine: Quarantine::new(),
+            quarantine,
             claim,
             gated,
             claim_input: String::new(),
             teachback_pending: false,
             teachback_input: String::new(),
             last_para_count: pc0,
-            next_teachback: ((pc0 / 3) + 1) * 3,
+            next_teachback,
+            friction,
+            edit_version: 0,
+            preview_cache: None,
+            mirror_cache: None,
         }
     }
 
@@ -222,6 +261,38 @@ impl App {
         }
     }
 
+    /// The single post-edit chokepoint. Every buffer mutation routes through
+    /// here so region remapping, journaling, the render version, and the
+    /// dirty/lint/scroll state can never drift between handlers.
+    fn commit_edit(&mut self, cs: ChangeSet) {
+        let after = self.buffer.text();
+        let outcomes = self.quarantine.apply(&cs, &after);
+        self.log_quarantine_outcomes(outcomes);
+        self.last_change = Some(cs);
+        self.edit_version += 1;
+        self.dirty = true;
+        self.lint_dirty = true;
+        self.last_edit = Some(Instant::now());
+        self.reveal_cursor();
+    }
+
+    /// Journal a `coach_consult` event — metadata only: provider/model, the
+    /// message+context size, and whether the guard or provider refused.
+    fn log_coach_consult(&mut self, refused: bool) {
+        let mut meta = vec![("refused", MetaValue::Bool(refused))];
+        if let Some(cfg) = self.client.as_ref().map(|c| c.config().clone()) {
+            meta.push(("provider", MetaValue::Str(cfg.base_url)));
+            meta.push(("model", MetaValue::Str(cfg.model)));
+        }
+        let size = self.coach_pending_size;
+        self.log_event(
+            ProcessEventType::CoachConsult,
+            (size > 0).then_some(size),
+            None,
+            meta,
+        );
+    }
+
     pub fn should_quit(&self) -> bool {
         self.quit
     }
@@ -240,10 +311,9 @@ impl App {
                 let at = self.buffer.cursor();
                 let change = self.buffer.type_str(text);
                 let cs = ChangeSet::single(change);
-                self.last_change = Some(cs.clone());
-                let after = self.buffer.text();
-                let outcomes = self.quarantine.apply(&cs, &after);
-                self.log_quarantine_outcomes(outcomes);
+                // Remap existing regions against the insertion FIRST, then
+                // record the new paste with its post-insert offsets.
+                self.commit_edit(cs);
                 self.log_event(
                     ProcessEventType::PasteDetected,
                     Some(n as u32),
@@ -264,11 +334,7 @@ impl App {
                         vec![("regionId", MetaValue::Str(id))],
                     );
                 }
-                self.dirty = true;
-                self.lint_dirty = true;
-                self.last_edit = Some(Instant::now());
                 self.message = format!("Pasted {n} chars");
-                self.reveal_cursor();
             }
             Focus::Coach => self.coach_input.push_str(text),
         }
@@ -324,26 +390,32 @@ impl App {
             KeyCode::Delete => self.buffer.delete_forward(),
             KeyCode::Left => {
                 self.buffer.move_left();
+                self.reveal_cursor();
                 return;
             }
             KeyCode::Right => {
                 self.buffer.move_right();
+                self.reveal_cursor();
                 return;
             }
             KeyCode::Up => {
                 self.buffer.move_up();
+                self.reveal_cursor();
                 return;
             }
             KeyCode::Down => {
                 self.buffer.move_down();
+                self.reveal_cursor();
                 return;
             }
             KeyCode::Home => {
                 self.buffer.move_line_start();
+                self.reveal_cursor();
                 return;
             }
             KeyCode::End => {
                 self.buffer.move_line_end();
+                self.reveal_cursor();
                 return;
             }
             KeyCode::PageUp => {
@@ -351,6 +423,7 @@ impl App {
                 for _ in 0..h {
                     self.buffer.move_up();
                 }
+                self.reveal_cursor();
                 return;
             }
             KeyCode::PageDown => {
@@ -358,6 +431,7 @@ impl App {
                 for _ in 0..h {
                     self.buffer.move_down();
                 }
+                self.reveal_cursor();
                 return;
             }
             _ => return,
@@ -366,7 +440,6 @@ impl App {
             return;
         };
         let cs = ChangeSet::single(change);
-        self.last_change = Some(cs.clone());
         // Typing bursts are journaled as metadata (size only) when they add text.
         let inserted: usize = cs.changes.iter().map(|c| c.inserted_len()).sum();
         if inserted > 0 {
@@ -377,14 +450,9 @@ impl App {
                 vec![],
             );
         }
+        self.commit_edit(cs);
         let after = self.buffer.text();
-        let outcomes = self.quarantine.apply(&cs, &after);
-        self.log_quarantine_outcomes(outcomes);
         self.maybe_trigger_teachback(&after);
-        self.dirty = true;
-        self.lint_dirty = true;
-        self.last_edit = Some(Instant::now());
-        self.reveal_cursor();
     }
 
     /// Claim-gate input (before the editor is unlocked).
@@ -427,10 +495,29 @@ impl App {
         };
         let closer = " (citation needed)";
         let closer_len = closer.chars().count();
-        // Insert the closer first so the opening-quote offset is unchanged.
+        // Drop the attributed region, then apply both insertions to the buffer
+        // (closer first so the opening-quote offset is unchanged).
+        self.quarantine.remove(&r.id);
         self.buffer.insert_str(r.to, closer);
         self.buffer.insert_str(r.from, "\"");
-        self.quarantine.remove(&r.id);
+        // Represent both edits as one change set (pre-edit, sorted coords) and
+        // route through commit_edit so the OTHER regions are remapped past the
+        // inserted text rather than left with stale offsets.
+        let cs = ChangeSet {
+            changes: vec![
+                Change {
+                    from: r.from,
+                    to: r.from,
+                    insert: "\"".to_string(),
+                },
+                Change {
+                    from: r.to,
+                    to: r.to,
+                    insert: closer.to_string(),
+                },
+            ],
+        };
+        self.commit_edit(cs);
         self.log_event(
             ProcessEventType::PasteAttributed,
             Some((r.to - r.from) as u32),
@@ -440,11 +527,6 @@ impl App {
             }),
             vec![("regionId", MetaValue::Str(r.id))],
         );
-        self.last_change = None;
-        self.dirty = true;
-        self.lint_dirty = true;
-        self.last_edit = Some(Instant::now());
-        self.reveal_cursor();
         self.message = "Marked as quotation (citation needed).".into();
     }
 
@@ -475,13 +557,26 @@ impl App {
         if msg.trim().is_empty() {
             return;
         }
+        let context = self.buffer.text();
+        self.coach_pending_size = (msg.chars().count() + context.chars().count()) as u32;
+        // Both the writer's message and the draft excerpt are inputs that could
+        // smuggle instructions — screen both BEFORE any egress (defense-in-depth
+        // on top of the untrusted-channel wrapping and the reply guard).
+        if let Err(reason) = screen_injection(&format!("{msg}\n{context}")) {
+            self.log_coach_consult(true);
+            self.coach_turns.push(ChatTurn {
+                role: ChatTurnRole::Coach,
+                text: format!("(request not sent — input flagged by injection screen: {reason})"),
+            });
+            self.message = "Coach request blocked by injection screen.".into();
+            return;
+        }
         // History is everything before the turn we're about to send.
         let history: Vec<ChatTurn> = self.coach_turns.to_vec();
         self.coach_turns.push(ChatTurn {
             role: ChatTurnRole::Writer,
             text: msg.clone(),
         });
-        let context = self.buffer.text();
         let messages = build_chat_messages(&msg, &history, Some(&context), self.claim.as_deref());
         self.coach_streaming.clear();
         self.coach_busy = true;
@@ -498,10 +593,15 @@ impl App {
 
     /// Pump coach streaming events into the app state.
     pub fn drain_coach_events(&mut self) {
-        let Some(rx) = self.coach_rx.as_mut() else {
-            return;
-        };
-        while let Ok(ev) = rx.try_recv() {
+        // Drain into a local buffer first so the rx borrow is released before we
+        // call the &mut self journaling/guard helpers below.
+        let mut events = Vec::new();
+        if let Some(rx) = self.coach_rx.as_mut() {
+            while let Ok(ev) = rx.try_recv() {
+                events.push(ev);
+            }
+        }
+        for ev in events {
             match ev {
                 CoachEvent::Delta(d) => self.coach_streaming.push_str(&d),
                 CoachEvent::Done(res) => {
@@ -509,9 +609,12 @@ impl App {
                     self.coach_streaming.clear();
                     match res {
                         Ok(reply) => {
+                            // Screen the assembled reply (length/rewrite/overlap +
+                            // forbidden-label guard) BEFORE it is ever shown.
                             let ctx = self.buffer.text();
                             match screen_chat_reply(&reply, &ctx) {
                                 Ok(()) => {
+                                    self.log_coach_consult(false);
                                     self.coach_turns.push(ChatTurn {
                                         role: ChatTurnRole::Coach,
                                         text: reply,
@@ -519,6 +622,7 @@ impl App {
                                     self.message = "Coach replied.".into();
                                 }
                                 Err(reason) => {
+                                    self.log_coach_consult(true);
                                     self.coach_turns.push(ChatTurn {
                                         role: ChatTurnRole::Coach,
                                         text: format!("(withheld by guard: {reason})"),
@@ -527,7 +631,10 @@ impl App {
                                 }
                             }
                         }
-                        Err(e) => self.message = format!("Coach error: {e}"),
+                        Err(e) => {
+                            self.log_coach_consult(true);
+                            self.message = format!("Coach error: {e}");
+                        }
                     }
                 }
             }
@@ -537,10 +644,13 @@ impl App {
     /// Check whether a new paragraph crossed a teach-back threshold.
     fn maybe_trigger_teachback(&mut self, text: &str) {
         let pc = instruments::paragraph_count(text);
-        if pc > self.last_para_count && pc >= self.next_teachback {
+        if let Some(interval) = self.friction.teachback_interval()
+            && pc > self.last_para_count
+            && pc >= self.next_teachback
+        {
             self.teachback_pending = true;
             self.teachback_input.clear();
-            self.next_teachback = pc + 3;
+            self.next_teachback = pc + interval;
             self.message = "Teach-back checkpoint — summarize your argument.".into();
         }
         self.last_para_count = pc;
@@ -644,7 +754,10 @@ impl App {
                 } else if over_editor {
                     let inner = self.editor_inner;
                     let line = self.editor_scroll + (ev.row - inner.y) as usize;
-                    let col = (ev.column as usize).saturating_sub(inner.x as usize);
+                    // The click column is in terminal display cells; convert it
+                    // to a char offset so wide glyphs (CJK/emoji) land correctly.
+                    let target = (ev.column as usize).saturating_sub(inner.x as usize);
+                    let col = self.buffer.char_col_for_display(line, target);
                     self.buffer.set_cursor_line_col(line, col);
                     self.focus = Focus::Editor;
                     self.reveal_cursor();
@@ -844,8 +957,9 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
     // Position the terminal cursor only when the editor is focused.
     if app.focus == Focus::Editor {
         let (line, col) = app.buffer.cursor_line_col();
+        let disp = app.buffer.display_width(line, col);
         let max_col = inner.width.saturating_sub(1) as usize;
-        let cx = inner.x + col.min(max_col) as u16;
+        let cx = inner.x + disp.min(max_col) as u16;
         let cy = inner.y + line.saturating_sub(app.editor_scroll) as u16;
         frame.set_cursor_position((cx, cy));
     }
@@ -859,8 +973,22 @@ fn draw_preview(frame: &mut Frame, app: &mut App, area: Rect) {
     app.preview_height = inner.height as usize;
     app.preview_inner = inner;
 
-    let text = render_to_text(&app.buffer.text());
-    let content = wrapped_height(&text, inner.width as usize);
+    // Re-render the markdown only when the document or pane width changed —
+    // not on every frame (the loop draws ~10×/s even while idle).
+    let width = inner.width;
+    let stale = match &app.preview_cache {
+        Some((v, w, _, _)) => *v != app.edit_version || *w != width,
+        None => true,
+    };
+    if stale {
+        let text = render_to_text(&app.buffer.text());
+        let content = wrapped_height(&text, width as usize);
+        app.preview_cache = Some((app.edit_version, width, text, content));
+    }
+    let (text, content) = {
+        let (_, _, t, c) = app.preview_cache.as_ref().unwrap();
+        (t.clone(), *c)
+    };
     let max = content.saturating_sub(app.preview_height);
     if app.preview_scroll > max {
         app.preview_scroll = max;
@@ -902,10 +1030,17 @@ fn draw_coach(frame: &mut Frame, app: &mut App, area: Rect) {
             }
         }
         if app.coach_busy {
+            // The reply is shown only AFTER it passes the guard (see
+            // drain_coach_events). Streaming text is never rendered, so an
+            // unscreened rewrite can't flash on screen mid-stream.
             lines.push(Line::from(vec![
                 Span::styled("coach: ", Style::default().fg(Color::Green)),
-                Span::raw(app.coach_streaming.clone()),
-                Span::styled("▌", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    "thinking…",
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                ),
             ]));
         }
         if lines.is_empty() {
@@ -970,7 +1105,12 @@ fn draw_status(frame: &mut Frame, app: &mut App, area: Rect) {
         format!("⚠{}", app.diagnostics.len())
     };
     let mirror = {
-        let c = compute_mirror(&app.journal).composition;
+        // Recompute the mirror only when a new event was journaled.
+        if app.mirror_cache.as_ref().map(|(seq, _)| *seq) != Some(app.event_seq) {
+            let snap = compute_mirror(&app.journal);
+            app.mirror_cache = Some((app.event_seq, snap));
+        }
+        let c = &app.mirror_cache.as_ref().unwrap().1.composition;
         if c.paste_count == 0 {
             String::new()
         } else {

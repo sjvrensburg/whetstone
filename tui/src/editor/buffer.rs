@@ -5,6 +5,7 @@
 //! grammar layers. Harper's `Span<char>` maps onto these directly.
 
 use ropey::Rope;
+use unicode_width::UnicodeWidthChar;
 
 use super::transaction::Change;
 
@@ -76,6 +77,33 @@ impl Buffer {
         let line = self.rope.char_to_line(c);
         let line_start = self.rope.line_to_char(line);
         (line, c - line_start)
+    }
+
+    /// Terminal display width (columns) of `line` up to char column `col`.
+    /// Accounts for wide glyphs (CJK/emoji), so the drawn cursor and mouse
+    /// hit-testing agree with what the terminal actually renders.
+    pub fn display_width(&self, line: usize, col: usize) -> usize {
+        self.line_text(line)
+            .chars()
+            .take(col)
+            .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
+            .sum()
+    }
+
+    /// The char column in `line` whose rendered cell is at (or just past)
+    /// terminal display column `target` — the inverse of [`Self::display_width`]
+    /// used to turn a mouse click into a cursor offset.
+    pub fn char_col_for_display(&self, line: usize, target: usize) -> usize {
+        let text = self.line_text(line);
+        let mut width = 0usize;
+        for (i, c) in text.chars().enumerate() {
+            let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+            if width + cw > target {
+                return i;
+            }
+            width += cw;
+        }
+        text.chars().count()
     }
 
     /// Usable char length of a line, excluding its trailing newline.
