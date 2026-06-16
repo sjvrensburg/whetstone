@@ -18,6 +18,7 @@ pub enum MenuAction {
     ThemePicker,
     SetFriction(u8),
     ToggleCoach,
+    CoachSettings,
     Help,
 }
 
@@ -109,6 +110,7 @@ pub fn menus(coach_enabled: bool, friction_level: u8, theme_name: &str) -> Vec<M
             items: vec![
                 MenuItem::new("Focus coach", "Ctrl+L", MenuAction::ToggleCoach)
                     .enabled(coach_enabled),
+                MenuItem::new("AI settings…", "Ctrl+E", MenuAction::CoachSettings),
             ],
         },
         Menu {

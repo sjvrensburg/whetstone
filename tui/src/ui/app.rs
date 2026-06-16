@@ -24,7 +24,7 @@ use ratatui::widgets::{
     Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
 };
 
-use crate::coach::{CoachClient, CoachConfig};
+use crate::coach::{CoachClient, CoachConfig, DEFAULT_MODEL};
 use crate::core::disclosure::render_disclosure;
 use crate::core::guard::{screen_chat_reply, screen_injection};
 use crate::core::mirror::{MirrorSnapshot, compute_mirror};
@@ -59,6 +59,15 @@ pub enum CoachEvent {
 struct ThemePicker {
     sel: usize,
     original: &'static Theme,
+}
+
+/// Edit buffers for the AI/coach settings dialog. `field` selects the focused
+/// input (0 = endpoint, 1 = API key, 2 = model).
+struct CoachSettings {
+    base_url: String,
+    api_key: String,
+    model: String,
+    field: usize,
 }
 
 /// The running editor application.
@@ -99,8 +108,8 @@ pub struct App {
 
     tokio: tokio::runtime::Handle,
     client: Option<CoachClient>,
-    coach_tx: Option<mpsc::Sender<CoachEvent>>,
-    coach_rx: Option<mpsc::Receiver<CoachEvent>>,
+    coach_tx: mpsc::Sender<CoachEvent>,
+    coach_rx: mpsc::Receiver<CoachEvent>,
     coach_turns: Vec<ChatTurn>,
     coach_input: String,
     coach_streaming: String,
@@ -127,6 +136,9 @@ pub struct App {
     /// Theme picker popup state + its rect.
     theme_picker: Option<ThemePicker>,
     theme_picker_rect: Rect,
+    /// AI/coach settings dialog state + its rect.
+    coach_settings: Option<CoachSettings>,
+    coach_settings_rect: Rect,
     /// Whether the keybindings/help popup is showing.
     help_open: bool,
 
@@ -179,8 +191,9 @@ impl App {
         };
 
         let client = coach_config.map(CoachClient::new);
+        // The channel is always live so the coach can be enabled at runtime via
+        // the AI settings dialog; `client.is_some()` is the single enabled flag.
         let (coach_tx, coach_rx) = mpsc::channel();
-        let coach_enabled = client.is_some();
 
         Self {
             buffer,
@@ -201,8 +214,8 @@ impl App {
             last_change: None,
             tokio,
             client,
-            coach_tx: if coach_enabled { Some(coach_tx) } else { None },
-            coach_rx: if coach_enabled { Some(coach_rx) } else { None },
+            coach_tx,
+            coach_rx,
             coach_turns: Vec::new(),
             coach_input: String::new(),
             coach_streaming: String::new(),
@@ -232,6 +245,8 @@ impl App {
             menu_dropdown_rect: Rect::default(),
             theme_picker: None,
             theme_picker_rect: Rect::default(),
+            coach_settings: None,
+            coach_settings_rect: Rect::default(),
             help_open: false,
             preview_cache: None,
             mirror_cache: None,
@@ -339,6 +354,14 @@ impl App {
         if text.is_empty() {
             return;
         }
+        if let Some(s) = self.coach_settings.as_mut() {
+            match s.field {
+                0 => s.base_url.push_str(text),
+                1 => s.api_key.push_str(text),
+                _ => s.model.push_str(text),
+            }
+            return;
+        }
         match self.focus {
             Focus::Editor => {
                 if self.gated {
@@ -391,6 +414,10 @@ impl App {
             self.handle_theme_picker_key(key);
             return;
         }
+        if self.coach_settings.is_some() {
+            self.handle_coach_settings_key(key);
+            return;
+        }
         if self.menu_open.is_some() {
             self.handle_menu_key(key);
             return;
@@ -420,6 +447,7 @@ impl App {
                 KeyCode::Char('m') if self.focus == Focus::Editor => self.attribute_region(),
                 KeyCode::Char('s') => self.save(),
                 KeyCode::Char('t') => self.open_theme_picker(),
+                KeyCode::Char('e') => self.open_coach_settings(),
                 KeyCode::Char('c') | KeyCode::Char('q') => self.quit = true,
                 KeyCode::Char('l') if self.client.is_some() => {
                     self.dispatch(MenuAction::ToggleCoach)
@@ -441,6 +469,7 @@ impl App {
             || self.teachback_pending
             || self.menu_open.is_some()
             || self.theme_picker.is_some()
+            || self.coach_settings.is_some()
             || self.help_open
     }
 
@@ -545,6 +574,7 @@ impl App {
                     self.coach_input.clear();
                 }
             }
+            MenuAction::CoachSettings => self.open_coach_settings(),
             MenuAction::Help => self.help_open = true,
         }
     }
@@ -611,6 +641,93 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    // --- AI / coach settings ----------------------------------------------
+
+    fn open_coach_settings(&mut self) {
+        let (base_url, api_key, model) = match self.client.as_ref().map(|c| c.config().clone()) {
+            Some(c) => (c.base_url, c.api_key, c.model),
+            None => (String::new(), String::new(), DEFAULT_MODEL.to_string()),
+        };
+        self.coach_settings = Some(CoachSettings {
+            base_url,
+            api_key,
+            model,
+            field: 0,
+        });
+    }
+
+    fn handle_coach_settings_key(&mut self, key: KeyEvent) {
+        // Enter/Esc need &mut self, so handle them before borrowing the buffers.
+        match key.code {
+            KeyCode::Esc => {
+                self.coach_settings = None;
+                self.message = "AI settings cancelled.".into();
+                return;
+            }
+            KeyCode::Enter => {
+                self.save_coach_settings();
+                return;
+            }
+            _ => {}
+        }
+        let Some(s) = self.coach_settings.as_mut() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Tab | KeyCode::Down => s.field = (s.field + 1) % 3,
+            KeyCode::BackTab | KeyCode::Up => s.field = (s.field + 2) % 3,
+            KeyCode::Backspace => {
+                match s.field {
+                    0 => s.base_url.pop(),
+                    1 => s.api_key.pop(),
+                    _ => s.model.pop(),
+                };
+            }
+            KeyCode::Char(c) if !c.is_control() => match s.field {
+                0 => s.base_url.push(c),
+                1 => s.api_key.push(c),
+                _ => s.model.push(c),
+            },
+            _ => {}
+        }
+    }
+
+    /// Apply the dialog: rebuild (or disable) the coach client and persist.
+    fn save_coach_settings(&mut self) {
+        let Some(s) = self.coach_settings.take() else {
+            return;
+        };
+        let base_url = s.base_url.trim().trim_end_matches('/').to_string();
+        let model = {
+            let m = s.model.trim();
+            if m.is_empty() {
+                DEFAULT_MODEL.to_string()
+            } else {
+                m.to_string()
+            }
+        };
+        let cfg = CoachConfig {
+            base_url: base_url.clone(),
+            api_key: s.api_key,
+            model,
+        };
+        // An empty endpoint disables the coach; otherwise (re)build the client.
+        self.client = if base_url.is_empty() {
+            None
+        } else {
+            Some(CoachClient::new(cfg.clone()))
+        };
+        let state = if base_url.is_empty() {
+            "Coach disabled"
+        } else {
+            "Coach configured"
+        };
+        self.message = match cfg.save() {
+            Ok(path) => format!("{state} · saved {}", path.display()),
+            Err(e) => format!("{state} · save failed: {e}"),
+        };
     }
 
     fn menu_title_at(&self, col: u16) -> Option<usize> {
@@ -796,10 +913,11 @@ impl App {
     /// Send the current coach input as a chat turn and spawn the streaming
     /// request. The reply is guarded on completion (see `drain_coach_events`).
     fn ask_coach(&mut self) {
-        let (Some(client), Some(tx)) = (self.client.clone(), self.coach_tx.clone()) else {
-            self.message = "Coach not configured".into();
+        let Some(client) = self.client.clone() else {
+            self.message = "Coach not configured — set it in Coach ▸ AI settings (Ctrl+E)".into();
             return;
         };
+        let tx = self.coach_tx.clone();
         if self.coach_busy {
             self.message = "Coach is already thinking…".into();
             return;
@@ -844,13 +962,11 @@ impl App {
 
     /// Pump coach streaming events into the app state.
     pub fn drain_coach_events(&mut self) {
-        // Drain into a local buffer first so the rx borrow is released before we
-        // call the &mut self journaling/guard helpers below.
+        // Drain into a local buffer first so we can call the &mut self
+        // journaling/guard helpers below without holding the receiver borrow.
         let mut events = Vec::new();
-        if let Some(rx) = self.coach_rx.as_mut() {
-            while let Ok(ev) = rx.try_recv() {
-                events.push(ev);
-            }
+        while let Ok(ev) = self.coach_rx.try_recv() {
+            events.push(ev);
         }
         for ev in events {
             match ev {
@@ -1014,6 +1130,25 @@ impl App {
                     }
                 }
                 _ => {}
+            }
+            return;
+        }
+
+        // AI settings dialog: click a field row to focus it, outside to cancel.
+        if self.coach_settings.is_some() {
+            if let MouseEventKind::Down(MouseButton::Left) = ev.kind {
+                let rect = self.coach_settings_rect;
+                if over(rect) {
+                    if ev.row > rect.y && ev.row + 1 < rect.y + rect.height {
+                        let row = (ev.row - rect.y - 1) as usize;
+                        if row < 3 {
+                            self.coach_settings.as_mut().unwrap().field = row;
+                        }
+                    }
+                } else {
+                    self.coach_settings = None;
+                    self.message = "AI settings cancelled.".into();
+                }
             }
             return;
         }
@@ -1182,9 +1317,66 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if app.theme_picker.is_some() {
         draw_theme_picker(frame, app, area);
     }
+    if app.coach_settings.is_some() {
+        draw_coach_settings(frame, app, area);
+    }
     if app.help_open {
         draw_help(frame, app, area);
     }
+}
+
+fn draw_coach_settings(frame: &mut Frame, app: &mut App, area: Rect) {
+    let Some(s) = app.coach_settings.as_ref() else {
+        return;
+    };
+    let theme = app.theme;
+    let rect = centered_rect_abs(66, 9, area);
+    app.coach_settings_rect = rect;
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme.border(true))
+        .style(theme.panel_bg())
+        .title(Line::from(Span::styled(
+            " AI / Coach settings ",
+            theme.title(true),
+        )));
+    let inner = block.inner(rect);
+
+    // Marker (2) + label padded to 9 + space = 12-cell gutter before the value.
+    let gutter = 12u16;
+    let field_line = |idx: usize, label: &str, value: String| {
+        let focused = s.field == idx;
+        let marker = if focused { "▸ " } else { "  " };
+        let label_style = if focused { theme.accent() } else { theme.dim() };
+        Line::from(vec![
+            Span::styled(format!("{marker}{label:<9} "), label_style),
+            Span::styled(value, theme.text()),
+        ])
+    };
+    let masked: String = "•".repeat(s.api_key.chars().count());
+    let lines = vec![
+        field_line(0, "Endpoint", s.base_url.clone()),
+        field_line(1, "API key", masked),
+        field_line(2, "Model", s.model.clone()),
+        Line::raw(""),
+        Line::from(Span::styled(
+            "Tab/↑↓ field · Enter save · Esc cancel · empty endpoint disables",
+            theme.dim(),
+        )),
+    ];
+    frame.render_widget(Clear, rect);
+    frame.render_widget(Paragraph::new(lines).block(block), rect);
+
+    // Caret at the end of the focused field's value.
+    let val_len = match s.field {
+        0 => s.base_url.chars().count(),
+        1 => s.api_key.chars().count(),
+        _ => s.model.chars().count(),
+    } as u16;
+    let cx = (inner.x + gutter + val_len).min(inner.right().saturating_sub(1));
+    let cy = inner.y + s.field as u16;
+    frame.set_cursor_position((cx, cy));
 }
 
 fn draw_menu_bar(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -1344,6 +1536,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
         row("Ctrl+K", "State / edit your claim"),
         row("Ctrl+M", "Mark paste under cursor as a quotation"),
         row("Ctrl+L", "Focus the coach panel"),
+        row("Ctrl+E", "AI settings (endpoint, API key, model)"),
         row("Ctrl+T", "Theme picker (live preview)"),
         row("F10", "Open the menu bar"),
         row("F1", "This help"),
@@ -1580,7 +1773,7 @@ fn draw_coach(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     if app.client.is_none() {
         lines.push(Line::from(Span::styled(
-            "Coach disabled. Set WHETSTONE_BASE_URL (and optionally WHETSTONE_API_KEY,\nWHETSTONE_MODEL) to enable — e.g. an Ollama or LM Studio endpoint.",
+            "Coach disabled. Open Coach ▸ AI settings (Ctrl+E) to set an endpoint, API\nkey, and model — e.g. an Ollama or LM Studio server. WHETSTONE_* env vars work too.",
             theme.dim(),
         )));
     } else {
@@ -1928,6 +2121,30 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(app.theme.name, first, "Esc must restore the original theme");
+    }
+
+    #[test]
+    fn coach_settings_dialog_opens_edits_and_cancels() {
+        let rt = rt();
+        let mut app = test_app(&rt);
+        app.dispatch(MenuAction::CoachSettings);
+        assert!(app.coach_settings.is_some());
+        let s = render(&mut app);
+        for needle in ["Endpoint", "API key", "Model"] {
+            assert!(s.contains(needle), "settings dialog missing {needle:?}");
+        }
+        // Type into the focused (endpoint) field.
+        for ch in "http://x".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+        assert_eq!(app.coach_settings.as_ref().unwrap().base_url, "http://x");
+        // Tab advances the focused field.
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.coach_settings.as_ref().unwrap().field, 1);
+        // Esc cancels without enabling the coach (no disk write).
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.coach_settings.is_none());
+        assert!(app.client.is_none());
     }
 
     #[test]

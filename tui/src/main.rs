@@ -38,7 +38,7 @@ fn main() -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    let coach_config = CoachConfig::from_env();
+    let coach_config = CoachConfig::load();
     let mut app = App::new(text, cli.file.clone(), coach_config, rt.handle().clone());
     app.start_session();
 

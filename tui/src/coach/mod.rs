@@ -9,4 +9,4 @@ pub mod client;
 pub mod config;
 
 pub use client::{CoachClient, parse_sse_chunk};
-pub use config::CoachConfig;
+pub use config::{CoachConfig, DEFAULT_MODEL};
