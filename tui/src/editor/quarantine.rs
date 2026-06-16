@@ -80,6 +80,11 @@ impl Quarantine {
         &self.regions
     }
 
+    /// Replace the tracked regions wholesale (used to restore an undo snapshot).
+    pub fn restore_regions(&mut self, regions: Vec<Region>) {
+        self.regions = regions;
+    }
+
     /// The region containing `pos` (inclusive of the trailing edge).
     pub fn region_at(&self, pos: usize) -> Option<&Region> {
         self.regions

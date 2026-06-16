@@ -73,14 +73,10 @@ impl CoachClient {
         while let Some(chunk) = stream.next().await {
             let chunk = chunk?;
             bytes.extend_from_slice(&chunk);
-            // Move only complete lines (through the last newline) into the text
-            // buffer. Partial trailing bytes — possibly a multibyte char split
-            // across this network chunk and the next — stay in `bytes`, so a
-            // split codepoint never aborts the stream. A line delimited by '\n'
-            // is always a whole codepoint sequence, so the conversion is exact.
-            if let Some(last_nl) = bytes.iter().rposition(|&b| b == b'\n') {
-                let complete: Vec<u8> = bytes.drain(..=last_nl).collect();
-                buf.push_str(&String::from_utf8_lossy(&complete));
+            // Move only complete lines into the text buffer; a partial trailing
+            // line (possibly a multibyte char split across network chunks) stays
+            // in `bytes` so a split codepoint never aborts the stream.
+            if drain_complete_lines(&mut bytes, &mut buf) {
                 for delta in parse_sse_chunk(&mut buf) {
                     on_delta(&delta);
                     full.push_str(&delta);
@@ -100,6 +96,22 @@ impl CoachClient {
         }
         Ok(full)
     }
+}
+
+/// Move all complete lines (through the last `\n`) from the raw byte buffer
+/// into the text buffer, decoding them as UTF-8 (lossily for any truly invalid
+/// bytes). Bytes after the last newline — which may be a multibyte char split
+/// across network reads — stay in `bytes`. Returns whether anything moved.
+///
+/// A line delimited by `\n` is always a whole sequence of codepoints (`\n` is
+/// never a continuation byte), so complete lines decode exactly.
+fn drain_complete_lines(bytes: &mut Vec<u8>, buf: &mut String) -> bool {
+    let Some(last_nl) = bytes.iter().rposition(|&b| b == b'\n') else {
+        return false;
+    };
+    let complete: Vec<u8> = bytes.drain(..=last_nl).collect();
+    buf.push_str(&String::from_utf8_lossy(&complete));
+    true
 }
 
 /// Parse complete SSE `data:` lines out of `buf`, returning the content deltas
@@ -166,6 +178,26 @@ mod tests {
             buf.contains("\"par"),
             "incomplete line stays buffered: {buf:?}"
         );
+    }
+
+    #[test]
+    fn reassembles_multibyte_char_split_across_chunks() {
+        // "café" — the 'é' (0xC3 0xA9) is split across two network chunks. The
+        // partial byte must be held back, not decoded (which would corrupt or,
+        // in the old code, abort the stream).
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut buf = String::new();
+
+        let line = b"data: {\"choices\":[{\"delta\":{\"content\":\"caf\xC3";
+        bytes.extend_from_slice(line); // ends mid-codepoint, no newline
+        assert!(!drain_complete_lines(&mut bytes, &mut buf));
+        assert!(parse_sse_chunk(&mut buf).is_empty());
+
+        bytes.extend_from_slice(b"\xA9\"}}]}\n"); // rest of 'é' + close + newline
+        assert!(drain_complete_lines(&mut bytes, &mut buf));
+        let out = parse_sse_chunk(&mut buf);
+        assert_eq!(out, vec!["café".to_string()]);
+        assert!(bytes.is_empty());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Whetstone TUI — a friction-first Quarto markdown editor for the terminal.
 
-use std::io::{self, stdout};
+use std::io::{self, Write, stdout};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -90,9 +90,23 @@ fn run(terminal: &mut Tui, app: &mut App) -> Result<()> {
             event::Event::Resize(_, _) => {}
             _ => {}
         }
+        // Copy/cut writes to the system clipboard via OSC 52 (works over SSH,
+        // no platform clipboard library needed).
+        if let Some(text) = app.take_clipboard_request() {
+            copy_to_clipboard(&text);
+        }
         if app.should_quit() {
             break;
         }
     }
     Ok(())
+}
+
+/// Emit an OSC 52 escape sequence to set the terminal's clipboard.
+fn copy_to_clipboard(text: &str) {
+    use base64::Engine as _;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+    let mut out = stdout();
+    let _ = write!(out, "\x1b]52;c;{encoded}\x07");
+    let _ = out.flush();
 }

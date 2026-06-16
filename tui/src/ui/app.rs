@@ -25,13 +25,14 @@ use ratatui::widgets::{
 };
 
 use crate::coach::{CoachClient, CoachConfig, DEFAULT_MODEL};
+use crate::core::coaching::{ObservationKind, StructuredCoaching};
 use crate::core::disclosure::render_disclosure;
-use crate::core::guard::{screen_chat_reply, screen_injection};
-use crate::core::mirror::{MirrorSnapshot, compute_mirror};
+use crate::core::guard::{screen_chat_reply, screen_coaching_output, screen_injection};
+use crate::core::mirror::{MirrorSnapshot, compute_mirror, format_mirror_summary};
 use crate::core::process_event::{
     FrictionPolicy, Location, MetaValue, ProcessEvent, ProcessEventType,
 };
-use crate::core::prompts::{ChatTurn, ChatTurnRole, build_chat_messages};
+use crate::core::prompts::{ChatTurn, ChatTurnRole, build_chat_messages, build_coach_messages};
 use crate::editor::buffer::Buffer;
 use crate::editor::quarantine::{Outcome, Quarantine, Region};
 use crate::editor::transaction::{Change, ChangeSet};
@@ -39,6 +40,7 @@ use crate::grammar::{Diagnostic, Linter, Severity};
 use crate::instruments;
 use crate::markdown::render::render_to_text;
 use crate::ui::menu::{self, Menu, MenuAction};
+use crate::ui::settings::Settings;
 use crate::ui::theme::{self, Theme};
 
 /// Which pane receives keyboard input.
@@ -48,11 +50,31 @@ pub enum Focus {
     Coach,
 }
 
-/// A streaming coach event, pushed from the async coach task to the UI loop.
-pub enum CoachEvent {
-    Delta(String),
-    Done(Result<String, String>),
+/// A finished coach request, tagged with the generation it belongs to so a
+/// cancelled or superseded request's late result is ignored.
+pub struct CoachEvent {
+    generation: u64,
+    result: Result<String, String>,
 }
+
+/// What the in-flight coach request is. `Structured` carries the selection it
+/// was run on (kept so the reply is screened against the send-time text).
+enum CoachMode {
+    Chat,
+    Structured(String),
+}
+
+/// An undo checkpoint. The journal is intentionally NOT part of this — it is an
+/// append-only audit record, so undo restores the text/marks but never erases
+/// what happened.
+struct Snapshot {
+    text: String,
+    cursor: usize,
+    regions: Vec<Region>,
+}
+
+/// Max undo depth.
+const UNDO_CAP: usize = 200;
 
 /// Live-preview state for the theme picker popup. `original` is restored on
 /// cancel (Esc); moving the selection applies the theme immediately.
@@ -78,8 +100,15 @@ pub struct App {
     pub quit: bool,
     pub message: String,
     editor_scroll: usize,
+    /// Horizontal scroll, in terminal display columns (long lines).
+    editor_hscroll: usize,
     editor_height: usize,
     editor_inner: Rect,
+    /// Undo/redo checkpoints (text + cursor + quarantine regions).
+    undo_stack: Vec<Snapshot>,
+    redo_stack: Vec<Snapshot>,
+    /// Plain text awaiting an OSC 52 clipboard write by the run loop.
+    clipboard_request: Option<String>,
     preview_scroll: usize,
     preview_height: usize,
     preview_inner: Rect,
@@ -87,8 +116,6 @@ pub struct App {
     diagnostics: Vec<Diagnostic>,
     lint_dirty: bool,
     last_edit: Option<Instant>,
-    /// The most recent transaction, exposed for M4's quarantine region store.
-    pub last_change: Option<ChangeSet>,
 
     journal: Vec<ProcessEvent>,
     event_seq: u64,
@@ -112,11 +139,15 @@ pub struct App {
     coach_rx: mpsc::Receiver<CoachEvent>,
     coach_turns: Vec<ChatTurn>,
     coach_input: String,
-    coach_streaming: String,
     coach_busy: bool,
-    /// Size (chars) of the in-flight consult's message+context, for journaling
-    /// the `coach_consult` event when the reply resolves.
+    /// What the in-flight request is (chat vs structured-on-selection).
+    coach_mode: CoachMode,
+    /// Monotonic id; a reply is accepted only if it still matches (cancel/supersede).
+    coach_generation: u64,
+    /// Size (chars) of the in-flight consult's message+context, for journaling.
     coach_pending_size: u32,
+    /// The context the in-flight reply must be screened against (send-time text).
+    coach_pending_context: String,
     focus: Focus,
     coach_inner: Rect,
     coach_scroll: usize,
@@ -141,6 +172,12 @@ pub struct App {
     coach_settings_rect: Rect,
     /// Whether the keybindings/help popup is showing.
     help_open: bool,
+    /// Whether the process/journal view is showing, and its scroll.
+    journal_open: bool,
+    journal_scroll: usize,
+    journal_rect: Rect,
+    /// Whether the unsaved-changes quit confirmation is showing.
+    confirm_quit: bool,
 
     /// Cached preview render: `(edit_version, width, theme_name, text, height)`.
     preview_cache: Option<(u64, u16, &'static str, Text<'static>, usize)>,
@@ -171,13 +208,17 @@ impl App {
         let gated = text.trim().is_empty();
         let pc0 = instruments::paragraph_count(&text);
 
+        // Saved UI preferences (theme + friction); env vars override them.
+        let saved = Settings::load();
+
         // Friction dial (ADR-008): institutional floor 0, writer preset from
-        // WHETSTONE_FRICTION (0–3, default 1). Drives the instruments below.
+        // WHETSTONE_FRICTION, else the saved preference, else 1 (Coach).
         let friction = FrictionPolicy::new(
             0,
             std::env::var("WHETSTONE_FRICTION")
                 .ok()
                 .and_then(|s| s.trim().parse::<u8>().ok())
+                .or(saved.friction)
                 .unwrap_or(1),
         );
         let mut quarantine = Quarantine::new();
@@ -189,6 +230,13 @@ impl App {
             Some(iv) => ((pc0 / iv) + 1) * iv,
             None => usize::MAX,
         };
+
+        // Theme: WHETSTONE_THEME, else the saved preference, else the default.
+        let theme = std::env::var("WHETSTONE_THEME")
+            .ok()
+            .and_then(|n| theme::by_name(&n))
+            .or_else(|| saved.theme.as_deref().and_then(theme::by_name))
+            .unwrap_or(&theme::THEMES[0]);
 
         let client = coach_config.map(CoachClient::new);
         // The channel is always live so the coach can be enabled at runtime via
@@ -202,8 +250,12 @@ impl App {
             quit: false,
             message,
             editor_scroll: 0,
+            editor_hscroll: 0,
             editor_height: 0,
             editor_inner: Rect::default(),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            clipboard_request: None,
             preview_scroll: 0,
             preview_height: 0,
             preview_inner: Rect::default(),
@@ -211,16 +263,17 @@ impl App {
             diagnostics,
             lint_dirty: false,
             last_edit: None,
-            last_change: None,
             tokio,
             client,
             coach_tx,
             coach_rx,
             coach_turns: Vec::new(),
             coach_input: String::new(),
-            coach_streaming: String::new(),
             coach_busy: false,
+            coach_mode: CoachMode::Chat,
+            coach_generation: 0,
             coach_pending_size: 0,
+            coach_pending_context: String::new(),
             focus: Focus::Editor,
             coach_inner: Rect::default(),
             coach_scroll: 0,
@@ -237,7 +290,7 @@ impl App {
             next_teachback,
             friction,
             edit_version: 0,
-            theme: theme::default_theme(),
+            theme,
             menu_open: None,
             menu_item: 0,
             menu_bar_rect: Rect::default(),
@@ -248,6 +301,10 @@ impl App {
             coach_settings: None,
             coach_settings_rect: Rect::default(),
             help_open: false,
+            journal_open: false,
+            journal_scroll: 0,
+            journal_rect: Rect::default(),
+            confirm_quit: false,
             preview_cache: None,
             mirror_cache: None,
         }
@@ -321,12 +378,96 @@ impl App {
         let after = self.buffer.text();
         let outcomes = self.quarantine.apply(&cs, &after);
         self.log_quarantine_outcomes(outcomes);
-        self.last_change = Some(cs);
         self.edit_version += 1;
         self.dirty = true;
         self.lint_dirty = true;
         self.last_edit = Some(Instant::now());
         self.reveal_cursor();
+    }
+
+    // --- undo / redo -------------------------------------------------------
+
+    fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            text: self.buffer.text(),
+            cursor: self.buffer.cursor(),
+            regions: self.quarantine.regions().to_vec(),
+        }
+    }
+
+    /// Record a pre-edit snapshot for undo (call only when an edit happened).
+    fn record_undo(&mut self, pre: Snapshot) {
+        self.undo_stack.push(pre);
+        if self.undo_stack.len() > UNDO_CAP {
+            self.undo_stack.remove(0);
+        }
+        self.redo_stack.clear();
+    }
+
+    fn restore(&mut self, s: Snapshot) {
+        self.buffer = Buffer::new(&s.text);
+        self.buffer.set_cursor(s.cursor);
+        self.quarantine.restore_regions(s.regions);
+        self.edit_version += 1;
+        self.dirty = true;
+        self.lint_dirty = true;
+        self.last_edit = Some(Instant::now());
+        self.reveal_cursor();
+    }
+
+    fn undo(&mut self) {
+        if let Some(prev) = self.undo_stack.pop() {
+            let cur = self.snapshot();
+            self.redo_stack.push(cur);
+            self.restore(prev);
+            self.message = "Undo".into();
+        } else {
+            self.message = "Nothing to undo".into();
+        }
+    }
+
+    fn redo(&mut self) {
+        if let Some(next) = self.redo_stack.pop() {
+            let cur = self.snapshot();
+            self.undo_stack.push(cur);
+            self.restore(next);
+            self.message = "Redo".into();
+        } else {
+            self.message = "Nothing to redo".into();
+        }
+    }
+
+    // --- clipboard (OSC 52) ------------------------------------------------
+
+    fn copy_selection(&mut self) {
+        match self.buffer.selected_text() {
+            Some(t) => {
+                let n = t.chars().count();
+                self.clipboard_request = Some(t);
+                self.message = format!("Copied {n} chars");
+            }
+            None => self.message = "Nothing selected".into(),
+        }
+    }
+
+    fn cut_selection(&mut self) {
+        let Some(text) = self.buffer.selected_text() else {
+            self.message = "Nothing selected".into();
+            return;
+        };
+        let pre = self.snapshot();
+        if let Some(change) = self.buffer.delete_selection() {
+            self.record_undo(pre);
+            let n = text.chars().count();
+            self.clipboard_request = Some(text);
+            self.commit_edit(ChangeSet::single(change));
+            self.message = format!("Cut {n} chars");
+        }
+    }
+
+    /// Take any pending OSC 52 clipboard payload (consumed by the run loop).
+    pub fn take_clipboard_request(&mut self) -> Option<String> {
+        self.clipboard_request.take()
     }
 
     /// Journal a `coach_consult` event — metadata only: provider/model, the
@@ -368,13 +509,18 @@ impl App {
                     self.claim_input.push_str(text);
                     return;
                 }
+                let pre = self.snapshot();
                 let n = text.chars().count();
-                let at = self.buffer.cursor();
-                let change = self.buffer.type_str(text);
-                let cs = ChangeSet::single(change);
-                // Remap existing regions against the insertion FIRST, then
-                // record the new paste with its post-insert offsets.
-                self.commit_edit(cs);
+                let at = self
+                    .buffer
+                    .selection()
+                    .map(|(s, _)| s)
+                    .unwrap_or_else(|| self.buffer.cursor());
+                let change = self.insert_or_replace(text);
+                self.record_undo(pre);
+                // Remap existing regions against the edit FIRST, then record the
+                // new paste with its post-edit offsets.
+                self.commit_edit(ChangeSet::single(change));
                 self.log_event(
                     ProcessEventType::PasteDetected,
                     Some(n as u32),
@@ -406,8 +552,16 @@ impl App {
             return;
         }
         // Overlays consume input first (most transient on top).
+        if self.confirm_quit {
+            self.handle_confirm_quit_key(key);
+            return;
+        }
         if self.help_open {
             self.help_open = false; // any key dismisses
+            return;
+        }
+        if self.journal_open {
+            self.handle_journal_key(key);
             return;
         }
         if self.theme_picker.is_some() {
@@ -439,16 +593,24 @@ impl App {
             self.help_open = true;
             return;
         }
-        // Global control keys.
+        // Global control keys (editor-scoped ones require editor focus).
         if key.modifiers.contains(KeyModifiers::CONTROL) {
+            let editing = self.focus == Focus::Editor;
             match key.code {
                 KeyCode::Char('k') => self.dispatch(MenuAction::EditClaim),
                 KeyCode::Char('d') => self.export_disclosure(),
-                KeyCode::Char('m') if self.focus == Focus::Editor => self.attribute_region(),
+                KeyCode::Char('m') if editing => self.attribute_region(),
+                KeyCode::Char('j') if editing => self.coach_selection(),
                 KeyCode::Char('s') => self.save(),
                 KeyCode::Char('t') => self.open_theme_picker(),
                 KeyCode::Char('e') => self.open_coach_settings(),
-                KeyCode::Char('c') | KeyCode::Char('q') => self.quit = true,
+                KeyCode::Char('p') => self.toggle_journal(),
+                KeyCode::Char('z') if editing => self.undo(),
+                KeyCode::Char('y') if editing => self.redo(),
+                KeyCode::Char('a') if editing => self.buffer.select_all(),
+                KeyCode::Char('c') if editing => self.copy_selection(),
+                KeyCode::Char('x') if editing => self.cut_selection(),
+                KeyCode::Char('q') => self.request_quit(),
                 KeyCode::Char('l') if self.client.is_some() => {
                     self.dispatch(MenuAction::ToggleCoach)
                 }
@@ -463,6 +625,51 @@ impl App {
         }
     }
 
+    /// Quit, guarding unsaved changes behind a confirmation dialog.
+    fn request_quit(&mut self) {
+        if self.dirty {
+            self.confirm_quit = true;
+        } else {
+            self.quit = true;
+        }
+    }
+
+    fn handle_confirm_quit_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => self.quit = true,
+            KeyCode::Char('s') | KeyCode::Char('S') => {
+                self.save();
+                if self.dirty {
+                    self.confirm_quit = false; // save failed — stay and show the error
+                } else {
+                    self.quit = true;
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+                self.confirm_quit = false;
+                self.message = "Quit cancelled.".into();
+            }
+            _ => {}
+        }
+    }
+
+    fn toggle_journal(&mut self) {
+        self.journal_open = !self.journal_open;
+        self.journal_scroll = 0;
+    }
+
+    fn handle_journal_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.journal_open = false,
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.journal_open = false;
+            }
+            KeyCode::Up => self.journal_scroll = self.journal_scroll.saturating_sub(1),
+            KeyCode::Down => self.journal_scroll = self.journal_scroll.saturating_add(1),
+            _ => {}
+        }
+    }
+
     /// Whether any modal/overlay is up (suppresses the editor caret, etc.).
     fn has_overlay(&self) -> bool {
         self.gated
@@ -471,6 +678,8 @@ impl App {
             || self.theme_picker.is_some()
             || self.coach_settings.is_some()
             || self.help_open
+            || self.journal_open
+            || self.confirm_quit
     }
 
     // --- menus -------------------------------------------------------------
@@ -561,7 +770,7 @@ impl App {
             }
             MenuAction::Save => self.save(),
             MenuAction::Export => self.export_disclosure(),
-            MenuAction::Quit => self.quit = true,
+            MenuAction::Quit => self.request_quit(),
             MenuAction::AttributeRegion => self.attribute_region(),
             MenuAction::ThemePicker => self.open_theme_picker(),
             MenuAction::SetFriction(n) => self.set_friction(n),
@@ -574,9 +783,20 @@ impl App {
                     self.coach_input.clear();
                 }
             }
+            MenuAction::CoachSelection => self.coach_selection(),
+            MenuAction::ResetCoach => self.reset_coach(),
             MenuAction::CoachSettings => self.open_coach_settings(),
+            MenuAction::Journal => self.toggle_journal(),
             MenuAction::Help => self.help_open = true,
         }
+    }
+
+    /// Clear the coach conversation and cancel any in-flight request.
+    fn reset_coach(&mut self) {
+        self.coach_turns.clear();
+        self.coach_generation += 1; // supersede any in-flight reply
+        self.coach_busy = false;
+        self.message = "Coach conversation reset.".into();
     }
 
     /// Re-set the friction level (ADR-008) live and re-tune the instruments.
@@ -594,6 +814,18 @@ impl App {
             "Friction: {} (level {level})",
             menu::friction_level_name(level)
         );
+        self.persist_settings();
+    }
+
+    /// Persist the current theme + friction preference (best-effort).
+    fn persist_settings(&mut self) {
+        let s = Settings {
+            theme: Some(self.theme.name.to_string()),
+            friction: Some(self.friction.preset),
+        };
+        if let Err(e) = s.save() {
+            self.message = format!("(preferences not saved: {e})");
+        }
     }
 
     // --- theme picker ------------------------------------------------------
@@ -632,6 +864,7 @@ impl App {
             KeyCode::Enter => {
                 self.message = format!("Theme: {}", self.theme.name);
                 self.theme_picker = None;
+                self.persist_settings();
             }
             KeyCode::Esc => {
                 let original = self.theme_picker.as_ref().unwrap().original;
@@ -750,63 +983,76 @@ impl App {
     }
 
     fn handle_editor_key(&mut self, key: KeyEvent) {
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        // Cursor movement: Shift extends a selection; anything else clears it.
+        let is_move = matches!(
+            key.code,
+            KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::Home
+                | KeyCode::End
+                | KeyCode::PageUp
+                | KeyCode::PageDown
+        );
+        if is_move {
+            if shift {
+                self.buffer.begin_selection();
+            } else {
+                self.buffer.clear_selection();
+            }
+            let h = self.editor_height.max(1);
+            match key.code {
+                KeyCode::Left => self.buffer.move_left(),
+                KeyCode::Right => self.buffer.move_right(),
+                KeyCode::Up => self.buffer.move_up(),
+                KeyCode::Down => self.buffer.move_down(),
+                KeyCode::Home => self.buffer.move_line_start(),
+                KeyCode::End => self.buffer.move_line_end(),
+                KeyCode::PageUp => {
+                    for _ in 0..h {
+                        self.buffer.move_up();
+                    }
+                }
+                KeyCode::PageDown => {
+                    for _ in 0..h {
+                        self.buffer.move_down();
+                    }
+                }
+                _ => {}
+            }
+            self.reveal_cursor();
+            return;
+        }
+
+        // Editing: an active selection is replaced/deleted as one change.
+        let had_selection = self.buffer.selection().is_some();
+        let pre = self.snapshot();
         let change = match key.code {
-            KeyCode::Char(c) if !c.is_control() => Some(self.buffer.type_char(c)),
-            KeyCode::Enter => Some(self.buffer.type_str("\n")),
-            KeyCode::Tab => Some(self.buffer.type_str("    ")),
-            KeyCode::Backspace => self.buffer.delete_backward(),
-            KeyCode::Delete => self.buffer.delete_forward(),
-            KeyCode::Left => {
-                self.buffer.move_left();
-                self.reveal_cursor();
-                return;
-            }
-            KeyCode::Right => {
-                self.buffer.move_right();
-                self.reveal_cursor();
-                return;
-            }
-            KeyCode::Up => {
-                self.buffer.move_up();
-                self.reveal_cursor();
-                return;
-            }
-            KeyCode::Down => {
-                self.buffer.move_down();
-                self.reveal_cursor();
-                return;
-            }
-            KeyCode::Home => {
-                self.buffer.move_line_start();
-                self.reveal_cursor();
-                return;
-            }
-            KeyCode::End => {
-                self.buffer.move_line_end();
-                self.reveal_cursor();
-                return;
-            }
-            KeyCode::PageUp => {
-                let h = self.editor_height.max(1);
-                for _ in 0..h {
-                    self.buffer.move_up();
+            KeyCode::Char(c) if !c.is_control() => Some(self.insert_or_replace(&c.to_string())),
+            KeyCode::Enter => Some(self.insert_or_replace("\n")),
+            KeyCode::Tab => Some(self.insert_or_replace("    ")),
+            KeyCode::Backspace => {
+                if had_selection {
+                    self.buffer.delete_selection()
+                } else {
+                    self.buffer.delete_backward()
                 }
-                self.reveal_cursor();
-                return;
             }
-            KeyCode::PageDown => {
-                let h = self.editor_height.max(1);
-                for _ in 0..h {
-                    self.buffer.move_down();
+            KeyCode::Delete => {
+                if had_selection {
+                    self.buffer.delete_selection()
+                } else {
+                    self.buffer.delete_forward()
                 }
-                self.reveal_cursor();
-                return;
             }
             _ => return,
         };
         let Some(change) = change else {
             return;
         };
+        self.record_undo(pre);
         let cs = ChangeSet::single(change);
         // Typing bursts are journaled as metadata (size only) when they add text.
         let inserted: usize = cs.changes.iter().map(|c| c.inserted_len()).sum();
@@ -821,6 +1067,15 @@ impl App {
         self.commit_edit(cs);
         let after = self.buffer.text();
         self.maybe_trigger_teachback(&after);
+    }
+
+    /// Insert `s`, replacing the active selection if there is one.
+    fn insert_or_replace(&mut self, s: &str) -> Change {
+        if self.buffer.selection().is_some() {
+            self.buffer.replace_selection(s).expect("selection present")
+        } else {
+            self.buffer.type_str(s)
+        }
     }
 
     /// Claim-gate input (before the editor is unlocked).
@@ -863,6 +1118,7 @@ impl App {
         };
         let closer = " (citation needed)";
         let closer_len = closer.chars().count();
+        let pre = self.snapshot();
         // Drop the attributed region, then apply both insertions to the buffer
         // (closer first so the opening-quote offset is unchanged).
         self.quarantine.remove(&r.id);
@@ -885,6 +1141,7 @@ impl App {
                 },
             ],
         };
+        self.record_undo(pre);
         self.commit_edit(cs);
         self.log_event(
             ProcessEventType::PasteAttributed,
@@ -900,7 +1157,13 @@ impl App {
 
     fn handle_coach_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc => self.focus = Focus::Editor,
+            KeyCode::Esc => {
+                if self.coach_busy {
+                    self.cancel_coach();
+                } else {
+                    self.focus = Focus::Editor;
+                }
+            }
             KeyCode::Enter => self.ask_coach(),
             KeyCode::Backspace => {
                 self.coach_input.pop();
@@ -910,16 +1173,48 @@ impl App {
         }
     }
 
-    /// Send the current coach input as a chat turn and spawn the streaming
-    /// request. The reply is guarded on completion (see `drain_coach_events`).
-    fn ask_coach(&mut self) {
+    /// Cancel an in-flight coach request: bump the generation so its late reply
+    /// is ignored, and clear the busy state (the task itself just finishes
+    /// into the void).
+    fn cancel_coach(&mut self) {
+        if self.coach_busy {
+            self.coach_generation += 1;
+            self.coach_busy = false;
+            self.message = "Coach request cancelled.".into();
+        }
+    }
+
+    /// Spawn a coach request, sending its result tagged with the current
+    /// generation so a cancel/supersede can discard a stale reply.
+    fn spawn_coach(&mut self, messages: Vec<crate::core::prompts::ChatMessage>) {
         let Some(client) = self.client.clone() else {
-            self.message = "Coach not configured — set it in Coach ▸ AI settings (Ctrl+E)".into();
             return;
         };
+        self.coach_generation += 1;
+        let generation = self.coach_generation;
         let tx = self.coach_tx.clone();
+        self.coach_busy = true;
+        self.message = "Asking coach…".into();
+        self.tokio.spawn(async move {
+            let result = client
+                .chat(&messages, |_| {})
+                .await
+                .map_err(|e| e.to_string());
+            // Always send a result, even if the future unwinds, so the UI never
+            // gets stuck "thinking".
+            let _ = tx.send(CoachEvent { generation, result });
+        });
+    }
+
+    /// Send the current coach input as a chat turn. The reply is guarded on
+    /// completion (see `drain_coach_events`).
+    fn ask_coach(&mut self) {
+        if self.client.is_none() {
+            self.message = "Coach not configured — set it in Coach ▸ AI settings (Ctrl+E)".into();
+            return;
+        }
         if self.coach_busy {
-            self.message = "Coach is already thinking…".into();
+            self.message = "Coach is already thinking… (Esc to cancel)".into();
             return;
         }
         let msg = std::mem::take(&mut self.coach_input);
@@ -947,20 +1242,45 @@ impl App {
             text: msg.clone(),
         });
         let messages = build_chat_messages(&msg, &history, Some(&context), self.claim.as_deref());
-        self.coach_streaming.clear();
-        self.coach_busy = true;
-        self.message = "Asking coach…".into();
-        self.tokio.spawn(async move {
-            let result = client
-                .chat(&messages, |d: &str| {
-                    let _ = tx.send(CoachEvent::Delta(d.to_string()));
-                })
-                .await;
-            let _ = tx.send(CoachEvent::Done(result.map_err(|e| e.to_string())));
-        });
+        // Screen the reply against the text as it is NOW (send-time), not a
+        // possibly-edited buffer at completion.
+        self.coach_pending_context = context;
+        self.coach_mode = CoachMode::Chat;
+        self.spawn_coach(messages);
     }
 
-    /// Pump coach streaming events into the app state.
+    /// Run structured coaching on the current selection (anchored observations,
+    /// no prose) — exercises the structured guard.
+    fn coach_selection(&mut self) {
+        let Some(selection) = self.buffer.selected_text() else {
+            self.message = "Select a passage first, then Ctrl+J to coach it.".into();
+            return;
+        };
+        if self.client.is_none() {
+            self.message = "Coach not configured — set it in Coach ▸ AI settings (Ctrl+E)".into();
+            return;
+        }
+        if self.coach_busy {
+            self.message = "Coach is already thinking… (Esc to cancel)".into();
+            return;
+        }
+        if let Err(reason) = screen_injection(&selection) {
+            self.message = format!("Selection blocked by injection screen: {reason}");
+            return;
+        }
+        self.coach_pending_size = selection.chars().count() as u32;
+        self.coach_turns.push(ChatTurn {
+            role: ChatTurnRole::Writer,
+            text: format!("[coach this selection · {} chars]", self.coach_pending_size),
+        });
+        let messages = build_coach_messages(&selection, self.claim.as_deref());
+        self.coach_mode = CoachMode::Structured(selection);
+        self.focus = Focus::Coach;
+        self.spawn_coach(messages);
+    }
+
+    /// Pump finished coach requests into the app state, screening every reply
+    /// before it is shown.
     pub fn drain_coach_events(&mut self) {
         // Drain into a local buffer first so we can call the &mut self
         // journaling/guard helpers below without holding the receiver borrow.
@@ -969,39 +1289,65 @@ impl App {
             events.push(ev);
         }
         for ev in events {
-            match ev {
-                CoachEvent::Delta(d) => self.coach_streaming.push_str(&d),
-                CoachEvent::Done(res) => {
-                    self.coach_busy = false;
-                    self.coach_streaming.clear();
-                    match res {
-                        Ok(reply) => {
-                            // Screen the assembled reply (length/rewrite/overlap +
-                            // forbidden-label guard) BEFORE it is ever shown.
-                            let ctx = self.buffer.text();
-                            match screen_chat_reply(&reply, &ctx) {
-                                Ok(()) => {
-                                    self.log_coach_consult(false);
-                                    self.coach_turns.push(ChatTurn {
-                                        role: ChatTurnRole::Coach,
-                                        text: reply,
-                                    });
-                                    self.message = "Coach replied.".into();
-                                }
-                                Err(reason) => {
-                                    self.log_coach_consult(true);
-                                    self.coach_turns.push(ChatTurn {
-                                        role: ChatTurnRole::Coach,
-                                        text: format!("(withheld by guard: {reason})"),
-                                    });
-                                    self.message = "Coach reply withheld by guard.".into();
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            self.log_coach_consult(true);
-                            self.message = format!("Coach error: {e}");
-                        }
+            // Ignore replies from a cancelled or superseded request.
+            if ev.generation != self.coach_generation {
+                continue;
+            }
+            self.coach_busy = false;
+            match ev.result {
+                Ok(reply) => self.accept_coach_reply(reply),
+                Err(e) => {
+                    self.log_coach_consult(true);
+                    self.message = format!("Coach error: {e}");
+                }
+            }
+        }
+    }
+
+    /// Screen and render a completed coach reply per the request mode.
+    fn accept_coach_reply(&mut self, reply: String) {
+        match std::mem::replace(&mut self.coach_mode, CoachMode::Chat) {
+            CoachMode::Chat => {
+                let ctx = std::mem::take(&mut self.coach_pending_context);
+                match screen_chat_reply(&reply, &ctx) {
+                    Ok(()) => {
+                        self.log_coach_consult(false);
+                        self.coach_turns.push(ChatTurn {
+                            role: ChatTurnRole::Coach,
+                            text: reply,
+                        });
+                        self.message = "Coach replied.".into();
+                    }
+                    Err(reason) => {
+                        self.log_coach_consult(true);
+                        self.coach_turns.push(ChatTurn {
+                            role: ChatTurnRole::Coach,
+                            text: format!("(withheld by guard: {reason})"),
+                        });
+                        self.message = "Coach reply withheld by guard.".into();
+                    }
+                }
+            }
+            CoachMode::Structured(selection) => {
+                let parsed = serde_json::from_str::<serde_json::Value>(reply.trim())
+                    .map_err(|_| "coach did not return structured JSON".to_string())
+                    .and_then(|v| screen_coaching_output(v, &selection).map_err(|e| e.to_string()));
+                match parsed {
+                    Ok(coaching) => {
+                        self.log_coach_consult(false);
+                        self.coach_turns.push(ChatTurn {
+                            role: ChatTurnRole::Coach,
+                            text: format_structured_coaching(&coaching),
+                        });
+                        self.message = "Coach returned observations.".into();
+                    }
+                    Err(reason) => {
+                        self.log_coach_consult(true);
+                        self.coach_turns.push(ChatTurn {
+                            role: ChatTurnRole::Coach,
+                            text: format!("(withheld by guard: {reason})"),
+                        });
+                        self.message = "Coach reply withheld by guard.".into();
                     }
                 }
             }
@@ -1089,10 +1435,30 @@ impl App {
                 && ev.row < r.y + r.height
         };
 
+        // Confirm-quit: ignore mouse (decision must be explicit).
+        if self.confirm_quit {
+            return;
+        }
+
         // Help popup: a left-click anywhere dismisses it.
         if self.help_open {
             if matches!(ev.kind, MouseEventKind::Down(MouseButton::Left)) {
                 self.help_open = false;
+            }
+            return;
+        }
+
+        // Journal view: wheel scrolls, a click dismisses.
+        if self.journal_open {
+            match ev.kind {
+                MouseEventKind::ScrollDown => {
+                    self.journal_scroll = self.journal_scroll.saturating_add(1)
+                }
+                MouseEventKind::ScrollUp => {
+                    self.journal_scroll = self.journal_scroll.saturating_sub(1)
+                }
+                MouseEventKind::Down(MouseButton::Left) => self.journal_open = false,
+                _ => {}
             }
             return;
         }
@@ -1121,6 +1487,7 @@ impl App {
                             self.apply_theme(idx);
                             self.message = format!("Theme: {}", self.theme.name);
                             self.theme_picker = None;
+                            self.persist_settings();
                         }
                     } else if !over(rect) {
                         let original = self.theme_picker.as_ref().unwrap().original;
@@ -1213,10 +1580,13 @@ impl App {
                 } else if over_editor {
                     let inner = self.editor_inner;
                     let line = self.editor_scroll + (ev.row - inner.y) as usize;
-                    // The click column is in terminal display cells; convert it
-                    // to a char offset so wide glyphs (CJK/emoji) land correctly.
-                    let target = (ev.column as usize).saturating_sub(inner.x as usize);
+                    // The click column is in terminal display cells (offset by the
+                    // horizontal scroll); convert it to a char offset so wide
+                    // glyphs (CJK/emoji) land correctly.
+                    let target =
+                        self.editor_hscroll + (ev.column as usize).saturating_sub(inner.x as usize);
                     let col = self.buffer.char_col_for_display(line, target);
+                    self.buffer.clear_selection();
                     self.buffer.set_cursor_line_col(line, col);
                     self.focus = Focus::Editor;
                     self.reveal_cursor();
@@ -1226,17 +1596,26 @@ impl App {
         }
     }
 
-    /// Bring the cursor's line back into the viewport after a cursor move.
+    /// Bring the cursor back into the viewport after a move (vertical + the
+    /// horizontal display-column window for long lines).
     fn reveal_cursor(&mut self) {
-        let (line, _) = self.buffer.cursor_line_col();
+        let (line, col) = self.buffer.cursor_line_col();
         let h = self.editor_height;
-        if h == 0 {
-            return;
+        if h > 0 {
+            if line < self.editor_scroll {
+                self.editor_scroll = line;
+            } else if line >= self.editor_scroll + h {
+                self.editor_scroll = line - h + 1;
+            }
         }
-        if line < self.editor_scroll {
-            self.editor_scroll = line;
-        } else if line >= self.editor_scroll + h {
-            self.editor_scroll = line - h + 1;
+        let w = self.editor_inner.width as usize;
+        if w > 0 {
+            let disp = self.buffer.display_width(line, col);
+            if disp < self.editor_hscroll {
+                self.editor_hscroll = disp;
+            } else if disp >= self.editor_hscroll + w {
+                self.editor_hscroll = disp - w + 1;
+            }
         }
     }
 
@@ -1320,8 +1699,125 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if app.coach_settings.is_some() {
         draw_coach_settings(frame, app, area);
     }
+    if app.journal_open {
+        draw_journal(frame, app, area);
+    }
     if app.help_open {
         draw_help(frame, app, area);
+    }
+    if app.confirm_quit {
+        draw_confirm_quit(frame, app, area);
+    }
+}
+
+/// Process / journal view: the live mirror summary plus a scrollable list of
+/// the metadata-only events recorded so far.
+fn draw_journal(frame: &mut Frame, app: &mut App, area: Rect) {
+    let theme = app.theme;
+    let rect = centered_rect_abs(72, (area.height * 4 / 5).max(8), area);
+    app.journal_rect = rect;
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme.border(true))
+        .style(theme.panel_bg())
+        .title(Line::from(Span::styled(
+            " Process / journal ",
+            theme.title(true),
+        )));
+    let inner = block.inner(rect);
+
+    let snap = compute_mirror(&app.journal);
+    let mut lines: Vec<Line<'static>> = vec![
+        Line::from(Span::styled(format_mirror_summary(&snap), theme.accent())),
+        Line::raw(""),
+    ];
+    for e in &app.journal {
+        let ts = e.ts.get(11..19).unwrap_or(&e.ts); // HH:MM:SS
+        let kind = format!("{:?}", e.kind);
+        let size = e.size.map(|n| format!(" {n}c")).unwrap_or_default();
+        lines.push(Line::from(vec![
+            Span::styled(format!("{ts}  "), theme.dim()),
+            Span::styled(kind, theme.text()),
+            Span::styled(size, theme.dim()),
+        ]));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "↑/↓ scroll · Esc to close · Ctrl+D exports the full disclosure",
+        theme.dim(),
+    )));
+
+    let content = lines.len();
+    let view = inner.height as usize;
+    let max = content.saturating_sub(view);
+    if app.journal_scroll > max {
+        app.journal_scroll = max;
+    }
+    frame.render_widget(Clear, rect);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .style(theme.text())
+            .scroll((app.journal_scroll as u16, 0)),
+        rect,
+    );
+}
+
+fn draw_confirm_quit(frame: &mut Frame, app: &mut App, area: Rect) {
+    let theme = app.theme;
+    let rect = centered_rect_abs(54, 7, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme.border(true))
+        .style(theme.panel_bg())
+        .title(Line::from(Span::styled(
+            " Unsaved changes ",
+            theme.title(true),
+        )));
+    let lines = vec![
+        Line::from(Span::styled(
+            format!("{} has unsaved changes.", app.file_label()),
+            theme.text(),
+        )),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("S", theme.accent()),
+            Span::styled("ave & quit · ", theme.text()),
+            Span::styled("Y", theme.accent()),
+            Span::styled(" quit anyway · ", theme.text()),
+            Span::styled("N", theme.accent()),
+            Span::styled("/Esc cancel", theme.text()),
+        ]),
+    ];
+    frame.render_widget(Clear, rect);
+    frame.render_widget(Paragraph::new(lines).block(block), rect);
+}
+
+/// Render structured coaching observations as plain coach-pane text.
+fn format_structured_coaching(c: &StructuredCoaching) -> String {
+    if c.observations.is_empty() {
+        return "(no observations)".to_string();
+    }
+    let mut out = String::new();
+    for (i, o) in c.observations.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(&format!(
+            "• [{}] {}\n    ? {}",
+            kind_label(o.kind),
+            o.reflection,
+            o.question
+        ));
+    }
+    out
+}
+
+fn kind_label(k: ObservationKind) -> &'static str {
+    match k {
+        ObservationKind::ImplicitClaim => "implicit claim",
+        ObservationKind::IntendedMove => "intended move",
+        ObservationKind::LogicFork => "logic fork",
     }
 }
 
@@ -1515,7 +2011,7 @@ fn draw_theme_picker(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme;
-    let rect = centered_rect_abs(60, 16, area);
+    let rect = centered_rect_abs(62, 24, area);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(theme.border(true))
@@ -1532,15 +2028,23 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     let lines = vec![
         row("Ctrl+S", "Save"),
+        row("Ctrl+Z / Y", "Undo / redo"),
+        row(
+            "Ctrl+C / X",
+            "Copy / cut selection (Shift+arrows to select)",
+        ),
+        row("Ctrl+A", "Select all"),
         row("Ctrl+D", "Export disclosure"),
         row("Ctrl+K", "State / edit your claim"),
         row("Ctrl+M", "Mark paste under cursor as a quotation"),
         row("Ctrl+L", "Focus the coach panel"),
+        row("Ctrl+J", "Coach the current selection"),
         row("Ctrl+E", "AI settings (endpoint, API key, model)"),
+        row("Ctrl+P", "Process / journal view"),
         row("Ctrl+T", "Theme picker (live preview)"),
         row("F10", "Open the menu bar"),
         row("F1", "This help"),
-        row("Ctrl+Q", "Quit"),
+        row("Ctrl+Q", "Quit (asks if unsaved)"),
         Line::raw(""),
         Line::from(Span::styled(
             "  Arrows / PgUp / PgDn move · mouse click & wheel supported",
@@ -1673,10 +2177,12 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
     app.editor_height = inner.height as usize;
     app.editor_inner = inner;
 
-    // Render only the visible window, with grammar diagnostics underlined.
+    // Render only the visible window, with grammar diagnostics underlined and
+    // any selection highlighted. Horizontal scroll is applied by the Paragraph.
     let total = app.buffer.line_count();
     let first = app.editor_scroll.min(total);
     let last_exclusive = (first + app.editor_height).min(total);
+    let selection = app.buffer.selection();
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(app.editor_height);
     for i in first..last_exclusive {
         let start = app.buffer.line_char_start(i);
@@ -1686,17 +2192,24 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
             start,
             &app.diagnostics,
             app.quarantine.regions(),
+            selection,
             theme,
         ));
     }
-    let para = Paragraph::new(lines).block(block).style(theme.text());
+    let para = Paragraph::new(lines)
+        .block(block)
+        .style(theme.text())
+        .scroll((0, app.editor_hscroll as u16));
     frame.render_widget(para, area);
 
     // Position the terminal cursor only when the editor is focused and no
     // overlay is up.
     if focused && !app.has_overlay() {
         let (line, col) = app.buffer.cursor_line_col();
-        let disp = app.buffer.display_width(line, col);
+        let disp = app
+            .buffer
+            .display_width(line, col)
+            .saturating_sub(app.editor_hscroll);
         let max_col = inner.width.saturating_sub(1) as usize;
         let cx = inner.x + disp.min(max_col) as u16;
         let cy = inner.y + line.saturating_sub(app.editor_scroll) as u16;
@@ -1926,6 +2439,7 @@ fn styled_line(
     start: usize,
     diags: &[Diagnostic],
     regions: &[Region],
+    selection: Option<(usize, usize)>,
     theme: &Theme,
 ) -> Line<'static> {
     let chars: Vec<char> = text.chars().collect();
@@ -1954,23 +2468,32 @@ fn styled_line(
             *q = true;
         }
     }
+    let mut sel = vec![false; n];
+    if let Some((s, e)) = selection {
+        let lo = s.saturating_sub(start).min(n);
+        let hi = e.saturating_sub(start).min(n);
+        for x in sel.iter_mut().take(hi).skip(lo) {
+            *x = true;
+        }
+    }
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut i = 0;
     while i < n {
-        let (s, q) = (sev[i], quar[i]);
+        let key = (sev[i], quar[i], sel[i]);
         let mut j = i;
-        while j < n && (sev[j], quar[j]) == (s, q) {
+        while j < n && (sev[j], quar[j], sel[j]) == key {
             j += 1;
         }
         let seg: String = chars[i..j].iter().collect();
-        spans.push(Span::styled(
-            seg,
-            if q {
-                theme.quarantine()
-            } else {
-                severity_style(s, theme)
-            },
-        ));
+        let (_, q, s) = key;
+        let style = if s {
+            theme.selected()
+        } else if q {
+            theme.quarantine()
+        } else {
+            severity_style(sev[i], theme)
+        };
+        spans.push(Span::styled(seg, style));
         i = j;
     }
     if spans.is_empty() {
@@ -2153,5 +2676,70 @@ mod tests {
         let mut app = test_app(&rt);
         app.dispatch(MenuAction::SetFriction(3));
         assert_eq!(app.friction.level(), 3);
+    }
+
+    #[test]
+    fn undo_redo_round_trip() {
+        let rt = rt();
+        let mut app = test_app(&rt);
+        let before = app.buffer.text();
+        app.handle_key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE));
+        let after = app.buffer.text();
+        assert_ne!(before, after);
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+        assert_eq!(app.buffer.text(), before);
+        app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
+        assert_eq!(app.buffer.text(), after);
+    }
+
+    #[test]
+    fn select_all_and_copy_sets_clipboard() {
+        let rt = rt();
+        let mut app = test_app(&rt);
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert_eq!(
+            app.take_clipboard_request().as_deref(),
+            Some("# Title\n\nHello world.")
+        );
+    }
+
+    #[test]
+    fn shift_arrow_selects_and_typing_replaces() {
+        let rt = rt();
+        let mut app = test_app(&rt);
+        app.buffer.set_cursor(0);
+        for _ in 0..7 {
+            app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
+        }
+        assert_eq!(app.buffer.selected_text().as_deref(), Some("# Title"));
+        app.handle_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::NONE));
+        assert!(app.buffer.text().starts_with('X'));
+        assert!(app.buffer.selection().is_none());
+    }
+
+    #[test]
+    fn dirty_quit_is_guarded() {
+        let rt = rt();
+        let mut app = test_app(&rt);
+        app.handle_key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE)); // make dirty
+        app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
+        assert!(!app.should_quit(), "dirty quit must ask first");
+        assert!(app.confirm_quit);
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert!(!app.confirm_quit);
+        assert!(!app.should_quit());
+    }
+
+    #[test]
+    fn journal_view_toggles_and_renders() {
+        let rt = rt();
+        let mut app = test_app(&rt);
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        assert!(app.journal_open);
+        let s = render(&mut app);
+        assert!(s.contains("Process"));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.journal_open);
     }
 }

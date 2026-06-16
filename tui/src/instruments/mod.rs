@@ -53,21 +53,6 @@ pub fn is_disconnect(response: &str) -> bool {
     DISCONNECT_PATTERNS.contains(&normalized)
 }
 
-/// Classify a teach-back summary.
-pub fn classify_teach_back(response: &str) -> TeachBackOutcome {
-    if is_disconnect(response) {
-        TeachBackOutcome::Disconnect
-    } else {
-        TeachBackOutcome::Given
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TeachBackOutcome {
-    Given,
-    Disconnect,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,14 +91,5 @@ mod tests {
         assert!(!is_disconnect(
             "The cell makes energy through oxidative metabolism daily."
         ));
-    }
-
-    #[test]
-    fn classify_matches_disconnect() {
-        assert_eq!(classify_teach_back("skip"), TeachBackOutcome::Disconnect);
-        assert_eq!(
-            classify_teach_back("The argument is that friction aids honest writing."),
-            TeachBackOutcome::Given
-        );
     }
 }

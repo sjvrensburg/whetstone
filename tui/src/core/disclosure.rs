@@ -49,8 +49,12 @@ pub fn compute_composition(events: &[ProcessEvent]) -> Composition {
             ProcessEventType::TypingBurst => {
                 typed_chars += e.size.unwrap_or(0);
             }
-            ProcessEventType::PasteQuarantined => {
+            // Every paste is counted once here (including sub-threshold pastes
+            // that are never quarantined), so the typed/pasted split is honest.
+            ProcessEventType::PasteDetected => {
                 pasted_chars += e.size.unwrap_or(0);
+            }
+            ProcessEventType::PasteQuarantined => {
                 paste_count += 1;
                 if let Some(id) = region_id {
                     quarantined.insert(id);
@@ -331,6 +335,12 @@ mod tests {
                 ProcessEventType::TypingBurst,
                 "2026-06-16T10:00:00Z",
                 Some(800),
+                vec![],
+            ),
+            ev(
+                ProcessEventType::PasteDetected,
+                "2026-06-16T10:00:30Z",
+                Some(200),
                 vec![],
             ),
             ev(

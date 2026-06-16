@@ -94,6 +94,7 @@ mod tests {
     fn mirror_summary_reports_typed_ratio() {
         let events = vec![
             test_event(ProcessEventType::TypingBurst, Some(750), vec![]),
+            test_event(ProcessEventType::PasteDetected, Some(250), vec![]),
             test_event(
                 ProcessEventType::PasteQuarantined,
                 Some(250),
@@ -116,6 +117,7 @@ mod tests {
     fn mirror_includes_unresolved_when_mark_remains() {
         let events = vec![
             test_event(ProcessEventType::TypingBurst, Some(100), vec![]),
+            test_event(ProcessEventType::PasteDetected, Some(100), vec![]),
             test_event(
                 ProcessEventType::PasteQuarantined,
                 Some(100),

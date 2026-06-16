@@ -9,10 +9,13 @@ use unicode_width::UnicodeWidthChar;
 
 use super::transaction::Change;
 
-/// A rope-backed editable text buffer with a cursor (char offset).
+/// A rope-backed editable text buffer with a cursor (char offset) and an
+/// optional selection anchor (the other end of a selection; the cursor is the
+/// moving end).
 pub struct Buffer {
     rope: Rope,
     cursor: usize,
+    anchor: Option<usize>,
 }
 
 impl Buffer {
@@ -20,7 +23,65 @@ impl Buffer {
         Self {
             rope: Rope::from_str(s),
             cursor: 0,
+            anchor: None,
         }
+    }
+
+    // --- selection ---------------------------------------------------------
+
+    /// Begin (or keep) a selection anchored at the current cursor. Call before
+    /// a cursor move to extend a selection (Shift+arrows).
+    pub fn begin_selection(&mut self) {
+        if self.anchor.is_none() {
+            self.anchor = Some(self.cursor);
+        }
+    }
+
+    /// Drop any active selection.
+    pub fn clear_selection(&mut self) {
+        self.anchor = None;
+    }
+
+    /// The selected `[start, end)` char range, if any (empty selections → None).
+    pub fn selection(&self) -> Option<(usize, usize)> {
+        let a = self.anchor?;
+        let (s, e) = (a.min(self.cursor), a.max(self.cursor));
+        (s < e).then_some((s, e))
+    }
+
+    /// The selected text, if any.
+    pub fn selected_text(&self) -> Option<String> {
+        let (s, e) = self.selection()?;
+        Some(self.rope.slice(s..e).to_string())
+    }
+
+    /// Select the whole buffer.
+    pub fn select_all(&mut self) {
+        if self.len_chars() > 0 {
+            self.anchor = Some(0);
+            self.cursor = self.len_chars();
+        }
+    }
+
+    /// Delete the active selection, returning the applied [`Change`].
+    pub fn delete_selection(&mut self) -> Option<Change> {
+        let (s, e) = self.selection()?;
+        self.anchor = None;
+        Some(self.remove(s, e))
+    }
+
+    /// Replace the active selection with `s` (a single replace [`Change`]).
+    pub fn replace_selection(&mut self, s: &str) -> Option<Change> {
+        let (a, b) = self.selection()?;
+        self.anchor = None;
+        self.rope.remove(a..b);
+        self.rope.insert(a, s);
+        self.cursor = a + s.chars().count();
+        Some(Change {
+            from: a,
+            to: b,
+            insert: s.to_string(),
+        })
     }
 
     pub fn text(&self) -> String {
@@ -246,6 +307,32 @@ mod tests {
         assert_eq!(b.cursor_line_col(), (0, 0));
         b.move_line_end();
         assert_eq!(b.cursor_line_col(), (0, 11));
+    }
+
+    #[test]
+    fn selection_extend_copy_and_replace() {
+        let mut b = Buffer::new("hello world");
+        b.set_cursor(0);
+        b.begin_selection();
+        for _ in 0..5 {
+            b.move_right();
+        }
+        assert_eq!(b.selection(), Some((0, 5)));
+        assert_eq!(b.selected_text().as_deref(), Some("hello"));
+        let ch = b.replace_selection("HI").unwrap();
+        assert_eq!(b.text(), "HI world");
+        assert_eq!((ch.from, ch.to, ch.insert.as_str()), (0, 5, "HI"));
+        assert_eq!(b.cursor(), 2);
+        assert_eq!(b.selection(), None);
+    }
+
+    #[test]
+    fn select_all_and_delete() {
+        let mut b = Buffer::new("abc");
+        b.select_all();
+        assert_eq!(b.selection(), Some((0, 3)));
+        b.delete_selection();
+        assert_eq!(b.text(), "");
     }
 
     #[test]
