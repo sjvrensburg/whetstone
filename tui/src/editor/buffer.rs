@@ -55,6 +55,13 @@ impl Buffer {
         Some(self.rope.slice(s..e).to_string())
     }
 
+    /// Set an explicit selection `[start, end)` with the caret at `end`.
+    pub fn set_selection(&mut self, start: usize, end: usize) {
+        let n = self.len_chars();
+        self.anchor = Some(start.min(n));
+        self.cursor = end.min(n);
+    }
+
     /// Select the whole buffer.
     pub fn select_all(&mut self) {
         if self.len_chars() > 0 {
@@ -301,6 +308,82 @@ impl Buffer {
         let (line, _) = self.cursor_line_col();
         self.cursor = self.rope.line_to_char(line) + self.line_content_len(line);
     }
+
+    /// "Smart home": toggle between the first non-blank column and column 0.
+    pub fn move_smart_home(&mut self) {
+        let (line, col) = self.cursor_line_col();
+        let start = self.rope.line_to_char(line);
+        let first = self.first_non_blank(line);
+        self.cursor = if col == first { start } else { start + first };
+    }
+
+    // --- word-wise --------------------------------------------------------
+
+    fn is_word(c: char) -> bool {
+        c.is_alphanumeric() || c == '_'
+    }
+
+    /// Offset one word to the left of the cursor (skip whitespace, then a run
+    /// of word chars).
+    pub fn word_left(&self) -> usize {
+        let mut i = self.cursor;
+        while i > 0 && self.rope.char(i - 1).is_whitespace() {
+            i -= 1;
+        }
+        while i > 0 && Self::is_word(self.rope.char(i - 1)) {
+            i -= 1;
+        }
+        i
+    }
+
+    /// Offset one word to the right of the cursor.
+    pub fn word_right(&self) -> usize {
+        let n = self.len_chars();
+        let mut i = self.cursor;
+        while i < n && self.rope.char(i).is_whitespace() {
+            i += 1;
+        }
+        while i < n && Self::is_word(self.rope.char(i)) {
+            i += 1;
+        }
+        i
+    }
+
+    pub fn move_word_left(&mut self) {
+        self.cursor = self.word_left();
+    }
+
+    pub fn move_word_right(&mut self) {
+        self.cursor = self.word_right();
+    }
+
+    pub fn delete_word_left(&mut self) -> Option<Change> {
+        let target = self.word_left();
+        (target < self.cursor).then(|| self.remove(target, self.cursor))
+    }
+
+    pub fn delete_word_right(&mut self) -> Option<Change> {
+        let target = self.word_right();
+        (target > self.cursor).then(|| self.remove(self.cursor, target))
+    }
+
+    // --- indentation ------------------------------------------------------
+
+    /// The leading whitespace of `line` (spaces/tabs).
+    pub fn line_indent(&self, line: usize) -> String {
+        self.line_text(line)
+            .chars()
+            .take_while(|c| *c == ' ' || *c == '\t')
+            .collect()
+    }
+
+    /// Column of the first non-whitespace char on `line` (or its length).
+    pub fn first_non_blank(&self, line: usize) -> usize {
+        self.line_text(line)
+            .chars()
+            .take_while(|c| c.is_whitespace())
+            .count()
+    }
 }
 
 #[cfg(test)]
@@ -359,6 +442,31 @@ mod tests {
         assert_eq!((ch.from, ch.to, ch.insert.as_str()), (0, 5, "HI"));
         assert_eq!(b.cursor(), 2);
         assert_eq!(b.selection(), None);
+    }
+
+    #[test]
+    fn word_movement_and_delete() {
+        let mut b = Buffer::new("alpha beta gamma");
+        b.set_cursor(16); // end
+        b.move_word_left(); // → start of "gamma" (11)
+        assert_eq!(b.cursor(), 11);
+        b.move_word_left(); // → start of "beta" (6)
+        assert_eq!(b.cursor(), 6);
+        b.delete_word_right(); // removes "beta"
+        assert_eq!(b.text(), "alpha  gamma");
+        b.set_cursor(5);
+        b.delete_word_left(); // removes "alpha"
+        assert_eq!(b.text(), "  gamma");
+    }
+
+    #[test]
+    fn smart_home_toggles() {
+        let mut b = Buffer::new("    indented");
+        b.set_cursor(12); // end
+        b.move_smart_home(); // → first non-blank (col 4)
+        assert_eq!(b.cursor_line_col(), (0, 4));
+        b.move_smart_home(); // → col 0
+        assert_eq!(b.cursor_line_col(), (0, 0));
     }
 
     #[test]

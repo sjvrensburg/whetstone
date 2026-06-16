@@ -12,9 +12,15 @@
 pub enum MenuAction {
     EditClaim,
     Save,
+    SaveAs,
+    Open,
     Export,
+    PreviewDisclosure,
     Quit,
     AttributeRegion,
+    Find,
+    Replace,
+    GotoLine,
     ThemePicker,
     SetFriction(u8),
     ToggleCoach,
@@ -76,19 +82,27 @@ pub fn menus(coach_enabled: bool, friction_level: u8, theme_name: &str) -> Vec<M
         Menu {
             title: "File",
             items: vec![
-                MenuItem::new("Edit claim", "Ctrl+K", MenuAction::EditClaim),
+                MenuItem::new("Open…", "Ctrl+O", MenuAction::Open),
                 MenuItem::new("Save", "Ctrl+S", MenuAction::Save),
+                MenuItem::new("Save as…", "", MenuAction::SaveAs),
+                MenuItem::new("Edit claim", "Ctrl+K", MenuAction::EditClaim),
                 MenuItem::new("Export disclosure", "Ctrl+D", MenuAction::Export),
+                MenuItem::new("Preview disclosure", "", MenuAction::PreviewDisclosure),
                 MenuItem::new("Quit", "Ctrl+Q", MenuAction::Quit),
             ],
         },
         Menu {
             title: "Edit",
-            items: vec![MenuItem::new(
-                "Mark paste as quotation",
-                "Ctrl+M",
-                MenuAction::AttributeRegion,
-            )],
+            items: vec![
+                MenuItem::new("Find…", "Ctrl+F", MenuAction::Find),
+                MenuItem::new("Replace…", "Ctrl+H", MenuAction::Replace),
+                MenuItem::new("Go to line…", "Ctrl+G", MenuAction::GotoLine),
+                MenuItem::new(
+                    "Mark paste as quotation",
+                    "Ctrl+M",
+                    MenuAction::AttributeRegion,
+                ),
+            ],
         },
         Menu {
             title: "View",

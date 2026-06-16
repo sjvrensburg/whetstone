@@ -78,6 +78,7 @@ fn restore() -> io::Result<()> {
 fn run(terminal: &mut Tui, app: &mut App) -> Result<()> {
     loop {
         app.maybe_lint();
+        app.maybe_autosave();
         app.drain_coach_events();
         terminal.draw(|f| draw(f, app))?;
         if !event::poll(Duration::from_millis(100))? {

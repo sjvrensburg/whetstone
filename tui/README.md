@@ -21,9 +21,10 @@ beyond transient menus/dialogs). Press **F1** for the keybinding cheat-sheet or
 
 | Key | Action |
 | --- | --- |
-| `Ctrl+S` | Save |
-| `Ctrl+Z` / `Ctrl+Y` | Undo / redo |
-| `Shift+arrows` | Select; `Ctrl+A` select all |
+| `Ctrl+S` / `Ctrl+O` | Save · open file (Save as via File menu); autosaves when idle |
+| `Ctrl+Z` / `Ctrl+Y` | Undo / redo (`Ctrl+Shift+Z` also redoes) |
+| `Ctrl+F` / `Ctrl+H` / `Ctrl+G` | Find · replace · go to line |
+| `Shift+arrows` | Select; `Ctrl+A` select all; `Ctrl+←/→` move by word |
 | `Ctrl+C` / `Ctrl+X` | Copy / cut selection (system clipboard via OSC 52) |
 | `Ctrl+K` | State / edit your claim |
 | `Ctrl+M` | Mark the pasted region under the cursor as a quotation |
@@ -31,7 +32,7 @@ beyond transient menus/dialogs). Press **F1** for the keybinding cheat-sheet or
 | `Ctrl+E` | AI settings (endpoint, API key, model) |
 | `Ctrl+P` | Process / journal view |
 | `Ctrl+T` | Theme picker (live preview) |
-| `Ctrl+D` | Export the disclosure document |
+| `Ctrl+D` | Export the disclosure document (File ▸ Preview to view in-app) |
 | `Ctrl+Q` | Quit (asks if there are unsaved changes) |
 | `F10` / `F1` | Menu bar / help |
 
@@ -73,6 +74,7 @@ push-cadence coaching that reviews each finished paragraph (ADR-008).
 
 ## Not yet implemented
 
-Find/replace, multiple files / tabs, in-app open & save-as, go-to-line, a
-connection test in the settings dialog, and an interactive keybinding editor
-are not built yet.
+Multiple files / tabs (the editor holds one buffer at a time), an interactive
+keybinding editor, a connection test / model listing in the settings dialog,
+cross-session coach-conversation persistence, per-instrument friction overrides,
+and bracket matching are not built yet.

@@ -5,8 +5,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this repo is
 
 **Whetstone** — a friction-first writing surface for students under honor codes.
-The active product is the **web composer** in `composer/` (the ADR-009 walking
-skeleton). The top-level `src/` and root package is the **legacy VS Code extension** (V1,
+There are two active surfaces sharing the same domain model:
+
+- The **web composer** in `composer/` (TypeScript, the ADR-009 walking
+  skeleton).
+- The **terminal editor** in `tui/` (Rust, `whetstone-tui`) — a port of the
+  composer's domain logic with a Fresh/Micro-style UI (menus, theming, mouse,
+  no modes). See `tui/README.md` for keybindings, env vars, and config files.
+
+The top-level `src/` and root package is the **legacy VS Code extension** (V1,
 superseded by ADR-009) — kept for reference and as the source of ported domain
 logic; do not extend it.
 
@@ -17,7 +24,8 @@ documents for `composer/`; **ADR-008** governs the friction-dial UX.
 ## Two project contexts
 
 - **Root** — legacy VS Code extension (reference only). Root `package.json` defines vitest config used by both projects.
-- **`composer/`** — active web product (ADR-009). All new feature work happens here. Has its own `package.json` and build pipeline (Vite).
+- **`composer/`** — active web product (ADR-009). Has its own `package.json` and build pipeline (Vite).
+- **`tui/`** — active terminal editor (`whetstone-tui`, Rust, edition 2024). Self-contained Cargo crate; ports the same `core/` domain invariants. Run checks inside `tui/`: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`. CI: `.github/workflows/tui-ci.yml`.
 
 ## Commands (run inside `composer/`)
 

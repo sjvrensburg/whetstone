@@ -85,7 +85,7 @@ pub fn latex_to_unicode(input: &str) -> String {
                     let den = extract_brace_group(&chars, &mut i);
                     let num_u = latex_to_unicode(&num);
                     let den_u = latex_to_unicode(&den);
-                    if num_u.len() <= 1 && den_u.len() <= 1 {
+                    if num_u.chars().count() <= 1 && den_u.chars().count() <= 1 {
                         let _ = write!(out, "{num_u}/{den_u}");
                     } else {
                         let _ = write!(out, "({num_u})/({den_u})");

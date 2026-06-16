@@ -8,7 +8,7 @@
 //! streamed reply is forced through [`crate::core::guard::screen_chat_reply`]
 //! before it is shown.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -26,7 +26,7 @@ use ratatui::widgets::{
 
 use crate::coach::{CoachClient, CoachConfig, DEFAULT_MODEL};
 use crate::core::coaching::{ObservationKind, StructuredCoaching};
-use crate::core::disclosure::render_disclosure;
+use crate::core::disclosure::{Composition, render_disclosure};
 use crate::core::guard::{screen_chat_reply, screen_coaching_output, screen_injection};
 use crate::core::mirror::{MirrorSnapshot, compute_mirror, format_mirror_summary};
 use crate::core::process_event::{
@@ -125,6 +125,53 @@ struct CoachSettings {
     field: usize,
 }
 
+/// Which single-/two-field input prompt is open.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PromptKind {
+    Find,
+    Replace,
+    GotoLine,
+    OpenFile,
+    SaveAs,
+}
+
+impl PromptKind {
+    fn title(self) -> &'static str {
+        match self {
+            PromptKind::Find => " Find ",
+            PromptKind::Replace => " Replace ",
+            PromptKind::GotoLine => " Go to line ",
+            PromptKind::OpenFile => " Open file ",
+            PromptKind::SaveAs => " Save as ",
+        }
+    }
+    /// Field labels (1 or 2).
+    fn labels(self) -> &'static [&'static str] {
+        match self {
+            PromptKind::Find => &["Find"],
+            PromptKind::Replace => &["Find", "Replace"],
+            PromptKind::GotoLine => &["Line"],
+            PromptKind::OpenFile => &["Path"],
+            PromptKind::SaveAs => &["Path"],
+        }
+    }
+    fn hint(self) -> &'static str {
+        match self {
+            PromptKind::Find => "Enter next · Esc close",
+            PromptKind::Replace => "Tab field · Enter replace all · Esc cancel",
+            PromptKind::GotoLine => "Enter go · Esc cancel",
+            PromptKind::OpenFile | PromptKind::SaveAs => "Enter confirm · Esc cancel",
+        }
+    }
+}
+
+/// A small input prompt overlay with one or two text fields.
+struct Prompt {
+    kind: PromptKind,
+    fields: Vec<String>,
+    active: usize,
+}
+
 /// The running editor application.
 pub struct App {
     pub buffer: Buffer,
@@ -181,6 +228,12 @@ pub struct App {
     coach_turns: Vec<ChatTurn>,
     coach_input: String,
     coach_busy: bool,
+    /// When the in-flight request started (for the elapsed indicator).
+    coach_started: Option<Instant>,
+    /// Whether the in-flight request was a proactive push (for backoff).
+    coach_is_push: bool,
+    /// Consecutive push-coaching failures; pauses push after a couple.
+    push_failures: u8,
     /// What the in-flight request is (chat vs structured-on-selection).
     coach_mode: CoachMode,
     /// Monotonic id; a reply is accepted only if it still matches (cancel/supersede).
@@ -219,11 +272,28 @@ pub struct App {
     journal_rect: Rect,
     /// Whether the unsaved-changes quit confirmation is showing.
     confirm_quit: bool,
+    /// Active input prompt (find/replace/goto/open/save-as) + its rect.
+    prompt: Option<Prompt>,
+    prompt_rect: Rect,
+    /// Cursor offset where the current find session started (for incremental).
+    search_origin: usize,
+    /// Whether the disclosure-preview overlay is showing, + its text and scroll.
+    disclosure_open: bool,
+    disclosure_text: String,
+    disclosure_scroll: usize,
+    /// File mtime recorded at load/save, to detect external changes.
+    file_mtime: Option<std::time::SystemTime>,
 
     /// Cached preview render: `(edit_version, width, theme_name, text, height)`.
     preview_cache: Option<(u64, u16, &'static str, Text<'static>, usize)>,
-    /// Cached process mirror: `(event_seq, snapshot)`.
-    mirror_cache: Option<(u64, MirrorSnapshot)>,
+    /// Running process-mirror tallies, updated per journaled event (so the
+    /// status bar never rescans the whole journal — O(1) amortized).
+    m_typed: u32,
+    m_pasted: u32,
+    m_paste_count: u32,
+    m_resolved: std::collections::BTreeMap<String, bool>,
+    m_consults: u32,
+    m_refused: u32,
 }
 
 impl App {
@@ -276,6 +346,8 @@ impl App {
             None => usize::MAX,
         };
 
+        let file_mtime = file_mtime_of(&path);
+
         // Theme: WHETSTONE_THEME, else the saved preference, else the default.
         let theme = std::env::var("WHETSTONE_THEME")
             .ok()
@@ -318,6 +390,9 @@ impl App {
             coach_turns: Vec::new(),
             coach_input: String::new(),
             coach_busy: false,
+            coach_started: None,
+            coach_is_push: false,
+            push_failures: 0,
             coach_mode: CoachMode::Chat,
             coach_generation: 0,
             coach_pending_size: 0,
@@ -354,8 +429,20 @@ impl App {
             journal_scroll: 0,
             journal_rect: Rect::default(),
             confirm_quit: false,
+            prompt: None,
+            prompt_rect: Rect::default(),
+            search_origin: 0,
+            disclosure_open: false,
+            disclosure_text: String::new(),
+            disclosure_scroll: 0,
+            file_mtime,
             preview_cache: None,
-            mirror_cache: None,
+            m_typed: 0,
+            m_pasted: 0,
+            m_paste_count: 0,
+            m_resolved: std::collections::BTreeMap::new(),
+            m_consults: 0,
+            m_refused: 0,
         }
     }
 
@@ -380,6 +467,35 @@ impl App {
         for (k, v) in meta {
             m.insert(k.into(), v);
         }
+        // Update the running mirror tallies incrementally so the status bar
+        // never rescans the whole journal.
+        let region_id = || match m.get("regionId") {
+            Some(MetaValue::Str(s)) => Some(s.clone()),
+            _ => None,
+        };
+        match kind {
+            ProcessEventType::TypingBurst => self.m_typed += size.unwrap_or(0),
+            ProcessEventType::PasteDetected => self.m_pasted += size.unwrap_or(0),
+            ProcessEventType::PasteQuarantined => self.m_paste_count += 1,
+            ProcessEventType::PasteClaimed => {
+                if let Some(rid) = region_id() {
+                    self.m_resolved.insert(rid, true);
+                }
+            }
+            ProcessEventType::PasteAttributed => {
+                if let Some(rid) = region_id() {
+                    self.m_resolved.insert(rid, false);
+                }
+            }
+            ProcessEventType::CoachConsult => {
+                if matches!(m.get("refused"), Some(MetaValue::Bool(true))) {
+                    self.m_refused += 1;
+                } else {
+                    self.m_consults += 1;
+                }
+            }
+            _ => {}
+        }
         self.journal.push(ProcessEvent {
             id,
             ts,
@@ -388,6 +504,33 @@ impl App {
             location,
             meta: if m.is_empty() { None } else { Some(m) },
         });
+    }
+
+    /// Build the current process-mirror snapshot from the running tallies.
+    fn mirror_snapshot(&self) -> MirrorSnapshot {
+        let claimed = self.m_resolved.values().filter(|c| **c).count() as u32;
+        let attributed = self.m_resolved.values().filter(|c| !**c).count() as u32;
+        let total = self.m_typed + self.m_pasted;
+        MirrorSnapshot {
+            composition: Composition {
+                typed_chars: self.m_typed,
+                pasted_chars: self.m_pasted,
+                pastes_claimed: claimed,
+                pastes_attributed: attributed,
+                pastes_unclaimed: self
+                    .m_paste_count
+                    .saturating_sub(claimed)
+                    .saturating_sub(attributed),
+                paste_count: self.m_paste_count,
+                typed_ratio: if total == 0 {
+                    1.0
+                } else {
+                    self.m_typed as f64 / total as f64
+                },
+            },
+            coach_consults: self.m_consults,
+            coach_refused: self.m_refused,
+        }
     }
 
     fn log_quarantine_outcomes(&mut self, outcomes: Vec<Outcome>) {
@@ -546,6 +689,15 @@ impl App {
         if text.is_empty() {
             return;
         }
+        if let Some(p) = self.prompt.as_mut() {
+            // Paste into the active prompt field (first line only).
+            let line = text.lines().next().unwrap_or("");
+            p.fields[p.active].push_str(line);
+            if matches!(p.kind, PromptKind::Find | PromptKind::Replace) && p.active == 0 {
+                self.search_update();
+            }
+            return;
+        }
         if let Some(s) = self.coach_settings.as_mut() {
             match s.field {
                 0 => s.base_url.push_str(text),
@@ -612,6 +764,18 @@ impl App {
             self.help_open = false; // any key dismisses
             return;
         }
+        if self.disclosure_open {
+            match key.code {
+                KeyCode::Up => self.disclosure_scroll = self.disclosure_scroll.saturating_sub(1),
+                KeyCode::Down => self.disclosure_scroll = self.disclosure_scroll.saturating_add(1),
+                _ => self.disclosure_open = false,
+            }
+            return;
+        }
+        if self.prompt.is_some() {
+            self.handle_prompt_key(key);
+            return;
+        }
         if self.journal_open {
             self.handle_journal_key(key);
             return;
@@ -648,20 +812,30 @@ impl App {
         // Global control keys (editor-scoped ones require editor focus).
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             let editing = self.focus == Focus::Editor;
+            let shift = key.modifiers.contains(KeyModifiers::SHIFT);
             match key.code {
                 KeyCode::Char('k') => self.dispatch(MenuAction::EditClaim),
                 KeyCode::Char('d') => self.export_disclosure(),
                 KeyCode::Char('m') if editing => self.attribute_region(),
                 KeyCode::Char('j') if editing => self.coach_selection(),
                 KeyCode::Char('s') => self.save(),
+                KeyCode::Char('o') => self.open_prompt(PromptKind::OpenFile),
+                KeyCode::Char('f') if editing => self.open_prompt(PromptKind::Find),
+                KeyCode::Char('h') if editing => self.open_prompt(PromptKind::Replace),
+                KeyCode::Char('g') if editing => self.open_prompt(PromptKind::GotoLine),
                 KeyCode::Char('t') => self.open_theme_picker(),
                 KeyCode::Char('e') => self.open_coach_settings(),
                 KeyCode::Char('p') => self.toggle_journal(),
+                KeyCode::Char('z') if editing && shift => self.redo(),
                 KeyCode::Char('z') if editing => self.undo(),
                 KeyCode::Char('y') if editing => self.redo(),
                 KeyCode::Char('a') if editing => self.buffer.select_all(),
                 KeyCode::Char('c') if editing => self.copy_selection(),
                 KeyCode::Char('x') if editing => self.cut_selection(),
+                KeyCode::Left if editing => self.editor_word_move(false, shift),
+                KeyCode::Right if editing => self.editor_word_move(true, shift),
+                KeyCode::Backspace if editing => self.editor_delete_word(false),
+                KeyCode::Delete if editing => self.editor_delete_word(true),
                 KeyCode::Char('q') => self.request_quit(),
                 KeyCode::Char('l') if self.client.is_some() => {
                     self.dispatch(MenuAction::ToggleCoach)
@@ -732,6 +906,8 @@ impl App {
             || self.help_open
             || self.journal_open
             || self.confirm_quit
+            || self.prompt.is_some()
+            || self.disclosure_open
     }
 
     // --- menus -------------------------------------------------------------
@@ -821,9 +997,15 @@ impl App {
                 self.gated = true;
             }
             MenuAction::Save => self.save(),
+            MenuAction::SaveAs => self.open_prompt(PromptKind::SaveAs),
+            MenuAction::Open => self.open_prompt(PromptKind::OpenFile),
             MenuAction::Export => self.export_disclosure(),
+            MenuAction::PreviewDisclosure => self.open_disclosure_preview(),
             MenuAction::Quit => self.request_quit(),
             MenuAction::AttributeRegion => self.attribute_region(),
+            MenuAction::Find => self.open_prompt(PromptKind::Find),
+            MenuAction::Replace => self.open_prompt(PromptKind::Replace),
+            MenuAction::GotoLine => self.open_prompt(PromptKind::GotoLine),
             MenuAction::ThemePicker => self.open_theme_picker(),
             MenuAction::SetFriction(n) => self.set_friction(n),
             MenuAction::ToggleCoach => {
@@ -1064,7 +1246,7 @@ impl App {
                 KeyCode::Right => self.buffer.move_right(),
                 KeyCode::Up => self.buffer.move_up(),
                 KeyCode::Down => self.buffer.move_down(),
-                KeyCode::Home => self.buffer.move_line_start(),
+                KeyCode::Home => self.buffer.move_smart_home(),
                 KeyCode::End => self.buffer.move_line_end(),
                 KeyCode::PageUp => {
                     for _ in 0..h {
@@ -1092,12 +1274,19 @@ impl App {
             KeyCode::Backspace | KeyCode::Delete => GroupKind::Delete,
             _ => GroupKind::Insert,
         };
-        let coalescible = !had_selection && !matches!(key.code, KeyCode::Enter | KeyCode::Tab);
+        let coalescible =
+            !had_selection && !matches!(key.code, KeyCode::Enter | KeyCode::Tab | KeyCode::BackTab);
         let pre = self.snapshot();
         let change = match key.code {
             KeyCode::Char(c) if !c.is_control() => Some(self.insert_or_replace(&c.to_string())),
-            KeyCode::Enter => Some(self.insert_or_replace("\n")),
+            KeyCode::Enter => {
+                // Auto-indent: carry the current line's leading whitespace.
+                let (line, _) = self.buffer.cursor_line_col();
+                let indent = self.buffer.line_indent(line);
+                Some(self.insert_or_replace(&format!("\n{indent}")))
+            }
             KeyCode::Tab => Some(self.insert_or_replace("    ")),
+            KeyCode::BackTab => self.dedent_current_line(),
             KeyCode::Backspace => {
                 if had_selection {
                     self.buffer.delete_selection()
@@ -1154,6 +1343,342 @@ impl App {
             self.buffer.replace_selection(s).expect("selection present")
         } else {
             self.buffer.type_str(s)
+        }
+    }
+
+    /// Remove up to one indent (a tab, or up to 4 leading spaces) from the
+    /// current line. Returns the change, or `None` if the line isn't indented.
+    fn dedent_current_line(&mut self) -> Option<Change> {
+        let (line, _) = self.buffer.cursor_line_col();
+        let start = self.buffer.line_char_start(line);
+        let indent = self.buffer.line_indent(line);
+        let remove = if indent.starts_with('\t') {
+            1
+        } else {
+            indent.chars().take(4).take_while(|c| *c == ' ').count()
+        };
+        (remove > 0).then(|| self.buffer.remove(start, start + remove))
+    }
+
+    /// Word-wise caret move (Ctrl+←/→), extending the selection with Shift.
+    fn editor_word_move(&mut self, forward: bool, shift: bool) {
+        if shift {
+            self.buffer.begin_selection();
+        } else {
+            self.buffer.clear_selection();
+        }
+        if forward {
+            self.buffer.move_word_right();
+        } else {
+            self.buffer.move_word_left();
+        }
+        self.undo_group = None;
+        self.reveal_cursor();
+    }
+
+    /// Delete a word (Ctrl+Backspace / Ctrl+Delete), or the selection if any.
+    fn editor_delete_word(&mut self, forward: bool) {
+        let pre = self.snapshot();
+        let change = if self.buffer.selection().is_some() {
+            self.buffer.delete_selection()
+        } else if forward {
+            self.buffer.delete_word_right()
+        } else {
+            self.buffer.delete_word_left()
+        };
+        if let Some(change) = change {
+            self.record_undo(pre);
+            self.undo_group = None;
+            self.commit_edit(ChangeSet::single(change));
+        }
+    }
+
+    // --- input prompts: find / replace / goto / open / save-as ------------
+
+    fn open_prompt(&mut self, kind: PromptKind) {
+        let mut fields: Vec<String> = kind.labels().iter().map(|_| String::new()).collect();
+        match kind {
+            PromptKind::Find | PromptKind::Replace => {
+                if let Some(sel) = self.buffer.selected_text()
+                    && !sel.contains('\n')
+                {
+                    fields[0] = sel;
+                }
+                self.search_origin = self.buffer.cursor();
+            }
+            PromptKind::OpenFile | PromptKind::SaveAs => {
+                fields[0] = self.path.display().to_string();
+            }
+            PromptKind::GotoLine => {}
+        }
+        let prefilled = !fields[0].is_empty();
+        self.prompt = Some(Prompt {
+            kind,
+            fields,
+            active: 0,
+        });
+        if matches!(kind, PromptKind::Find | PromptKind::Replace) && prefilled {
+            self.search_update();
+        }
+    }
+
+    fn handle_prompt_key(&mut self, key: KeyEvent) {
+        let Some(kind) = self.prompt.as_ref().map(|p| p.kind) else {
+            return;
+        };
+        let is_find = matches!(kind, PromptKind::Find | PromptKind::Replace);
+        match key.code {
+            KeyCode::Esc => self.prompt = None,
+            KeyCode::Tab => {
+                if let Some(p) = self.prompt.as_mut() {
+                    let n = p.fields.len();
+                    p.active = (p.active + 1) % n;
+                }
+            }
+            KeyCode::Enter => self.confirm_prompt(),
+            KeyCode::Backspace => {
+                let mut research = false;
+                if let Some(p) = self.prompt.as_mut() {
+                    p.fields[p.active].pop();
+                    research = is_find && p.active == 0;
+                }
+                if research {
+                    self.search_update();
+                }
+            }
+            KeyCode::Char(c) if !c.is_control() => {
+                let mut research = false;
+                if let Some(p) = self.prompt.as_mut() {
+                    p.fields[p.active].push(c);
+                    research = is_find && p.active == 0;
+                }
+                if research {
+                    self.search_update();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn confirm_prompt(&mut self) {
+        let (kind, f0, f1) = match self.prompt.as_ref() {
+            Some(p) => (
+                p.kind,
+                p.fields[0].clone(),
+                p.fields.get(1).cloned().unwrap_or_default(),
+            ),
+            None => return,
+        };
+        match kind {
+            PromptKind::Find => self.find_next(true), // keep the prompt open
+            PromptKind::Replace => {
+                self.replace_all(&f0, &f1);
+                self.prompt = None;
+            }
+            PromptKind::GotoLine => {
+                if let Ok(n) = f0.trim().parse::<usize>() {
+                    self.buffer.clear_selection();
+                    self.buffer.set_cursor_line_col(n.saturating_sub(1), 0);
+                    self.reveal_cursor();
+                }
+                self.prompt = None;
+            }
+            PromptKind::OpenFile => {
+                self.do_open(&f0);
+                self.prompt = None;
+            }
+            PromptKind::SaveAs => {
+                self.do_save_as(&f0);
+                self.prompt = None;
+            }
+        }
+    }
+
+    /// All case-insensitive (ASCII) matches of `query`, as char ranges.
+    fn search_all(&self, query: &str) -> Vec<(usize, usize)> {
+        let needle: Vec<char> = query.chars().collect();
+        if needle.is_empty() {
+            return Vec::new();
+        }
+        let hay: Vec<char> = self.buffer.text().chars().collect();
+        let mut out = Vec::new();
+        if needle.len() > hay.len() {
+            return out;
+        }
+        let eq = |a: char, b: char| a.eq_ignore_ascii_case(&b);
+        let mut i = 0;
+        while i + needle.len() <= hay.len() {
+            if (0..needle.len()).all(|k| eq(hay[i + k], needle[k])) {
+                out.push((i, i + needle.len()));
+                i += needle.len();
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// Incremental find: select the first match at/after the find origin.
+    fn search_update(&mut self) {
+        let Some(query) = self.prompt.as_ref().map(|p| p.fields[0].clone()) else {
+            return;
+        };
+        if query.is_empty() {
+            self.buffer.clear_selection();
+            return;
+        }
+        let matches = self.search_all(&query);
+        if let Some(&(s, e)) = matches
+            .iter()
+            .find(|(s, _)| *s >= self.search_origin)
+            .or_else(|| matches.first())
+        {
+            self.buffer.set_selection(s, e);
+            self.reveal_cursor();
+        }
+    }
+
+    fn find_next(&mut self, forward: bool) {
+        let Some(query) = self.prompt.as_ref().map(|p| p.fields[0].clone()) else {
+            return;
+        };
+        if query.is_empty() {
+            return;
+        }
+        let matches = self.search_all(&query);
+        if matches.is_empty() {
+            self.message = "No matches".into();
+            return;
+        }
+        let cur = self.buffer.cursor();
+        let idx = if forward {
+            matches.iter().position(|(s, _)| *s > cur).unwrap_or(0)
+        } else {
+            matches
+                .iter()
+                .rposition(|(s, _)| *s < cur)
+                .unwrap_or(matches.len() - 1)
+        };
+        let (s, e) = matches[idx];
+        self.buffer.set_selection(s, e);
+        self.reveal_cursor();
+        self.message = format!("Match {}/{}", idx + 1, matches.len());
+    }
+
+    fn replace_all(&mut self, find: &str, repl: &str) {
+        if find.is_empty() {
+            return;
+        }
+        let matches = self.search_all(find);
+        if matches.is_empty() {
+            self.message = "No matches".into();
+            return;
+        }
+        let pre = self.snapshot();
+        let chars: Vec<char> = self.buffer.text().chars().collect();
+        let mut out = String::new();
+        let mut last = 0;
+        let cs = ChangeSet {
+            changes: matches
+                .iter()
+                .map(|&(s, e)| Change {
+                    from: s,
+                    to: e,
+                    insert: repl.to_string(),
+                })
+                .collect(),
+        };
+        for &(s, e) in &matches {
+            out.extend(chars[last..s].iter());
+            out.push_str(repl);
+            last = e;
+        }
+        out.extend(chars[last..].iter());
+        let count = matches.len();
+        self.buffer = Buffer::new(&out);
+        self.record_undo(pre);
+        self.undo_group = None;
+        // Remap quarantine regions through the same change set.
+        self.commit_edit(cs);
+        self.message = format!("Replaced {count} occurrence(s)");
+    }
+
+    // --- open / save-as / disclosure preview ------------------------------
+
+    fn do_open(&mut self, path: &str) {
+        if self.dirty {
+            self.message = "Unsaved changes — save first (Ctrl+S).".into();
+            return;
+        }
+        let p = PathBuf::from(path);
+        match std::fs::read_to_string(&p) {
+            Ok(text) => {
+                self.load_document(text, p);
+                self.message = format!("Opened {}", self.path.display());
+            }
+            Err(e) => self.message = format!("Open failed: {e}"),
+        }
+    }
+
+    /// Replace the open document (buffer + per-document state) and start a fresh
+    /// journal session. Preferences (theme/friction) are kept.
+    fn load_document(&mut self, text: String, path: PathBuf) {
+        self.buffer = Buffer::new(&text);
+        self.buffer.set_cursor(self.buffer.len_chars());
+        self.path = path;
+        self.file_mtime = file_mtime_of(&self.path);
+        self.dirty = false;
+        self.diagnostics = self.linter.lint(&text);
+        self.quarantine = Quarantine::new();
+        self.quarantine.set_thresholds(
+            self.friction.paste_threshold(),
+            self.friction.claim_survival_threshold(),
+        );
+        self.claim = crate::markdown::render::frontmatter_claim(&text);
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.undo_group = None;
+        self.coach_turns.clear();
+        self.editor_scroll = 0;
+        self.editor_hscroll = 0;
+        // Fresh journal + tallies for the new document.
+        self.journal.clear();
+        self.event_seq = 0;
+        self.m_typed = 0;
+        self.m_pasted = 0;
+        self.m_paste_count = 0;
+        self.m_resolved.clear();
+        self.m_consults = 0;
+        self.m_refused = 0;
+        let pc0 = instruments::paragraph_count(&text);
+        self.last_para_count = pc0;
+        self.next_teachback = match self.friction.teachback_interval() {
+            Some(iv) => ((pc0 / iv) + 1) * iv,
+            None => usize::MAX,
+        };
+        self.next_push = match self.friction.push_interval() {
+            Some(iv) => ((pc0 / iv) + 1) * iv,
+            None => usize::MAX,
+        };
+        self.gated = text.trim().is_empty();
+        self.edit_version += 1;
+        self.lint_dirty = false;
+        self.start_session();
+    }
+
+    fn do_save_as(&mut self, path: &str) {
+        self.path = PathBuf::from(path);
+        self.save();
+    }
+
+    fn open_disclosure_preview(&mut self) {
+        match render_disclosure(&self.file_label(), &self.journal) {
+            Ok(doc) => {
+                self.disclosure_text = doc.markdown;
+                self.disclosure_scroll = 0;
+                self.disclosure_open = true;
+            }
+            Err(e) => self.message = format!("Disclosure blocked: {e}"),
         }
     }
 
@@ -1276,6 +1801,7 @@ impl App {
         let generation = self.coach_generation;
         let tx = self.coach_tx.clone();
         self.coach_busy = true;
+        self.coach_started = Some(Instant::now());
         self.message = "Asking coach…".into();
         self.tokio.spawn(async move {
             let mut guard = DoneGuard {
@@ -1332,6 +1858,7 @@ impl App {
         // possibly-edited buffer at completion.
         self.coach_pending_context = context;
         self.coach_mode = CoachMode::Chat;
+        self.coach_is_push = false;
         self.spawn_coach(messages, false);
     }
 
@@ -1361,6 +1888,7 @@ impl App {
         });
         let messages = build_coach_messages(&selection, self.claim.as_deref());
         self.coach_mode = CoachMode::Structured(selection);
+        self.coach_is_push = false;
         self.focus = Focus::Coach;
         self.spawn_coach(messages, true);
     }
@@ -1380,6 +1908,7 @@ impl App {
                 continue;
             }
             self.coach_busy = false;
+            self.coach_started = None;
             match ev.result {
                 Ok(reply) => self.accept_coach_reply(reply),
                 Err(e) => {
@@ -1420,6 +1949,7 @@ impl App {
                     .and_then(|v| screen_coaching_output(v, &selection).map_err(|e| e.to_string()));
                 match parsed {
                     Ok(coaching) => {
+                        self.push_failures = 0;
                         self.log_coach_consult(false);
                         self.coach_turns.push(ChatTurn {
                             role: ChatTurnRole::Coach,
@@ -1434,6 +1964,16 @@ impl App {
                             text: format!("(withheld by guard: {reason})"),
                         });
                         self.message = "Coach reply withheld by guard.".into();
+                        // Back off proactive coaching if the backend keeps
+                        // failing to return usable JSON.
+                        if self.coach_is_push {
+                            self.push_failures = self.push_failures.saturating_add(1);
+                            if self.push_failures >= 2 {
+                                self.next_push = usize::MAX;
+                                self.message =
+                                    "Auto-review paused (backend not returning JSON).".into();
+                            }
+                        }
                     }
                 }
             }
@@ -1497,6 +2037,7 @@ impl App {
         });
         let messages = build_coach_messages(&para, self.claim.as_deref());
         self.coach_mode = CoachMode::Structured(para);
+        self.coach_is_push = true;
         self.spawn_coach(messages, true);
         self.message = "Coach is reviewing your latest paragraph…".into();
     }
@@ -1591,6 +2132,41 @@ impl App {
                 }
                 MouseEventKind::Down(MouseButton::Left) => self.journal_open = false,
                 _ => {}
+            }
+            return;
+        }
+
+        // Disclosure preview: wheel scrolls, a click dismisses.
+        if self.disclosure_open {
+            match ev.kind {
+                MouseEventKind::ScrollDown => {
+                    self.disclosure_scroll = self.disclosure_scroll.saturating_add(1)
+                }
+                MouseEventKind::ScrollUp => {
+                    self.disclosure_scroll = self.disclosure_scroll.saturating_sub(1)
+                }
+                MouseEventKind::Down(MouseButton::Left) => self.disclosure_open = false,
+                _ => {}
+            }
+            return;
+        }
+
+        // Input prompt: click a field row to focus it, click outside to cancel.
+        if self.prompt.is_some() {
+            if let MouseEventKind::Down(MouseButton::Left) = ev.kind {
+                let rect = self.prompt_rect;
+                if over(rect) {
+                    if ev.row > rect.y && ev.row + 1 < rect.y + rect.height {
+                        let row = (ev.row - rect.y - 1) as usize;
+                        if let Some(p) = self.prompt.as_mut()
+                            && row < p.fields.len()
+                        {
+                            p.active = row;
+                        }
+                    }
+                } else {
+                    self.prompt = None;
+                }
             }
             return;
         }
@@ -1804,12 +2380,38 @@ impl App {
     }
 
     fn save(&mut self) {
-        match std::fs::write(&self.path, self.buffer.text()) {
+        // Warn if the file changed on disk since we loaded/saved it.
+        if let (Some(known), Some(now)) = (self.file_mtime, file_mtime_of(&self.path))
+            && now > known
+        {
+            self.message = "File changed on disk — Ctrl+S again to overwrite.".into();
+            self.file_mtime = Some(now); // a second Ctrl+S now proceeds
+            return;
+        }
+        match atomic_write(&self.path, self.buffer.text().as_bytes()) {
             Ok(()) => {
                 self.dirty = false;
+                self.file_mtime = file_mtime_of(&self.path);
                 self.message = format!("Saved {}", self.path.display());
             }
             Err(e) => self.message = format!("Save failed: {e}"),
+        }
+    }
+
+    /// Autosave a dirty buffer that has been idle briefly (called from the run
+    /// loop). No-op for an unnamed buffer.
+    pub fn maybe_autosave(&mut self) {
+        if !self.dirty || self.path.as_os_str().is_empty() {
+            return;
+        }
+        let Some(last) = self.last_edit else { return };
+        if last.elapsed() < Duration::from_secs(3) {
+            return;
+        }
+        if atomic_write(&self.path, self.buffer.text().as_bytes()).is_ok() {
+            self.dirty = false;
+            self.file_mtime = file_mtime_of(&self.path);
+            self.message = format!("Autosaved {}", self.file_label());
         }
     }
 
@@ -1869,6 +2471,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if app.journal_open {
         draw_journal(frame, app, area);
+    }
+    if app.disclosure_open {
+        draw_disclosure(frame, app, area);
+    }
+    if app.prompt.is_some() {
+        draw_prompt(frame, app, area);
     }
     if app.help_open {
         draw_help(frame, app, area);
@@ -2195,27 +2803,34 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
         ])
     };
     let lines = vec![
-        row("Ctrl+S", "Save"),
+        row("Ctrl+S / O", "Save · open file (Save as via File menu)"),
         row("Ctrl+Z / Y", "Undo / redo"),
         row(
             "Ctrl+C / X",
             "Copy / cut selection (Shift+arrows to select)",
         ),
         row("Ctrl+A", "Select all"),
-        row("Ctrl+D", "Export disclosure"),
+        row("Ctrl+F / H / G", "Find · replace · go to line"),
+        row("Ctrl+←/→", "Move by word (Ctrl+Backspace/Del deletes word)"),
+        row("Ctrl+D", "Export disclosure (File ▸ Preview to view)"),
         row("Ctrl+K", "State / edit your claim"),
         row("Ctrl+M", "Mark paste under cursor as a quotation"),
-        row("Ctrl+L", "Focus the coach panel"),
-        row("Ctrl+J", "Coach the current selection"),
+        row("Ctrl+L / J", "Focus coach · coach the selection"),
         row("Ctrl+E", "AI settings (endpoint, API key, model)"),
         row("Ctrl+P", "Process / journal view"),
         row("Ctrl+T", "Theme picker (live preview)"),
-        row("F10", "Open the menu bar"),
-        row("F1", "This help"),
+        row("F10 / F1", "Menu bar · this help"),
         row("Ctrl+Q", "Quit (asks if unsaved)"),
         Line::raw(""),
+        Line::from(vec![
+            Span::styled("  Yellow highlight", theme.quarantine()),
+            Span::styled(
+                " = a pasted region; rewrite it (claim-to-own) or Ctrl+M to attribute.",
+                theme.dim(),
+            ),
+        ]),
         Line::from(Span::styled(
-            "  Arrows / PgUp / PgDn move · mouse click & wheel supported",
+            "  Mouse: click / drag to select, double = word, triple = line.",
             theme.dim(),
         )),
         Line::from(Span::styled("  Esc or any key to close", theme.dim())),
@@ -2482,6 +3097,10 @@ fn draw_coach(frame: &mut Frame, app: &mut App, area: Rect) {
             // The reply is shown only AFTER it passes the guard (see
             // drain_coach_events). Streaming text is never rendered, so an
             // unscreened rewrite can't flash on screen mid-stream.
+            let elapsed = app
+                .coach_started
+                .map(|t| format!("thinking… ({}s · Esc to cancel)", t.elapsed().as_secs()))
+                .unwrap_or_else(|| "thinking…".to_string());
             lines.push(Line::from(vec![
                 Span::styled(
                     "coach: ",
@@ -2489,7 +3108,7 @@ fn draw_coach(frame: &mut Frame, app: &mut App, area: Rect) {
                         .fg(theme.coach_reply)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("thinking…", theme.dim().add_modifier(Modifier::ITALIC)),
+                Span::styled(elapsed, theme.dim().add_modifier(Modifier::ITALIC)),
             ]));
         }
         if lines.is_empty() {
@@ -2573,25 +3192,19 @@ fn draw_status(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
         format!("⚠{}", app.diagnostics.len())
     };
-    let mirror = {
-        // Recompute the mirror only when a new event was journaled.
-        if app.mirror_cache.as_ref().map(|(seq, _)| *seq) != Some(app.event_seq) {
-            let snap = compute_mirror(&app.journal);
-            app.mirror_cache = Some((app.event_seq, snap));
-        }
-        let c = &app.mirror_cache.as_ref().unwrap().1.composition;
-        if c.paste_count == 0 {
-            String::new()
-        } else {
-            format!(
-                "│ {}%t · {} mark",
-                (c.typed_ratio * 100.0).round() as u32,
-                c.pastes_unclaimed
-            )
-        }
+    let c = app.mirror_snapshot().composition;
+    let mirror = if c.paste_count == 0 {
+        String::new()
+    } else {
+        format!(
+            "│ {}%t · {} mark ",
+            (c.typed_ratio * 100.0).round() as u32,
+            c.pastes_unclaimed
+        )
     };
+    let friction = menu::friction_level_name(app.friction.level());
     let status = format!(
-        " {}{dirty} │ {}:{} │ {gram} {mirror} │ {} ",
+        " {}{dirty} │ {}:{} │ {gram} {mirror}│ {friction} │ {} ",
         app.file_label(),
         line + 1,
         col + 1,
@@ -2732,6 +3345,91 @@ fn wrapped_height(text: &Text<'_>, width: usize) -> usize {
             w.div_ceil(width).max(1)
         })
         .sum()
+}
+
+/// File modification time, if the path exists.
+fn file_mtime_of(path: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// Write `bytes` to `path` atomically (temp file in the same dir, then rename),
+/// so a crash mid-write can't truncate the document.
+fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension("whetstone-tmp");
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)
+}
+
+/// A one-/two-field input prompt (find/replace/goto/open/save-as).
+fn draw_prompt(frame: &mut Frame, app: &mut App, area: Rect) {
+    let Some(p) = app.prompt.as_ref() else { return };
+    let theme = app.theme;
+    let labels = p.kind.labels();
+    let height = labels.len() as u16 + 4; // fields + blank + hint + borders
+    let rect = centered_rect_abs(64, height, area);
+    app.prompt_rect = rect;
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme.border(true))
+        .style(theme.panel_bg())
+        .title(Line::from(Span::styled(p.kind.title(), theme.title(true))));
+    let inner = block.inner(rect);
+    let gutter = 9u16;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (i, label) in labels.iter().enumerate() {
+        let focused = p.active == i;
+        let marker = if focused { "▸ " } else { "  " };
+        let lstyle = if focused { theme.accent() } else { theme.dim() };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{marker}{label:<6} "), lstyle),
+            Span::styled(p.fields[i].clone(), theme.text()),
+        ]));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(p.kind.hint(), theme.dim())));
+    frame.render_widget(Clear, rect);
+    frame.render_widget(Paragraph::new(lines).block(block), rect);
+    let val_len = p.fields[p.active].chars().count() as u16;
+    let cx = (inner.x + gutter + val_len).min(inner.right().saturating_sub(1));
+    frame.set_cursor_position((cx, inner.y + p.active as u16));
+}
+
+/// Scrollable read-only preview of the rendered disclosure document.
+fn draw_disclosure(frame: &mut Frame, app: &mut App, area: Rect) {
+    let theme = app.theme;
+    let rect = centered_rect_abs(78, (area.height * 4 / 5).max(8), area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme.border(true))
+        .style(theme.panel_bg())
+        .title(Line::from(Span::styled(
+            " Disclosure preview ",
+            theme.title(true),
+        )));
+    let inner = block.inner(rect);
+    let mut lines: Vec<Line<'static>> = app
+        .disclosure_text
+        .lines()
+        .map(|l| Line::from(Span::styled(l.to_string(), theme.text())))
+        .collect();
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "↑/↓ scroll · Esc close · Ctrl+D writes the file",
+        theme.dim(),
+    )));
+    let max = lines.len().saturating_sub(inner.height as usize);
+    if app.disclosure_scroll > max {
+        app.disclosure_scroll = max;
+    }
+    frame.render_widget(Clear, rect);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .style(theme.text())
+            .wrap(Wrap { trim: false })
+            .scroll((app.disclosure_scroll as u16, 0)),
+        rect,
+    );
 }
 
 #[cfg(test)]
@@ -2923,6 +3621,54 @@ mod tests {
         // A single undo reverts the whole contiguous burst.
         app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
         assert_eq!(app.buffer.text(), before);
+    }
+
+    #[test]
+    fn replace_all_replaces_every_match() {
+        let rt = rt();
+        let mut app = test_app(&rt); // "# Title\n\nHello world."
+        app.replace_all("l", "L");
+        assert_eq!(app.buffer.text(), "# TitLe\n\nHeLLo worLd.");
+    }
+
+    #[test]
+    fn find_selects_next_match() {
+        let rt = rt();
+        let mut app = test_app(&rt);
+        app.buffer.set_cursor(0);
+        app.open_prompt(PromptKind::Find);
+        for c in "world".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert_eq!(app.buffer.selected_text().as_deref(), Some("world"));
+    }
+
+    #[test]
+    fn incremental_mirror_matches_full_recompute() {
+        let rt = rt();
+        let mut app = test_app(&rt);
+        for c in "abcde".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.handle_paste(&"z".repeat(50));
+        assert_eq!(app.mirror_snapshot(), compute_mirror(&app.journal));
+    }
+
+    #[test]
+    fn structured_coaching_formats_observations() {
+        use crate::core::coaching::{Anchor, Observation, ObservationKind, StructuredCoaching};
+        let c = StructuredCoaching {
+            observations: vec![Observation {
+                anchor: Anchor { start: 0, end: 3 },
+                kind: ObservationKind::LogicFork,
+                reflection: "the argument forks here".into(),
+                question: "which branch do you mean?".into(),
+            }],
+        };
+        let s = format_structured_coaching(&c);
+        assert!(s.contains("logic fork"));
+        assert!(s.contains("the argument forks here"));
+        assert!(s.contains("which branch do you mean?"));
     }
 
     #[test]

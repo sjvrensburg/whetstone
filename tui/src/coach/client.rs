@@ -214,6 +214,43 @@ mod tests {
     }
 
     #[test]
+    fn chat_assembles_streamed_sse_over_http() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = sock.read(&mut buf); // consume the request headers
+            let body = "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\
+                        data: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}\n\
+                        data: [DONE]\n";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            sock.write_all(resp.as_bytes()).unwrap();
+        });
+
+        let cfg = CoachConfig {
+            base_url: format!("http://{addr}"),
+            api_key: String::new(),
+            model: "m".into(),
+        };
+        let client = CoachClient::new(cfg);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let out = rt.block_on(client.chat(&[], false, |_| {})).unwrap();
+        server.join().unwrap();
+        assert_eq!(out, "Hello");
+    }
+
+    #[test]
     fn skips_non_content_events() {
         // role-only start event has no content → skipped, not an error.
         let mut buf = String::from("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n");

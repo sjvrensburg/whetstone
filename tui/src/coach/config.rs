@@ -87,13 +87,9 @@ impl CoachConfig {
     }
 }
 
-/// `…/whetstone/coach.json` under `$XDG_CONFIG_HOME` or `$HOME/.config`.
+/// `…/whetstone/coach.json` under the user config dir.
 fn config_path() -> Option<PathBuf> {
-    let dir = match std::env::var_os("XDG_CONFIG_HOME") {
-        Some(x) if PathBuf::from(&x).is_absolute() => PathBuf::from(x),
-        _ => PathBuf::from(std::env::var_os("HOME")?).join(".config"),
-    };
-    Some(dir.join("whetstone").join("coach.json"))
+    Some(crate::config_dir()?.join("whetstone").join("coach.json"))
 }
 
 #[cfg(test)]
