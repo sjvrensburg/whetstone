@@ -162,6 +162,17 @@ impl FrictionPolicy {
             _ => Some(1),
         }
     }
+
+    /// Push-cadence (proactive) coaching: run a structured coaching pass every
+    /// N new paragraphs. Off below "Engaged" — proactive model calls are opt-in
+    /// via a higher friction level.
+    pub fn push_interval(&self) -> Option<usize> {
+        match self.level() {
+            0 | 1 => None,
+            2 => Some(4),
+            _ => Some(3),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -203,6 +214,18 @@ mod tests {
             serde_json::to_string(&ProcessEventType::PushCoaching).unwrap(),
             "\"push_coaching\""
         );
+    }
+
+    #[test]
+    fn friction_intervals_scale_with_level() {
+        // Teach-back tightens with level; push-cadence is off until "Engaged".
+        assert_eq!(FrictionPolicy::new(0, 0).teachback_interval(), None);
+        assert_eq!(FrictionPolicy::new(0, 1).teachback_interval(), Some(3));
+        assert_eq!(FrictionPolicy::new(0, 1).push_interval(), None);
+        assert_eq!(FrictionPolicy::new(0, 2).push_interval(), Some(4));
+        assert_eq!(FrictionPolicy::new(0, 3).push_interval(), Some(3));
+        // The floor raises the effective level.
+        assert_eq!(FrictionPolicy::new(2, 0).level(), 2);
     }
 
     #[test]

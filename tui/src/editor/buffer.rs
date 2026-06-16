@@ -63,6 +63,41 @@ impl Buffer {
         }
     }
 
+    /// Select the word (alphanumeric/underscore run) under `offset`; if the
+    /// char there isn't a word char, select just that one character.
+    pub fn select_word(&mut self, offset: usize) {
+        let n = self.len_chars();
+        if n == 0 {
+            return;
+        }
+        let off = offset.min(n - 1);
+        let is_word = |c: char| c.is_alphanumeric() || c == '_';
+        if !is_word(self.rope.char(off)) {
+            self.anchor = Some(off);
+            self.cursor = off + 1;
+            return;
+        }
+        let mut start = off;
+        while start > 0 && is_word(self.rope.char(start - 1)) {
+            start -= 1;
+        }
+        let mut end = off;
+        while end < n && is_word(self.rope.char(end)) {
+            end += 1;
+        }
+        self.anchor = Some(start);
+        self.cursor = end;
+    }
+
+    /// Select the whole content of `line` (excluding its trailing newline).
+    pub fn select_line(&mut self, line: usize) {
+        let last = self.rope.len_lines().saturating_sub(1);
+        let line = line.min(last);
+        let start = self.rope.line_to_char(line);
+        self.anchor = Some(start);
+        self.cursor = start + self.line_content_len(line);
+    }
+
     /// Delete the active selection, returning the applied [`Change`].
     pub fn delete_selection(&mut self) -> Option<Change> {
         let (s, e) = self.selection()?;
@@ -324,6 +359,15 @@ mod tests {
         assert_eq!((ch.from, ch.to, ch.insert.as_str()), (0, 5, "HI"));
         assert_eq!(b.cursor(), 2);
         assert_eq!(b.selection(), None);
+    }
+
+    #[test]
+    fn select_word_and_line() {
+        let mut b = Buffer::new("foo bar_baz qux\nsecond");
+        b.select_word(5); // inside "bar_baz"
+        assert_eq!(b.selected_text().as_deref(), Some("bar_baz"));
+        b.select_line(0);
+        assert_eq!(b.selected_text().as_deref(), Some("foo bar_baz qux"));
     }
 
     #[test]

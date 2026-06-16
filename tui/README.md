@@ -35,8 +35,9 @@ beyond transient menus/dialogs). Press **F1** for the keybinding cheat-sheet or
 | `Ctrl+Q` | Quit (asks if there are unsaved changes) |
 | `F10` / `F1` | Menu bar / help |
 
-Mouse: click to place the cursor or focus a pane, wheel to scroll, click menu
-titles/items, and click rows in the theme picker / settings dialog.
+Mouse: click to place the cursor, click-drag to select, double-click a word,
+triple-click a line, wheel to scroll, and click menu titles / dialog rows.
+Typing coalesces into single undo steps.
 
 ## AI coach (optional)
 
@@ -67,10 +68,11 @@ draft and your message are injection-screened before egress.
 The theme and friction level chosen in-app persist to
 `~/.config/whetstone/ui.json`; the env vars override them at startup. The
 friction level drives the paste-quarantine threshold, the claim-to-own floor,
-and the teach-back cadence (ADR-008).
+the teach-back cadence, and — at "Engaged"/"Deep Work" — proactive
+push-cadence coaching that reviews each finished paragraph (ADR-008).
 
 ## Not yet implemented
 
-Find/replace, multiple files / tabs, in-app open & save-as, go-to-line,
-proactive (push-cadence) coaching, a connection test in the settings dialog,
-and an interactive keybinding editor are not built yet.
+Find/replace, multiple files / tabs, in-app open & save-as, go-to-line, a
+connection test in the settings dialog, and an interactive keybinding editor
+are not built yet.

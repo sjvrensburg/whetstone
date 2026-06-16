@@ -73,6 +73,39 @@ struct Snapshot {
     regions: Vec<Region>,
 }
 
+/// Sends a failure result on drop unless disarmed — guarantees the UI is
+/// unblocked even if the coach future panics/unwinds before it sends its own.
+struct DoneGuard {
+    tx: mpsc::Sender<CoachEvent>,
+    generation: u64,
+    armed: bool,
+}
+
+impl Drop for DoneGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.tx.send(CoachEvent {
+                generation: self.generation,
+                result: Err("coach task aborted".to_string()),
+            });
+        }
+    }
+}
+
+/// Which undo group a contiguous run of edits belongs to (for coalescing).
+#[derive(PartialEq, Eq)]
+enum GroupKind {
+    Insert,
+    Delete,
+}
+
+struct UndoGroup {
+    kind: GroupKind,
+    /// Cursor position after the last edit of the group; the next edit
+    /// coalesces only if it continues from here.
+    caret: usize,
+}
+
 /// Max undo depth.
 const UNDO_CAP: usize = 200;
 
@@ -107,8 +140,14 @@ pub struct App {
     /// Undo/redo checkpoints (text + cursor + quarantine regions).
     undo_stack: Vec<Snapshot>,
     redo_stack: Vec<Snapshot>,
+    /// The current coalescing group, so a typing burst is one undo step.
+    undo_group: Option<UndoGroup>,
     /// Plain text awaiting an OSC 52 clipboard write by the run loop.
     clipboard_request: Option<String>,
+    /// Last left-click `(time, col, row)` and the running click count, for
+    /// double/triple-click word/line selection.
+    last_click: Option<(Instant, u16, u16)>,
+    click_count: u8,
     preview_scroll: usize,
     preview_height: usize,
     preview_inner: Rect,
@@ -127,6 +166,8 @@ pub struct App {
     teachback_input: String,
     last_para_count: usize,
     next_teachback: usize,
+    /// Next paragraph count at which proactive push-cadence coaching fires.
+    next_push: usize,
     /// Friction dial (ADR-008): drives the quarantine, claim, and teach-back
     /// instruments. Set from `WHETSTONE_FRICTION` (0–3) at startup.
     friction: FrictionPolicy,
@@ -230,6 +271,10 @@ impl App {
             Some(iv) => ((pc0 / iv) + 1) * iv,
             None => usize::MAX,
         };
+        let next_push = match friction.push_interval() {
+            Some(iv) => ((pc0 / iv) + 1) * iv,
+            None => usize::MAX,
+        };
 
         // Theme: WHETSTONE_THEME, else the saved preference, else the default.
         let theme = std::env::var("WHETSTONE_THEME")
@@ -255,7 +300,10 @@ impl App {
             editor_inner: Rect::default(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            undo_group: None,
             clipboard_request: None,
+            last_click: None,
+            click_count: 0,
             preview_scroll: 0,
             preview_height: 0,
             preview_inner: Rect::default(),
@@ -288,6 +336,7 @@ impl App {
             teachback_input: String::new(),
             last_para_count: pc0,
             next_teachback,
+            next_push,
             friction,
             edit_version: 0,
             theme,
@@ -408,6 +457,7 @@ impl App {
         self.buffer = Buffer::new(&s.text);
         self.buffer.set_cursor(s.cursor);
         self.quarantine.restore_regions(s.regions);
+        self.undo_group = None;
         self.edit_version += 1;
         self.dirty = true;
         self.lint_dirty = true;
@@ -458,6 +508,7 @@ impl App {
         let pre = self.snapshot();
         if let Some(change) = self.buffer.delete_selection() {
             self.record_undo(pre);
+            self.undo_group = None;
             let n = text.chars().count();
             self.clipboard_request = Some(text);
             self.commit_edit(ChangeSet::single(change));
@@ -518,6 +569,7 @@ impl App {
                     .unwrap_or_else(|| self.buffer.cursor());
                 let change = self.insert_or_replace(text);
                 self.record_undo(pre);
+                self.undo_group = None;
                 // Remap existing regions against the edit FIRST, then record the
                 // new paste with its post-edit offsets.
                 self.commit_edit(ChangeSet::single(change));
@@ -810,6 +862,10 @@ impl App {
             Some(iv) => ((self.last_para_count / iv) + 1) * iv,
             None => usize::MAX,
         };
+        self.next_push = match self.friction.push_interval() {
+            Some(iv) => ((self.last_para_count / iv) + 1) * iv,
+            None => usize::MAX,
+        };
         self.message = format!(
             "Friction: {} (level {level})",
             menu::friction_level_name(level)
@@ -1022,12 +1078,21 @@ impl App {
                 }
                 _ => {}
             }
+            self.undo_group = None; // moving the caret breaks the typing group
             self.reveal_cursor();
             return;
         }
 
         // Editing: an active selection is replaced/deleted as one change.
         let had_selection = self.buffer.selection().is_some();
+        let caret_before = self.buffer.cursor();
+        // A run of plain typing (or a run of deletes) coalesces into one undo
+        // step; newlines, tabs, and selection-replacements start their own.
+        let kind = match key.code {
+            KeyCode::Backspace | KeyCode::Delete => GroupKind::Delete,
+            _ => GroupKind::Insert,
+        };
+        let coalescible = !had_selection && !matches!(key.code, KeyCode::Enter | KeyCode::Tab);
         let pre = self.snapshot();
         let change = match key.code {
             KeyCode::Char(c) if !c.is_control() => Some(self.insert_or_replace(&c.to_string())),
@@ -1052,7 +1117,13 @@ impl App {
         let Some(change) = change else {
             return;
         };
-        self.record_undo(pre);
+        // Coalesce contiguous same-kind edits: only the first edit of a group
+        // records an undo checkpoint, so undo reverts the whole burst at once.
+        let continues = coalescible
+            && matches!(&self.undo_group, Some(g) if g.kind == kind && g.caret == caret_before);
+        if !continues {
+            self.record_undo(pre);
+        }
         let cs = ChangeSet::single(change);
         // Typing bursts are journaled as metadata (size only) when they add text.
         let inserted: usize = cs.changes.iter().map(|c| c.inserted_len()).sum();
@@ -1065,6 +1136,14 @@ impl App {
             );
         }
         self.commit_edit(cs);
+        self.undo_group = if coalescible {
+            Some(UndoGroup {
+                kind,
+                caret: self.buffer.cursor(),
+            })
+        } else {
+            None
+        };
         let after = self.buffer.text();
         self.maybe_trigger_teachback(&after);
     }
@@ -1142,6 +1221,7 @@ impl App {
             ],
         };
         self.record_undo(pre);
+        self.undo_group = None;
         self.commit_edit(cs);
         self.log_event(
             ProcessEventType::PasteAttributed,
@@ -1185,8 +1265,10 @@ impl App {
     }
 
     /// Spawn a coach request, sending its result tagged with the current
-    /// generation so a cancel/supersede can discard a stale reply.
-    fn spawn_coach(&mut self, messages: Vec<crate::core::prompts::ChatMessage>) {
+    /// generation so a cancel/supersede can discard a stale reply. A `DoneGuard`
+    /// reports an error result if the future unwinds, so the UI never gets stuck
+    /// "thinking". `json_mode` asks for a JSON response (structured coaching).
+    fn spawn_coach(&mut self, messages: Vec<crate::core::prompts::ChatMessage>, json_mode: bool) {
         let Some(client) = self.client.clone() else {
             return;
         };
@@ -1196,12 +1278,16 @@ impl App {
         self.coach_busy = true;
         self.message = "Asking coach…".into();
         self.tokio.spawn(async move {
+            let mut guard = DoneGuard {
+                tx: tx.clone(),
+                generation,
+                armed: true,
+            };
             let result = client
-                .chat(&messages, |_| {})
+                .chat(&messages, json_mode, |_| {})
                 .await
                 .map_err(|e| e.to_string());
-            // Always send a result, even if the future unwinds, so the UI never
-            // gets stuck "thinking".
+            guard.armed = false;
             let _ = tx.send(CoachEvent { generation, result });
         });
     }
@@ -1246,7 +1332,7 @@ impl App {
         // possibly-edited buffer at completion.
         self.coach_pending_context = context;
         self.coach_mode = CoachMode::Chat;
-        self.spawn_coach(messages);
+        self.spawn_coach(messages, false);
     }
 
     /// Run structured coaching on the current selection (anchored observations,
@@ -1276,7 +1362,7 @@ impl App {
         let messages = build_coach_messages(&selection, self.claim.as_deref());
         self.coach_mode = CoachMode::Structured(selection);
         self.focus = Focus::Coach;
-        self.spawn_coach(messages);
+        self.spawn_coach(messages, true);
     }
 
     /// Pump finished coach requests into the app state, screening every reply
@@ -1357,6 +1443,7 @@ impl App {
     /// Check whether a new paragraph crossed a teach-back threshold.
     fn maybe_trigger_teachback(&mut self, text: &str) {
         let pc = instruments::paragraph_count(text);
+        let mut fired_teachback = false;
         if let Some(interval) = self.friction.teachback_interval()
             && pc > self.last_para_count
             && pc >= self.next_teachback
@@ -1365,8 +1452,53 @@ impl App {
             self.teachback_input.clear();
             self.next_teachback = pc + interval;
             self.message = "Teach-back checkpoint — summarize your argument.".into();
+            fired_teachback = true;
+        }
+        // Proactive push-cadence coaching (Instrument A) — only when it didn't
+        // just interrupt with a teach-back, to avoid stacking prompts.
+        if !fired_teachback {
+            self.maybe_push_coaching(text, pc);
         }
         self.last_para_count = pc;
+    }
+
+    /// At the push-cadence boundary, run a structured coaching pass on the most
+    /// recent paragraph in the background (no focus steal). Gated on a high
+    /// enough friction level and an idle, configured coach.
+    fn maybe_push_coaching(&mut self, text: &str, pc: usize) {
+        let Some(interval) = self.friction.push_interval() else {
+            return;
+        };
+        if self.client.is_none()
+            || self.coach_busy
+            || pc <= self.last_para_count
+            || pc < self.next_push
+        {
+            return;
+        }
+        self.next_push = pc + interval;
+        let Some(para) = instruments::extract_paragraphs(text).pop() else {
+            return;
+        };
+        // Skip trivial paragraphs and anything that fails injection screening.
+        if para.split_whitespace().count() < 20 || screen_injection(&para).is_err() {
+            return;
+        }
+        self.log_event(
+            ProcessEventType::PushCoaching,
+            Some(para.chars().count() as u32),
+            None,
+            vec![],
+        );
+        self.coach_pending_size = para.chars().count() as u32;
+        self.coach_turns.push(ChatTurn {
+            role: ChatTurnRole::Writer,
+            text: format!("[auto-review · {pc} paragraphs in]"),
+        });
+        let messages = build_coach_messages(&para, self.claim.as_deref());
+        self.coach_mode = CoachMode::Structured(para);
+        self.spawn_coach(messages, true);
+        self.message = "Coach is reviewing your latest paragraph…".into();
     }
 
     /// Teach-back modal input.
@@ -1578,22 +1710,58 @@ impl App {
                 if over(self.coach_input_rect) && self.client.is_some() {
                     self.focus = Focus::Coach;
                 } else if over_editor {
-                    let inner = self.editor_inner;
-                    let line = self.editor_scroll + (ev.row - inner.y) as usize;
-                    // The click column is in terminal display cells (offset by the
-                    // horizontal scroll); convert it to a char offset so wide
-                    // glyphs (CJK/emoji) land correctly.
-                    let target =
-                        self.editor_hscroll + (ev.column as usize).saturating_sub(inner.x as usize);
-                    let col = self.buffer.char_col_for_display(line, target);
-                    self.buffer.clear_selection();
-                    self.buffer.set_cursor_line_col(line, col);
+                    let (line, col) = self.editor_cell_to_pos(ev.column, ev.row);
+                    // Detect double/triple click: same cell within 400ms.
+                    let now = Instant::now();
+                    self.click_count = match self.last_click {
+                        Some((t, c, r))
+                            if c == ev.column
+                                && r == ev.row
+                                && now.duration_since(t) < Duration::from_millis(400) =>
+                        {
+                            (self.click_count % 3) + 1
+                        }
+                        _ => 1,
+                    };
+                    self.last_click = Some((now, ev.column, ev.row));
+                    self.undo_group = None;
                     self.focus = Focus::Editor;
+                    match self.click_count {
+                        2 => {
+                            let off = self.buffer.line_char_start(line) + col;
+                            self.buffer.select_word(off);
+                        }
+                        3 => self.buffer.select_line(line),
+                        _ => {
+                            // Single click: place caret and anchor for drag.
+                            self.buffer.clear_selection();
+                            self.buffer.set_cursor_line_col(line, col);
+                            self.buffer.begin_selection();
+                        }
+                    }
+                    self.reveal_cursor();
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if self.focus == Focus::Editor && self.editor_inner.height > 0 {
+                    let (line, col) = self.editor_cell_to_pos(ev.column, ev.row);
+                    self.buffer.begin_selection(); // anchor already set on press
+                    self.buffer.set_cursor_line_col(line, col);
                     self.reveal_cursor();
                 }
             }
             _ => {}
         }
+    }
+
+    /// Map a terminal cell `(column, row)` to an editor `(line, char-col)`,
+    /// accounting for scroll and wide glyphs. Clamps into the visible window.
+    fn editor_cell_to_pos(&self, column: u16, row: u16) -> (usize, usize) {
+        let inner = self.editor_inner;
+        let row = row.clamp(inner.y, inner.y + inner.height.saturating_sub(1));
+        let line = self.editor_scroll + (row - inner.y) as usize;
+        let target = self.editor_hscroll + (column as usize).saturating_sub(inner.x as usize);
+        (line, self.buffer.char_col_for_display(line, target))
     }
 
     /// Bring the cursor back into the viewport after a move (vertical + the
@@ -2741,5 +2909,37 @@ mod tests {
         assert!(s.contains("Process"));
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(!app.journal_open);
+    }
+
+    #[test]
+    fn typing_coalesces_into_one_undo_step() {
+        let rt = rt();
+        let mut app = test_app(&rt);
+        let before = app.buffer.text();
+        for c in "abc".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert!(app.buffer.text().ends_with("abc"));
+        // A single undo reverts the whole contiguous burst.
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+        assert_eq!(app.buffer.text(), before);
+    }
+
+    #[test]
+    fn double_click_selects_word() {
+        let rt = rt();
+        let mut app = test_app(&rt);
+        let _ = render(&mut app); // populate editor_inner
+        let inner = app.editor_inner;
+        let (col, row) = (inner.x + 2, inner.y); // 'T' in "# Title"
+        for _ in 0..2 {
+            app.handle_mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: col,
+                row,
+                modifiers: KeyModifiers::NONE,
+            });
+        }
+        assert_eq!(app.buffer.selected_text().as_deref(), Some("Title"));
     }
 }

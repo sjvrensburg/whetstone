@@ -39,22 +39,35 @@ impl CoachClient {
     }
 
     /// Stream a chat completion, calling `on_delta` with each text fragment as
-    /// it arrives. Returns the fully assembled text.
+    /// it arrives. Returns the fully assembled text. When `json_mode` is set,
+    /// the request asks for a JSON object response (structured coaching) — a
+    /// no-op on backends that ignore `response_format`.
     pub async fn chat<F: FnMut(&str)>(
         &self,
         messages: &[ChatMessage],
+        json_mode: bool,
         mut on_delta: F,
     ) -> Result<String> {
+        #[derive(Serialize)]
+        struct ResponseFormat {
+            #[serde(rename = "type")]
+            kind: &'static str,
+        }
         #[derive(Serialize)]
         struct Req<'a> {
             model: &'a str,
             messages: &'a [ChatMessage],
             stream: bool,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            response_format: Option<ResponseFormat>,
         }
         let body = Req {
             model: &self.config.model,
             messages,
             stream: true,
+            response_format: json_mode.then_some(ResponseFormat {
+                kind: "json_object",
+            }),
         };
 
         let resp = self
