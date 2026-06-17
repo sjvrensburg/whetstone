@@ -8,6 +8,33 @@ must be rewritten ("claim-to-own") or attributed, the optional AI coach can only
 ask questions (never ghostwrite), and an append-only journal lets you export an
 honest "how this was written" disclosure.
 
+## Install
+
+Prebuilt binaries for macOS (Intel + Apple Silicon), Linux (x86_64 + aarch64),
+and Windows (x86_64) ship with every release.
+
+**Homebrew** (macOS / Linux):
+
+```sh
+brew install sjvrensburg/tap/whetstone-tui
+```
+
+**Install script** (macOS / Linux):
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/sjvrensburg/whetstone/releases/latest/download/whetstone-tui-installer.sh | sh
+```
+
+**Windows** (PowerShell):
+
+```powershell
+irm https://github.com/sjvrensburg/whetstone/releases/latest/download/whetstone-tui-installer.ps1 | iex
+```
+
+Or grab an archive from the [latest release](https://github.com/sjvrensburg/whetstone/releases/latest).
+From source, see **Build & run** below.
+
 ## Build & run
 
 ```sh

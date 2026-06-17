@@ -307,18 +307,28 @@ whetstone-tui disclosure <span class="a">--journal</span> events.json <span clas
         <div class="cta">
           <div>
             <h2 class="display-md">Bring back the friction</h2>
-            <p class="body-lg text-muted" style="margin-top: var(--space-md);">Whetstone is a single Rust binary. It needs a recent toolchain (edition 2024). Quarto is optional and only used when you render with Ctrl+R.</p>
+            <p class="body-lg text-muted" style="margin-top: var(--space-md);">Prebuilt binaries ship for macOS (Intel and Apple Silicon), Linux (x86_64 and aarch64), and Windows. Quarto is optional, only used when you render with Ctrl+R.</p>
             <div class="cta__actions">
-              <a class="btn btn--primary btn--lg" href="https://github.com/sjvrensburg/whetstone">View on GitHub</a>
-              <a class="btn btn--secondary btn--lg" href="https://github.com/sjvrensburg/whetstone/blob/main/LICENSE">MIT License</a>
+              <a class="btn btn--primary btn--lg" href="https://github.com/sjvrensburg/whetstone/releases/latest">Latest release</a>
+              <a class="btn btn--secondary btn--lg" href="https://github.com/sjvrensburg/whetstone">View on GitHub</a>
             </div>
           </div>
-          <div class="code">
-            <div class="code__bar">build from source</div>
+          <div class="stack">
+            <div class="code">
+              <div class="code__bar">install</div>
+<pre><span class="c"># Homebrew (macOS / Linux)</span>
+brew install sjvrensburg/tap/whetstone-tui
+
+<span class="c"># or the install script (macOS / Linux)</span>
+curl <span class="a">--proto</span> '=https' <span class="a">--tlsv1.2</span> -LsSf \
+  https://github.com/sjvrensburg/whetstone/releases/latest/download/whetstone-tui-installer.sh | sh</pre>
+            </div>
+            <div class="code">
+              <div class="code__bar">build from source</div>
 <pre>git clone https://github.com/sjvrensburg/whetstone.git
 cd whetstone
-cargo run <span class="a">--</span> draft.qmd        <span class="c"># opens, creates if missing</span>
-cargo build <span class="a">--release</span>         <span class="c"># ./target/release/whetstone-tui</span></pre>
+cargo build <span class="a">--release</span>     <span class="c"># ./target/release/whetstone-tui</span></pre>
+            </div>
           </div>
         </div>
       </div>
