@@ -384,6 +384,9 @@ impl App {
             .unwrap_or(&theme::THEMES[0]);
 
         let client = coach_config.map(CoachClient::new);
+        // Restore any prior coaching conversation for this document (empty for a
+        // new buffer or a file that's never been coached).
+        let coach_turns = crate::coach::history::load(&path);
         // The channel is always live so the coach can be enabled at runtime via
         // the AI settings dialog; `client.is_some()` is the single enabled flag.
         let (coach_tx, coach_rx) = mpsc::channel();
@@ -416,7 +419,7 @@ impl App {
             client,
             coach_tx,
             coach_rx,
-            coach_turns: Vec::new(),
+            coach_turns,
             coach_input: String::new(),
             coach_busy: false,
             coach_started: None,
@@ -1061,7 +1064,17 @@ impl App {
         self.coach_turns.clear();
         self.coach_generation += 1; // supersede any in-flight reply
         self.coach_busy = false;
+        self.persist_coach_history(); // empty conversation → remove the file
         self.message = "Coach conversation reset.".into();
+    }
+
+    /// Mirror the current coach conversation to disk for this document so it
+    /// survives across sessions. Best-effort: a failed history write is
+    /// surfaced but never blocks editing or coaching.
+    fn persist_coach_history(&mut self) {
+        if let Err(e) = crate::coach::history::save(&self.path, &self.coach_turns) {
+            self.message = format!("Coach history not saved: {e}");
+        }
     }
 
     /// Re-set the friction level (ADR-008) live and re-tune the instruments.
@@ -1804,7 +1817,8 @@ impl App {
         self.undo_stack.clear();
         self.redo_stack.clear();
         self.undo_group = None;
-        self.coach_turns.clear();
+        // Restore the newly-opened document's saved coaching thread (if any).
+        self.coach_turns = crate::coach::history::load(&self.path);
         // Supersede any in-flight coach request so its reply can't land in the
         // newly-opened document, and clear the "thinking…" indicator.
         self.coach_generation += 1;
@@ -2018,6 +2032,7 @@ impl App {
                 role: ChatTurnRole::Coach,
                 text: format!("(request not sent — input flagged by injection screen: {reason})"),
             });
+            self.persist_coach_history();
             self.message = "Coach request blocked by injection screen.".into();
             return;
         }
@@ -2033,6 +2048,7 @@ impl App {
         self.coach_pending_context = context;
         self.coach_mode = CoachMode::Chat;
         self.coach_is_push = false;
+        self.persist_coach_history(); // save the writer turn before the reply lands
         self.spawn_coach(messages, false);
     }
 
@@ -2064,6 +2080,7 @@ impl App {
         self.coach_mode = CoachMode::Structured(selection);
         self.coach_is_push = false;
         self.focus = Focus::Coach;
+        self.persist_coach_history();
         self.spawn_coach(messages, true);
     }
 
@@ -2152,6 +2169,8 @@ impl App {
                 }
             }
         }
+        // Every arm above appends a coach turn — mirror the updated thread.
+        self.persist_coach_history();
     }
 
     /// Check whether a new paragraph crossed a teach-back threshold.
@@ -2212,6 +2231,7 @@ impl App {
         let messages = build_coach_messages(&para, self.claim.as_deref());
         self.coach_mode = CoachMode::Structured(para);
         self.coach_is_push = true;
+        self.persist_coach_history();
         self.spawn_coach(messages, true);
         self.message = "Coach is reviewing your latest paragraph…".into();
     }

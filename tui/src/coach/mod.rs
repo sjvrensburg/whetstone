@@ -7,6 +7,7 @@
 
 pub mod client;
 pub mod config;
+pub mod history;
 
 pub use client::{CoachClient, parse_sse_chunk};
 pub use config::{CoachConfig, DEFAULT_MODEL};
