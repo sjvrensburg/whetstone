@@ -7,6 +7,8 @@
 //! enabled/checked flags and dynamic labels (theme name, friction level) stay
 //! in sync.
 
+use crate::core::process_event::{FrictionPolicy, Instrument};
+
 /// A command a menu item triggers. Dispatched by the app to existing handlers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuAction {
@@ -23,6 +25,7 @@ pub enum MenuAction {
     GotoLine,
     ThemePicker,
     SetFriction(u8),
+    CycleInstrument(Instrument),
     ToggleCoach,
     CoachSelection,
     ResetCoach,
@@ -76,8 +79,23 @@ pub fn friction_level_name(level: u8) -> &'static str {
     }
 }
 
+/// Label for a per-instrument override row: the instrument name plus its current
+/// state — its own level when overridden, else "follows preset". Also reused as
+/// the status message when cycling an override.
+pub fn instrument_label(inst: Instrument, friction: &FrictionPolicy) -> String {
+    match friction.overrides.get(inst) {
+        Some(level) => format!(
+            "{}: {} (override)",
+            inst.label(),
+            friction_level_name(level)
+        ),
+        None => format!("{}: follows preset", inst.label()),
+    }
+}
+
 /// Build the menu model for the current state.
-pub fn menus(coach_enabled: bool, friction_level: u8, theme_name: &str) -> Vec<Menu> {
+pub fn menus(coach_enabled: bool, friction: &FrictionPolicy, theme_name: &str) -> Vec<Menu> {
+    let friction_level = friction.level();
     vec![
         Menu {
             title: "File",
@@ -106,22 +124,34 @@ pub fn menus(coach_enabled: bool, friction_level: u8, theme_name: &str) -> Vec<M
         },
         Menu {
             title: "View",
-            items: vec![
-                MenuItem::new("Process / journal", "Ctrl+P", MenuAction::Journal),
-                MenuItem::new(
-                    format!("Theme: {theme_name}"),
-                    "Ctrl+T",
-                    MenuAction::ThemePicker,
-                ),
-                MenuItem::new("Friction: Quiet", "", MenuAction::SetFriction(0))
-                    .checked(friction_level == 0),
-                MenuItem::new("Friction: Coach", "", MenuAction::SetFriction(1))
-                    .checked(friction_level == 1),
-                MenuItem::new("Friction: Engaged", "", MenuAction::SetFriction(2))
-                    .checked(friction_level == 2),
-                MenuItem::new("Friction: Deep Work", "", MenuAction::SetFriction(3))
-                    .checked(friction_level == 3),
-            ],
+            items: {
+                let mut items = vec![
+                    MenuItem::new("Process / journal", "Ctrl+P", MenuAction::Journal),
+                    MenuItem::new(
+                        format!("Theme: {theme_name}"),
+                        "Ctrl+T",
+                        MenuAction::ThemePicker,
+                    ),
+                    MenuItem::new("Friction: Quiet", "", MenuAction::SetFriction(0))
+                        .checked(friction_level == 0),
+                    MenuItem::new("Friction: Coach", "", MenuAction::SetFriction(1))
+                        .checked(friction_level == 1),
+                    MenuItem::new("Friction: Engaged", "", MenuAction::SetFriction(2))
+                        .checked(friction_level == 2),
+                    MenuItem::new("Friction: Deep Work", "", MenuAction::SetFriction(3))
+                        .checked(friction_level == 3),
+                ];
+                // One cycle row per dial-able instrument (ADR-008).
+                items.extend(Instrument::ALL.map(|inst| {
+                    MenuItem::new(
+                        instrument_label(inst, friction),
+                        "cycle",
+                        MenuAction::CycleInstrument(inst),
+                    )
+                    .checked(friction.overrides.get(inst).is_some())
+                }));
+                items
+            },
         },
         Menu {
             title: "Coach",

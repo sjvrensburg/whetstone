@@ -79,8 +79,30 @@ friction level drives the paste-quarantine threshold, the claim-to-own floor,
 the teach-back cadence, and — at "Engaged"/"Deep Work" — proactive
 push-cadence coaching that reviews each finished paragraph (ADR-008).
 
+### Per-instrument friction overrides
+
+The four dial-able instruments can each be pinned to their own level,
+independent of the global preset (ADR-008). Open the **View** menu and click a
+row to cycle it: *off* (follow the preset) → Quiet → Coach → Engaged → Deep
+Work → *off*. A checked row is currently overridden. This lets you, say, keep
+the global preset at "Coach" but turn the paste quarantine up to "Deep Work",
+or switch on proactive push-cadence coaching without raising everything else.
+
+| Instrument | What it tunes |
+| --- | --- |
+| Paste quarantine | the paste size that triggers quarantine |
+| Claim-to-own | how much rewriting clears a paste mark |
+| Teach-back | the per-paragraph teach-back cadence |
+| Push cadence | proactive coaching cadence (off below "Engaged") |
+
+Overrides persist to `ui.json` alongside the preset. They can also be set at
+startup via `WHETSTONE_FRICTION_<INSTRUMENT>` (`PASTE`, `CLAIM`, `TEACHBACK`,
+`PUSH`) — a level `0`–`3`, or `off`/`none`/`preset` to clear a saved override.
+An institutional floor (when set) still applies to every instrument: an
+override can raise an instrument or lower it, but never below the floor.
+
 ## Not yet implemented
 
 Multiple files / tabs (the editor holds one buffer at a time), an interactive
-keybinding editor, cross-session coach-conversation persistence, and
-per-instrument friction overrides are not built yet.
+keybinding editor, and cross-session coach-conversation persistence are not
+built yet.
