@@ -24,8 +24,12 @@ archived outside the repository.
 Run from the repo root:
 
 - `cargo run -- path/to/file.qmd` — open (creates the file if missing)
+- `cargo run -- lint path/to/file.qmd` — a headless subcommand (also: `coach`,
+  `guard`, `ownership`, `disclosure`) printing JSON; `--help` lists them
 - `cargo build --release` — produces `./target/release/whetstone-tui`
 - `cargo test` — run the test suite
+- `cargo run --features screenshots --bin whetstone-screenshots` — regenerate
+  `docs/screenshots/*.png` (and `cargo test --features screenshots` covers the renderer)
 - `cargo clippy --all-targets -- -D warnings` — lint (CI treats warnings as errors)
 - `cargo fmt --check` — formatting check (`cargo fmt` to apply)
 
@@ -43,9 +47,16 @@ core -> coach -> instruments -> editor -> grammar -> markdown -> ui
 - `src/core/` — pure domain logic: n-gram overlap, claim-to-own ownership,
   forbidden-label guard, disclosure rendering, the process-event model, and the
   friction policy. No I/O, no editor/UI imports.
-- `src/coach/` — the optional AI coach: an OpenAI-compatible Chat Completions
-  client (streaming SSE over any base URL — Ollama, LM Studio, OpenAI, …),
-  config resolution (incl. `env:NAME` references), and per-document chat history.
+- `src/coach/` — the optional AI coach: a streaming client speaking **two**
+  protocols (OpenAI-compatible Chat Completions and Anthropic Messages — see
+  `provider.rs`; provider explicit or auto-detected from the base URL), config
+  resolution (incl. `env:NAME` references and a separate coach vs. judge model),
+  the optional LLM **judge** (`judge.rs`), and per-document chat history.
+- `src/cli.rs` — headless subcommands (lint / coach / guard / ownership /
+  disclosure) printing JSON; a bare file path still opens the TUI (`main.rs`).
+- `src/screenshot.rs` + `src/bin/screenshots.rs` — in-process PNG rendering of
+  the TUI (feature `screenshots`), built on `src/ui/testkit.rs`'s headless
+  harness (feature `harness`, also on under `cargo test`).
 - `src/instruments/` — the friction instruments (paste cadence, teach-back,
   push-cadence) wired to the friction dial.
 - `src/editor/` — the text buffer, change sets, and paste-quarantine regions.
@@ -70,7 +81,9 @@ core -> coach -> instruments -> editor -> grammar -> markdown -> ui
   (`src/core/guard.rs`) before it reaches the UI — length cap, rewrite/dictation
   patterns, n-gram overlap with the draft, forbidden labels — so the coach can
   never ghostwrite. The draft and the writer's message are injection-screened
-  before egress.
+  before egress. The deterministic guard is **load-bearing and always runs**; an
+  optional LLM judge (`src/coach/judge.rs`) is defence-in-depth on top of it and
+  can only *withhold* a reply, never rewrite one (it fails open if unreachable).
 - **Friction dial**: instruments respond to a friction level (0–3),
   overridable per-instrument via config and `WHETSTONE_FRICTION*` env vars.
 

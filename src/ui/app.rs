@@ -24,7 +24,7 @@ use ratatui::widgets::{
     Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
 };
 
-use crate::coach::{CoachClient, CoachConfig, DEFAULT_MODEL, is_env_ref};
+use crate::coach::{CoachClient, CoachConfig, DEFAULT_MODEL, JudgeSettings, Provider, is_env_ref};
 use crate::core::coaching::{ObservationKind, StructuredCoaching};
 use crate::core::disclosure::{Composition, render_disclosure};
 use crate::core::guard::{screen_chat_reply, screen_coaching_output, screen_injection};
@@ -36,7 +36,7 @@ use crate::core::prompts::{ChatTurn, ChatTurnRole, build_chat_messages, build_co
 use crate::editor::buffer::Buffer;
 use crate::editor::quarantine::{Outcome, Quarantine, Region};
 use crate::editor::transaction::{Change, ChangeSet};
-use crate::grammar::{Diagnostic, Linter, Severity};
+use crate::grammar::{Diagnostic, FixAction, GrammarDialect, GrammarSettings, Linter, Severity};
 use crate::instruments;
 use crate::markdown::render::render_to_text;
 use crate::ui::menu::{self, Menu, MenuAction};
@@ -48,6 +48,15 @@ use crate::ui::theme::{self, Theme};
 pub enum Focus {
     Editor,
     Coach,
+    /// The Harper suggestions list (the other tab of the bottom-right pane).
+    Suggestions,
+}
+
+/// Which tab the bottom-right pane shows: the coach, or Harper's suggestions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RightTab {
+    Coach,
+    Suggestions,
 }
 
 /// A finished coach request, tagged with the generation it belongs to so a
@@ -55,6 +64,11 @@ pub enum Focus {
 pub struct CoachEvent {
     generation: u64,
     result: Result<String, String>,
+    /// The LLM judge's decision on a chat reply, when the judge is enabled and
+    /// the reply passed the in-task deterministic pre-check. `None` = judge off
+    /// or not applicable (structured coaching, or a deterministically-doomed
+    /// reply); `Some(Err)` = judge could not be consulted (fail-open).
+    judge: Option<Result<crate::coach::Verdict, String>>,
 }
 
 /// What the in-flight coach request is. `Structured` carries the selection it
@@ -87,6 +101,7 @@ impl Drop for DoneGuard {
             let _ = self.tx.send(CoachEvent {
                 generation: self.generation,
                 result: Err("coach task aborted".to_string()),
+                judge: None,
             });
         }
     }
@@ -116,12 +131,47 @@ struct ThemePicker {
     original: &'static Theme,
 }
 
+/// Grammar settings overlay: pick the dialect and toggle individual lint rules.
+/// Row 0 is the dialect selector; rows 1.. are the lint rules.
+struct GrammarSettingsUi {
+    dialect: GrammarDialect,
+    /// All lint rules as `(key, description)`, sorted by key.
+    rules: Vec<(String, String)>,
+    /// Keys of the rules currently turned off.
+    disabled: std::collections::HashSet<String>,
+    sel: usize,
+    rect: Rect,
+    rows_rect: Rect,
+    row_start: usize,
+}
+
+// Field indices for the AI/coach settings dialog (the focus order).
+const F_PROVIDER: usize = 0;
+const F_BASE_URL: usize = 1;
+const F_API_KEY: usize = 2;
+const F_MODEL: usize = 3;
+const F_JUDGE_ENABLED: usize = 4;
+const F_JUDGE_PROVIDER: usize = 5;
+const F_JUDGE_BASE_URL: usize = 6;
+const F_JUDGE_API_KEY: usize = 7;
+const F_JUDGE_MODEL: usize = 8;
+const COACH_FIELD_COUNT: usize = 9;
+
 /// Edit buffers for the AI/coach settings dialog. `field` selects the focused
-/// input (0 = endpoint, 1 = API key, 2 = model).
+/// input (see the `F_*` constants). Provider fields cycle Auto/OpenAI/Anthropic
+/// (Left/Right/Space); the judge toggle and the rest are text inputs.
 struct CoachSettings {
+    /// Coach provider; `None` = auto-detect from the endpoint URL.
+    provider: Option<Provider>,
     base_url: String,
     api_key: String,
     model: String,
+    judge_enabled: bool,
+    /// Judge provider; `None` = auto-detect / inherit the coach provider.
+    judge_provider: Option<Provider>,
+    judge_base_url: String,
+    judge_api_key: String,
+    judge_model: String,
     field: usize,
     /// True while a connection test is in flight.
     testing: bool,
@@ -130,6 +180,54 @@ struct CoachSettings {
     /// Model ids returned by the last successful test (Ctrl+N/Ctrl+P / click
     /// to choose; populates the Model field).
     models: Vec<String>,
+}
+
+impl CoachSettings {
+    /// Mutable handle to the text behind a text field, or `None` for the
+    /// provider/toggle fields (which aren't free-text).
+    fn text_mut(&mut self, field: usize) -> Option<&mut String> {
+        match field {
+            F_BASE_URL => Some(&mut self.base_url),
+            F_API_KEY => Some(&mut self.api_key),
+            F_MODEL => Some(&mut self.model),
+            F_JUDGE_BASE_URL => Some(&mut self.judge_base_url),
+            F_JUDGE_API_KEY => Some(&mut self.judge_api_key),
+            F_JUDGE_MODEL => Some(&mut self.judge_model),
+            _ => None,
+        }
+    }
+
+    /// Cycle a provider field through Auto → OpenAI → Anthropic.
+    fn adjust(&mut self, field: usize, dir: isize) {
+        match field {
+            F_PROVIDER => self.provider = cycle_provider(self.provider, dir),
+            F_JUDGE_PROVIDER => self.judge_provider = cycle_provider(self.judge_provider, dir),
+            F_JUDGE_ENABLED => self.judge_enabled = !self.judge_enabled,
+            _ => {}
+        }
+    }
+}
+
+/// Step an optional provider through the cycle Auto → OpenAI → Anthropic.
+fn cycle_provider(p: Option<Provider>, dir: isize) -> Option<Provider> {
+    let order = [None, Some(Provider::OpenAi), Some(Provider::Anthropic)];
+    let idx = order.iter().position(|x| *x == p).unwrap_or(0) as isize;
+    order[(idx + dir).rem_euclid(order.len() as isize) as usize]
+}
+
+/// Step a grammar dialect through `GrammarDialect::ALL`.
+fn cycle_dialect(d: GrammarDialect, dir: isize) -> GrammarDialect {
+    let all = GrammarDialect::ALL;
+    let idx = all.iter().position(|x| *x == d).unwrap_or(0) as isize;
+    all[(idx + dir).rem_euclid(all.len() as isize) as usize]
+}
+
+/// Display label for a provider field value.
+fn provider_label(p: Option<Provider>) -> &'static str {
+    match p {
+        None => "Auto-detect",
+        Some(pr) => pr.label(),
+    }
 }
 
 /// Result of a settings-dialog connection test, tagged with a generation so a
@@ -223,6 +321,21 @@ pub struct App {
     diagnostics: Vec<Diagnostic>,
     lint_dirty: bool,
     last_edit: Option<Instant>,
+    /// Current grammar settings (dialect + disabled rules); the linter is
+    /// rebuilt from these when the grammar settings overlay changes them.
+    grammar: GrammarSettings,
+    /// The grammar settings overlay, when open.
+    grammar_settings: Option<GrammarSettingsUi>,
+    /// Which tab the bottom-right pane shows (coach vs Harper suggestions).
+    right_tab: RightTab,
+    /// Selected diagnostic in the suggestions list.
+    suggest_sel: usize,
+    /// First visible diagnostic row (the list scrolls when long).
+    suggest_start: usize,
+    /// Rect of the suggestions list body (for clicks).
+    suggest_rect: Rect,
+    /// Rect of the bottom-right pane's tab header (clicking it switches tabs).
+    right_tab_rect: Rect,
 
     journal: Vec<ProcessEvent>,
     event_seq: u64,
@@ -289,6 +402,9 @@ pub struct App {
     /// and the index of its first visible row (the list scrolls when long).
     coach_models_rect: Rect,
     coach_models_start: usize,
+    /// Absolute terminal row of each editable settings field (indexed by `F_*`),
+    /// recorded during draw so clicks and the caret can locate them.
+    coach_field_rows: [u16; COACH_FIELD_COUNT],
     /// Connection-test result channel + the latest in-flight generation.
     conn_tx: mpsc::Sender<ConnTestEvent>,
     conn_rx: mpsc::Receiver<ConnTestEvent>,
@@ -361,17 +477,25 @@ impl App {
         } else {
             format!("Opened {}", path.display())
         };
-        let mut linter = Linter::new();
-        let diagnostics = linter.lint(&text);
-
         // Gate the editor only for brand-new (empty) documents. For existing
         // docs, read any claim/intent from the YAML frontmatter instead.
         let claim = crate::markdown::render::frontmatter_claim(&text);
         let gated = text.trim().is_empty();
         let pc0 = instruments::paragraph_count(&text);
 
-        // Saved UI preferences (theme + friction); env vars override them.
+        // Saved UI preferences (theme + friction + grammar); env vars override.
         let saved = Settings::load();
+
+        // Grammar (Harper): saved settings, with WHETSTONE_DIALECT overriding
+        // the dialect at startup. The linter is rebuilt when settings change.
+        let mut grammar = saved.grammar.clone();
+        if let Ok(d) = std::env::var("WHETSTONE_DIALECT")
+            && let Some(d) = GrammarDialect::parse(&d)
+        {
+            grammar.dialect = d;
+        }
+        let mut linter = Linter::with_settings(&grammar);
+        let diagnostics = linter.lint(&text);
 
         // Friction dial (ADR-008): institutional floor 0, writer preset from
         // WHETSTONE_FRICTION, else the saved preference, else 1 (Coach).
@@ -445,6 +569,13 @@ impl App {
             diagnostics,
             lint_dirty: false,
             last_edit: None,
+            grammar,
+            grammar_settings: None,
+            right_tab: RightTab::Coach,
+            suggest_sel: 0,
+            suggest_start: 0,
+            suggest_rect: Rect::default(),
+            right_tab_rect: Rect::default(),
             tokio,
             client,
             coach_tx,
@@ -488,6 +619,7 @@ impl App {
             coach_settings_rect: Rect::default(),
             coach_models_rect: Rect::default(),
             coach_models_start: 0,
+            coach_field_rows: [0; COACH_FIELD_COUNT],
             conn_tx,
             conn_rx,
             conn_generation: 0,
@@ -747,11 +879,18 @@ impl App {
     /// Journal a `coach_consult` event — metadata only: provider/model, the
     /// message+context size, and whether the guard or provider refused.
     fn log_coach_consult(&mut self, refused: bool) {
+        self.log_coach_consult_with(refused, Vec::new());
+    }
+
+    /// As [`Self::log_coach_consult`], plus extra metadata (e.g. the judge model
+    /// and its verdict). Metadata only — never document prose.
+    fn log_coach_consult_with(&mut self, refused: bool, mut extra: Vec<(&'static str, MetaValue)>) {
         let mut meta = vec![("refused", MetaValue::Bool(refused))];
-        if let Some(cfg) = self.client.as_ref().map(|c| c.config().clone()) {
-            meta.push(("provider", MetaValue::Str(cfg.base_url)));
-            meta.push(("model", MetaValue::Str(cfg.model)));
+        if let Some(ep) = self.client.as_ref().map(|c| c.coach_endpoint()) {
+            meta.push(("provider", MetaValue::Str(ep.base_url)));
+            meta.push(("model", MetaValue::Str(ep.model)));
         }
+        meta.append(&mut extra);
         let size = self.coach_pending_size;
         self.log_event(
             ProcessEventType::CoachConsult,
@@ -779,10 +918,10 @@ impl App {
             return;
         }
         if let Some(s) = self.coach_settings.as_mut() {
-            match s.field {
-                0 => s.base_url.push_str(text),
-                1 => s.api_key.push_str(text),
-                _ => s.model.push_str(text),
+            let field = s.field;
+            if let Some(t) = s.text_mut(field) {
+                // First line only — endpoints/keys/models are single-line.
+                t.push_str(text.lines().next().unwrap_or(""));
             }
             return;
         }
@@ -828,6 +967,8 @@ impl App {
                 self.message = format!("Pasted {n} chars");
             }
             Focus::Coach => self.coach_input.push_str(text),
+            // The suggestions list takes no text input.
+            Focus::Suggestions => {}
         }
     }
 
@@ -881,6 +1022,10 @@ impl App {
             self.handle_coach_settings_key(key);
             return;
         }
+        if self.grammar_settings.is_some() {
+            self.handle_grammar_settings_key(key);
+            return;
+        }
         if self.menu_open.is_some() {
             self.handle_menu_key(key);
             return;
@@ -932,9 +1077,7 @@ impl App {
                 KeyCode::Backspace if editing => self.editor_delete_word(false),
                 KeyCode::Delete if editing => self.editor_delete_word(true),
                 KeyCode::Char('q') => self.request_quit(),
-                KeyCode::Char('l') if self.client.is_some() => {
-                    self.dispatch(MenuAction::ToggleCoach)
-                }
+                KeyCode::Char('l') => self.dispatch(MenuAction::ToggleCoach),
                 _ => {}
             }
             return;
@@ -943,6 +1086,7 @@ impl App {
         match self.focus {
             Focus::Editor => self.handle_editor_key(key),
             Focus::Coach => self.handle_coach_key(key),
+            Focus::Suggestions => self.handle_suggestions_key(key),
         }
     }
 
@@ -1003,6 +1147,7 @@ impl App {
             || self.menu_open.is_some()
             || self.theme_picker.is_some()
             || self.coach_settings.is_some()
+            || self.grammar_settings.is_some()
             || self.help_open
             || self.journal_open
             || self.confirm_quit
@@ -1087,6 +1232,12 @@ impl App {
         }
     }
 
+    /// Run a menu/shortcut command from the headless harness/screenshots.
+    #[cfg(any(test, feature = "harness"))]
+    pub fn dispatch_for_test(&mut self, action: MenuAction) {
+        self.dispatch(action);
+    }
+
     /// Run a menu/shortcut command.
     fn dispatch(&mut self, action: MenuAction) {
         match action {
@@ -1107,17 +1258,19 @@ impl App {
             MenuAction::Replace => self.open_prompt(PromptKind::Replace),
             MenuAction::GotoLine => self.open_prompt(PromptKind::GotoLine),
             MenuAction::ThemePicker => self.open_theme_picker(),
+            MenuAction::GrammarSettings => self.open_grammar_settings(),
             MenuAction::CycleInstrument(inst) => self.cycle_instrument_friction(inst),
             MenuAction::SetFriction(n) => self.set_friction(n),
             MenuAction::ToggleCoach => {
-                if self.client.is_some() {
-                    self.focus = match self.focus {
-                        Focus::Editor => Focus::Coach,
-                        Focus::Coach => Focus::Editor,
-                    };
-                    self.coach_input.clear();
-                }
+                // Ctrl+L moves between the editor and the bottom-right pane,
+                // landing on whichever tab (Coach / Suggestions) is showing.
+                self.focus = match self.focus {
+                    Focus::Editor => self.right_pane_focus(),
+                    _ => Focus::Editor,
+                };
+                self.coach_input.clear();
             }
+            MenuAction::ShowSuggestions => self.show_right_tab(RightTab::Suggestions),
             MenuAction::CoachSelection => self.coach_selection(),
             MenuAction::ResetCoach => self.reset_coach(),
             MenuAction::CoachSettings => self.open_coach_settings(),
@@ -1204,6 +1357,7 @@ impl App {
             theme: Some(self.theme.name.to_string()),
             friction: Some(self.friction.preset),
             friction_overrides: self.friction.overrides,
+            grammar: self.grammar.clone(),
         };
         if let Err(e) = s.save() {
             self.message = format!("(preferences not saved: {e})");
@@ -1258,17 +1412,94 @@ impl App {
         }
     }
 
+    // --- grammar settings --------------------------------------------------
+
+    fn open_grammar_settings(&mut self) {
+        let rules = self.linter.available_rules();
+        self.grammar_settings = Some(GrammarSettingsUi {
+            dialect: self.grammar.dialect,
+            rules,
+            disabled: self.grammar.disabled_rules.iter().cloned().collect(),
+            sel: 0,
+            rect: Rect::default(),
+            rows_rect: Rect::default(),
+            row_start: 0,
+        });
+    }
+
+    fn handle_grammar_settings_key(&mut self, key: KeyEvent) {
+        let Some(g) = self.grammar_settings.as_mut() else {
+            return;
+        };
+        let count = g.rules.len() + 1; // +1 for the dialect row
+        match key.code {
+            KeyCode::Esc => {
+                self.grammar_settings = None;
+                self.message = "Grammar settings cancelled.".into();
+            }
+            KeyCode::Up => g.sel = (g.sel + count - 1) % count,
+            KeyCode::Down => g.sel = (g.sel + 1) % count,
+            KeyCode::Left if g.sel == 0 => g.dialect = cycle_dialect(g.dialect, -1),
+            KeyCode::Right if g.sel == 0 => g.dialect = cycle_dialect(g.dialect, 1),
+            KeyCode::Char(' ') if g.sel == 0 => g.dialect = cycle_dialect(g.dialect, 1),
+            KeyCode::Char(' ') => {
+                // Toggle the selected rule on/off.
+                let rule = g.rules[g.sel - 1].0.clone();
+                if !g.disabled.remove(&rule) {
+                    g.disabled.insert(rule);
+                }
+            }
+            KeyCode::Enter => self.commit_grammar_settings(),
+            _ => {}
+        }
+    }
+
+    /// Apply the overlay's choices: rebuild the linter, re-lint, persist.
+    fn commit_grammar_settings(&mut self) {
+        let Some(g) = self.grammar_settings.take() else {
+            return;
+        };
+        let mut disabled: Vec<String> = g.disabled.into_iter().collect();
+        disabled.sort();
+        self.grammar = GrammarSettings {
+            dialect: g.dialect,
+            disabled_rules: disabled,
+        };
+        self.linter = Linter::with_settings(&self.grammar);
+        self.diagnostics = self.linter.lint(&self.buffer.text());
+        self.lint_dirty = false;
+        self.persist_settings();
+        self.message = format!(
+            "Grammar: {} · {} rule(s) off",
+            self.grammar.dialect.label(),
+            self.grammar.disabled_rules.len()
+        );
+    }
+
     // --- AI / coach settings ----------------------------------------------
 
     fn open_coach_settings(&mut self) {
-        let (base_url, api_key, model) = match self.client.as_ref().map(|c| c.config().clone()) {
-            Some(c) => (c.base_url, c.api_key, c.model),
-            None => (String::new(), String::new(), DEFAULT_MODEL.to_string()),
+        let cfg = self.client.as_ref().map(|c| c.config().clone());
+        let (provider, base_url, api_key, model, judge) = match cfg {
+            Some(c) => (c.provider, c.base_url, c.api_key, c.model, c.judge),
+            None => (
+                None,
+                String::new(),
+                String::new(),
+                DEFAULT_MODEL.to_string(),
+                JudgeSettings::default(),
+            ),
         };
         self.coach_settings = Some(CoachSettings {
+            provider,
             base_url,
             api_key,
             model,
+            judge_enabled: judge.enabled,
+            judge_provider: judge.provider,
+            judge_base_url: judge.base_url,
+            judge_api_key: judge.api_key,
+            judge_model: judge.model,
             field: 0,
             testing: false,
             status: None,
@@ -1308,21 +1539,31 @@ impl App {
             return;
         };
         match key.code {
-            KeyCode::Tab | KeyCode::Down => s.field = (s.field + 1) % 3,
-            KeyCode::BackTab | KeyCode::Up => s.field = (s.field + 2) % 3,
+            KeyCode::Tab | KeyCode::Down => s.field = (s.field + 1) % COACH_FIELD_COUNT,
+            KeyCode::BackTab | KeyCode::Up => {
+                s.field = (s.field + COACH_FIELD_COUNT - 1) % COACH_FIELD_COUNT
+            }
+            // Left/Right (and Space) cycle the provider / toggle the judge.
+            KeyCode::Left => s.adjust(s.field, -1),
+            KeyCode::Right => s.adjust(s.field, 1),
+            KeyCode::Char(' ')
+                if matches!(s.field, F_PROVIDER | F_JUDGE_PROVIDER | F_JUDGE_ENABLED) =>
+            {
+                s.adjust(s.field, 1)
+            }
             KeyCode::Backspace => {
-                match s.field {
-                    0 => s.base_url.pop(),
-                    1 => s.api_key.pop(),
-                    _ => s.model.pop(),
-                };
+                let field = s.field;
+                if let Some(t) = s.text_mut(field) {
+                    t.pop();
+                }
             }
             // Reject Ctrl-modified chars so e.g. Ctrl+T isn't also typed as 't'.
-            KeyCode::Char(c) if !c.is_control() && !ctrl => match s.field {
-                0 => s.base_url.push(c),
-                1 => s.api_key.push(c),
-                _ => s.model.push(c),
-            },
+            KeyCode::Char(c) if !c.is_control() && !ctrl => {
+                let field = s.field;
+                if let Some(t) = s.text_mut(field) {
+                    t.push(c);
+                }
+            }
             _ => {}
         }
     }
@@ -1343,9 +1584,11 @@ impl App {
             return;
         }
         let cfg = CoachConfig {
+            provider: s.provider,
             base_url,
             api_key: s.api_key.clone(),
             model: s.model.clone(),
+            judge: JudgeSettings::default(),
         };
         s.testing = true;
         s.status = Some("Testing connection…".into());
@@ -1375,7 +1618,7 @@ impl App {
             None => (n - 1) as usize,
         };
         s.model = s.models[next].clone();
-        s.field = 2;
+        s.field = F_MODEL;
     }
 
     /// Fold finished connection tests into the open dialog, ignoring stale
@@ -1426,9 +1669,17 @@ impl App {
             }
         };
         let cfg = CoachConfig {
+            provider: s.provider,
             base_url: base_url.clone(),
             api_key: s.api_key,
             model,
+            judge: JudgeSettings {
+                enabled: s.judge_enabled,
+                model: s.judge_model.trim().to_string(),
+                provider: s.judge_provider,
+                base_url: s.judge_base_url.trim().trim_end_matches('/').to_string(),
+                api_key: s.judge_api_key,
+            },
         };
         // An empty endpoint disables the coach; otherwise (re)build the client.
         self.client = if base_url.is_empty() {
@@ -2155,8 +2406,112 @@ impl App {
             KeyCode::Backspace => {
                 self.coach_input.pop();
             }
+            KeyCode::Tab => self.show_right_tab(RightTab::Suggestions),
             KeyCode::Char(c) if !c.is_control() => self.coach_input.push(c),
             _ => {}
+        }
+    }
+
+    // --- Harper suggestions pane ------------------------------------------
+
+    /// The focus target for the bottom-right pane, given its active tab.
+    fn right_pane_focus(&self) -> Focus {
+        match self.right_tab {
+            RightTab::Coach => Focus::Coach,
+            RightTab::Suggestions => Focus::Suggestions,
+        }
+    }
+
+    /// Switch the bottom-right pane to `tab` and focus it.
+    fn show_right_tab(&mut self, tab: RightTab) {
+        self.right_tab = tab;
+        self.focus = self.right_pane_focus();
+        if tab == RightTab::Suggestions {
+            self.suggest_sel = self
+                .suggest_sel
+                .min(self.diagnostics.len().saturating_sub(1));
+        }
+    }
+
+    fn handle_suggestions_key(&mut self, key: KeyEvent) {
+        let n = self.diagnostics.len();
+        match key.code {
+            KeyCode::Esc => self.focus = Focus::Editor,
+            KeyCode::Tab => self.show_right_tab(RightTab::Coach),
+            KeyCode::Up if n > 0 => {
+                self.suggest_sel = (self.suggest_sel + n - 1) % n;
+                self.reveal_selected_diagnostic();
+            }
+            KeyCode::Down if n > 0 => {
+                self.suggest_sel = (self.suggest_sel + 1) % n;
+                self.reveal_selected_diagnostic();
+            }
+            // Enter / 1 apply the primary fix; 2-9 pick among multiple fixes.
+            KeyCode::Enter => self.apply_suggestion(0),
+            KeyCode::Char(c @ '1'..='9') => {
+                self.apply_suggestion((c as usize - '1' as usize).max(0));
+            }
+            _ => {}
+        }
+    }
+
+    /// Scroll the editor so the selected diagnostic's line is in view.
+    fn reveal_selected_diagnostic(&mut self) {
+        let Some(start) = self.diagnostics.get(self.suggest_sel).map(|d| d.start) else {
+            return;
+        };
+        self.buffer.set_cursor(start);
+        let (line, _) = self.buffer.cursor_line_col();
+        let h = self.editor_height.max(1);
+        if line < self.editor_scroll {
+            self.editor_scroll = line;
+        } else if line >= self.editor_scroll + h {
+            self.editor_scroll = line + 1 - h;
+        }
+    }
+
+    /// Apply fix `which` of the selected diagnostic as one undoable edit, then
+    /// re-lint. Harper is local/deterministic, so this is a plain edit — never
+    /// journaled as AI assistance.
+    fn apply_suggestion(&mut self, which: usize) {
+        let Some(d) = self.diagnostics.get(self.suggest_sel) else {
+            return;
+        };
+        let Some(fix) = d.suggestions.get(which) else {
+            if d.suggestions.is_empty() {
+                self.message = "No automatic fix for this one.".into();
+            }
+            return;
+        };
+        let (start, end) = (d.start, d.end);
+        let action = fix.action.clone();
+        let pre = self.snapshot();
+        let change = match action {
+            FixAction::Replace(text) => {
+                self.buffer.set_selection(start, end);
+                self.buffer.replace_selection(&text)
+            }
+            FixAction::Remove => {
+                self.buffer.set_selection(start, end);
+                self.buffer.replace_selection("")
+            }
+            FixAction::InsertAfter(text) => {
+                self.buffer.clear_selection();
+                self.buffer.set_cursor(end);
+                Some(self.buffer.type_str(&text))
+            }
+        };
+        if let Some(change) = change {
+            self.record_undo(pre);
+            self.undo_group = None;
+            self.commit_edit(ChangeSet::single(change));
+            // Re-lint now so the list reflects the fix immediately.
+            self.diagnostics = self.linter.lint(&self.buffer.text());
+            self.lint_dirty = false;
+            if self.suggest_sel >= self.diagnostics.len() {
+                self.suggest_sel = self.diagnostics.len().saturating_sub(1);
+            }
+            self.message = "Applied suggestion.".into();
         }
     }
 
@@ -2175,7 +2530,16 @@ impl App {
     /// generation so a cancel/supersede can discard a stale reply. A `DoneGuard`
     /// reports an error result if the future unwinds, so the UI never gets stuck
     /// "thinking". `json_mode` asks for a JSON response (structured coaching).
-    fn spawn_coach(&mut self, messages: Vec<crate::core::prompts::ChatMessage>, json_mode: bool) {
+    /// Spawn the coach request. `judge_against` is `Some(draft_excerpt)` only
+    /// for the free-text chat path when an LLM judge is configured; the judge
+    /// then screens the reply in-task (after a deterministic pre-check, so a
+    /// doomed reply never burns a judge call).
+    fn spawn_coach(
+        &mut self,
+        messages: Vec<crate::core::prompts::ChatMessage>,
+        json_mode: bool,
+        judge_against: Option<String>,
+    ) {
         let Some(client) = self.client.clone() else {
             return;
         };
@@ -2185,6 +2549,8 @@ impl App {
         self.coach_busy = true;
         self.coach_started = Some(Instant::now());
         self.message = "Asking coach…".into();
+        let coach_endpoint = client.coach_endpoint();
+        let judge_endpoint = judge_against.as_ref().and_then(|_| client.judge_endpoint());
         self.tokio.spawn(async move {
             let mut guard = DoneGuard {
                 tx: tx.clone(),
@@ -2192,11 +2558,25 @@ impl App {
                 armed: true,
             };
             let result = client
-                .chat(&messages, json_mode, |_| {})
+                .chat(&coach_endpoint, &messages, json_mode, |_| {})
                 .await
                 .map_err(|e| e.to_string());
+            // Run the LLM judge only on a successful chat reply that already
+            // clears the (pure, local) deterministic guard — deterministic-first.
+            let mut judge = None;
+            if let (Ok(reply), Some(jep), Some(draft)) =
+                (&result, judge_endpoint.as_ref(), judge_against.as_ref())
+                && screen_chat_reply(reply, draft).is_ok()
+            {
+                judge =
+                    Some(crate::coach::screen_with_judge(&client, jep, reply, Some(draft)).await);
+            }
             guard.armed = false;
-            let _ = tx.send(CoachEvent { generation, result });
+            let _ = tx.send(CoachEvent {
+                generation,
+                result,
+                judge,
+            });
         });
     }
 
@@ -2243,7 +2623,13 @@ impl App {
         self.coach_mode = CoachMode::Chat;
         self.coach_is_push = false;
         self.persist_coach_history(); // save the writer turn before the reply lands
-        self.spawn_coach(messages, false);
+        // The judge (if enabled) screens the free-text reply against the draft.
+        let judge_against = self
+            .client
+            .as_ref()
+            .and_then(|c| c.judge_endpoint())
+            .map(|_| self.coach_pending_context.clone());
+        self.spawn_coach(messages, false, judge_against);
     }
 
     /// Run structured coaching on the current selection (anchored observations,
@@ -2275,7 +2661,10 @@ impl App {
         self.coach_is_push = false;
         self.focus = Focus::Coach;
         self.persist_coach_history();
-        self.spawn_coach(messages, true);
+        // Structured coaching is bound by the schema + deterministic guard
+        // (ghostwriting is structurally impossible), so the LLM judge — which
+        // screens free-text replies — does not apply here.
+        self.spawn_coach(messages, true, None);
     }
 
     /// Pump finished coach requests into the app state, screening every reply
@@ -2295,7 +2684,7 @@ impl App {
             self.coach_busy = false;
             self.coach_started = None;
             match ev.result {
-                Ok(reply) => self.accept_coach_reply(reply),
+                Ok(reply) => self.accept_coach_reply(reply, ev.judge),
                 Err(e) => {
                     self.log_coach_consult(true);
                     self.message = format!("Coach error: {e}");
@@ -2305,19 +2694,16 @@ impl App {
     }
 
     /// Screen and render a completed coach reply per the request mode.
-    fn accept_coach_reply(&mut self, reply: String) {
+    fn accept_coach_reply(
+        &mut self,
+        reply: String,
+        judge: Option<Result<crate::coach::Verdict, String>>,
+    ) {
         match std::mem::replace(&mut self.coach_mode, CoachMode::Chat) {
             CoachMode::Chat => {
                 let ctx = std::mem::take(&mut self.coach_pending_context);
                 match screen_chat_reply(&reply, &ctx) {
-                    Ok(()) => {
-                        self.log_coach_consult(false);
-                        self.coach_turns.push(ChatTurn {
-                            role: ChatTurnRole::Coach,
-                            text: reply,
-                        });
-                        self.message = "Coach replied.".into();
-                    }
+                    Ok(()) => self.accept_judged_chat_reply(reply, judge),
                     Err(reason) => {
                         self.log_coach_consult(true);
                         self.coach_turns.push(ChatTurn {
@@ -2365,6 +2751,60 @@ impl App {
         }
         // Every arm above appends a coach turn — mirror the updated thread.
         self.persist_coach_history();
+    }
+
+    /// Commit a chat reply that already cleared the deterministic guard, applying
+    /// the optional LLM-judge verdict. The judge can only *withhold* a reply; if
+    /// it could not be consulted we fail open (the deterministic guard already
+    /// passed and the product claim is friction, not proof) and say so.
+    fn accept_judged_chat_reply(
+        &mut self,
+        reply: String,
+        judge: Option<Result<crate::coach::Verdict, String>>,
+    ) {
+        // Metadata-only: which judge model ran (if any), so the disclosure can
+        // note the reply was double-screened. Never any prose.
+        let judge_model = self
+            .client
+            .as_ref()
+            .and_then(|c| c.judge_endpoint())
+            .map(|e| e.model);
+        let mut meta: Vec<(&'static str, MetaValue)> = Vec::new();
+        if let Some(m) = judge_model {
+            meta.push(("judge_model", MetaValue::Str(m)));
+        }
+        match judge {
+            Some(Ok(v)) if !v.allow => {
+                meta.push(("judge_allowed", MetaValue::Bool(false)));
+                self.log_coach_consult_with(true, meta);
+                let reason = if v.reason.trim().is_empty() {
+                    "flagged by the judge".to_string()
+                } else {
+                    v.reason
+                };
+                self.coach_turns.push(ChatTurn {
+                    role: ChatTurnRole::Coach,
+                    text: format!("(withheld by judge: {reason})"),
+                });
+                self.message = "Coach reply withheld by LLM judge.".into();
+            }
+            other => {
+                let unavailable = matches!(other, Some(Err(_)));
+                if let Some(Ok(_)) = other {
+                    meta.push(("judge_allowed", MetaValue::Bool(true)));
+                }
+                self.log_coach_consult_with(false, meta);
+                self.coach_turns.push(ChatTurn {
+                    role: ChatTurnRole::Coach,
+                    text: reply,
+                });
+                self.message = if unavailable {
+                    "Coach replied (LLM judge unavailable — deterministic guard only).".into()
+                } else {
+                    "Coach replied.".into()
+                };
+            }
+        }
     }
 
     /// Check whether a new paragraph crossed a teach-back threshold.
@@ -2426,7 +2866,7 @@ impl App {
         self.coach_mode = CoachMode::Structured(para);
         self.coach_is_push = true;
         self.persist_coach_history();
-        self.spawn_coach(messages, true);
+        self.spawn_coach(messages, true, None);
         self.message = "Coach is reviewing your latest paragraph…".into();
     }
 
@@ -2658,20 +3098,56 @@ impl App {
                         && let Some(m) = s.models.get(idx)
                     {
                         s.model = m.clone();
-                        s.field = 2;
+                        s.field = F_MODEL;
                     }
                 } else if over(rect) {
-                    // First three inner rows are the editable fields.
-                    if ev.row > rect.y && ev.row < rect.y + 4 {
-                        let row = (ev.row - rect.y - 1) as usize;
-                        if row < 3 {
-                            self.coach_settings.as_mut().unwrap().field = row;
-                        }
+                    // Click an editable field row to focus it.
+                    if let Some(field) = self.coach_field_rows.iter().position(|&r| r == ev.row)
+                        && let Some(s) = self.coach_settings.as_mut()
+                    {
+                        s.field = field;
                     }
                 } else {
                     self.coach_settings = None;
                     self.message = "AI settings cancelled.".into();
                 }
+            }
+            return;
+        }
+
+        // Grammar settings overlay: wheel scrolls, a click toggles a rule row
+        // (or selects the dialect row), a click outside cancels.
+        if self.grammar_settings.is_some() {
+            let count = self.grammar_settings.as_ref().unwrap().rules.len() + 1;
+            match ev.kind {
+                MouseEventKind::ScrollDown => {
+                    let g = self.grammar_settings.as_mut().unwrap();
+                    g.sel = (g.sel + 1) % count;
+                }
+                MouseEventKind::ScrollUp => {
+                    let g = self.grammar_settings.as_mut().unwrap();
+                    g.sel = (g.sel + count - 1) % count;
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    let rect = self.grammar_settings.as_ref().unwrap().rect;
+                    let rows = self.grammar_settings.as_ref().unwrap().rows_rect;
+                    if rows.height > 0 && over(rows) {
+                        let idx = self.grammar_settings.as_ref().unwrap().row_start
+                            + (ev.row - rows.y) as usize;
+                        let g = self.grammar_settings.as_mut().unwrap();
+                        if let Some((rule, _)) = g.rules.get(idx) {
+                            let rule = rule.clone();
+                            g.sel = idx + 1;
+                            if !g.disabled.remove(&rule) {
+                                g.disabled.insert(rule);
+                            }
+                        }
+                    } else if !over(rect) {
+                        self.grammar_settings = None;
+                        self.message = "Grammar settings cancelled.".into();
+                    }
+                }
+                _ => {}
             }
             return;
         }
@@ -2731,7 +3207,22 @@ impl App {
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                if over(self.coach_input_rect) && self.client.is_some() {
+                if over(self.right_tab_rect) {
+                    // The tab header is two halves: left = Coach, right = Suggestions.
+                    let mid = self.right_tab_rect.x + self.right_tab_rect.width / 2;
+                    self.show_right_tab(if ev.column < mid {
+                        RightTab::Coach
+                    } else {
+                        RightTab::Suggestions
+                    });
+                } else if self.suggest_rect.height > 0 && over(self.suggest_rect) {
+                    let idx = self.suggest_start + (ev.row - self.suggest_rect.y) as usize;
+                    if idx < self.diagnostics.len() {
+                        self.suggest_sel = idx;
+                        self.focus = Focus::Suggestions;
+                        self.reveal_selected_diagnostic();
+                    }
+                } else if over(self.coach_input_rect) && self.client.is_some() {
                     self.focus = Focus::Coach;
                 } else if over_editor {
                     let (line, col) = self.editor_cell_to_pos(ev.column, ev.row);
@@ -2899,7 +3390,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_menu_bar(frame, app, rows[0]);
     draw_editor(frame, app, main[0]);
     draw_preview(frame, app, right[0]);
-    draw_coach(frame, app, right[1]);
+    draw_right_pane(frame, app, right[1]);
     draw_coach_input(frame, app, rows[2]);
     draw_status(frame, app, rows[3]);
 
@@ -2916,6 +3407,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if app.coach_settings.is_some() {
         draw_coach_settings(frame, app, area);
+    }
+    if app.grammar_settings.is_some() {
+        draw_grammar_settings(frame, app, area);
     }
     if app.journal_open {
         draw_journal(frame, app, area);
@@ -3062,36 +3556,102 @@ fn draw_coach_settings(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Marker (2) + label padded to 9 + space = 12-cell gutter before the value.
     let gutter = 12u16;
-    let field_line = |idx: usize, label: &str, value: String| {
+    // Mask a literal API key; show an `env:NAME` reference verbatim (the name
+    // isn't a secret and the writer needs to see it).
+    let mask_key = |k: &str| {
+        if is_env_ref(k) {
+            k.to_string()
+        } else {
+            "•".repeat(k.chars().count())
+        }
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+    // Line index where each field landed, filled as we push (for caret + clicks).
+    let mut field_line_idx = [0usize; COACH_FIELD_COUNT];
+
+    let mut push_field = |lines: &mut Vec<Line>, idx: usize, label: &str, value: String| {
+        field_line_idx[idx] = lines.len();
         let focused = s.field == idx;
         let marker = if focused { "▸ " } else { "  " };
         let label_style = if focused { theme.accent() } else { theme.dim() };
-        Line::from(vec![
+        lines.push(Line::from(vec![
             Span::styled(format!("{marker}{label:<9} "), label_style),
             Span::styled(value, theme.text()),
-        ])
+        ]));
     };
-    // An `env:NAME` reference is shown verbatim (the name isn't a secret and
-    // the writer needs to see it); a literal key is masked.
-    let key_display = if is_env_ref(&s.api_key) {
-        s.api_key.clone()
-    } else {
-        "•".repeat(s.api_key.chars().count())
+
+    let inherits = "(inherits coach)".to_string();
+    let judge_text = |raw: &str, masked: bool| {
+        if raw.trim().is_empty() {
+            inherits.clone()
+        } else if masked {
+            mask_key(raw)
+        } else {
+            raw.to_string()
+        }
     };
-    let mut lines = vec![
-        field_line(0, "Endpoint", s.base_url.clone()),
-        field_line(1, "API key", key_display),
-        field_line(2, "Model", s.model.clone()),
-        Line::raw(""),
-        Line::from(Span::styled(
-            "Tip: enter env:NAME (or ${NAME}) to read a value from an environment",
-            theme.dim(),
-        )),
-        Line::from(Span::styled(
-            "variable — only the name is saved, never the resolved value.",
-            theme.dim(),
-        )),
-    ];
+
+    lines.push(Line::from(Span::styled("Coach", theme.dim())));
+    push_field(
+        &mut lines,
+        F_PROVIDER,
+        "Provider",
+        provider_label(s.provider).to_string(),
+    );
+    push_field(&mut lines, F_BASE_URL, "Endpoint", s.base_url.clone());
+    push_field(&mut lines, F_API_KEY, "API key", mask_key(&s.api_key));
+    push_field(&mut lines, F_MODEL, "Model", s.model.clone());
+
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "Response judge — a second LLM that can only withhold a reply",
+        theme.dim(),
+    )));
+    push_field(
+        &mut lines,
+        F_JUDGE_ENABLED,
+        "Judge",
+        if s.judge_enabled {
+            "on".to_string()
+        } else {
+            "off".to_string()
+        },
+    );
+    push_field(
+        &mut lines,
+        F_JUDGE_PROVIDER,
+        "Provider",
+        provider_label(s.judge_provider).to_string(),
+    );
+    push_field(
+        &mut lines,
+        F_JUDGE_BASE_URL,
+        "Endpoint",
+        judge_text(&s.judge_base_url, false),
+    );
+    push_field(
+        &mut lines,
+        F_JUDGE_API_KEY,
+        "API key",
+        judge_text(&s.judge_api_key, true),
+    );
+    push_field(
+        &mut lines,
+        F_JUDGE_MODEL,
+        "Model",
+        judge_text(&s.judge_model, false),
+    );
+
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "Tip: enter env:NAME (or ${NAME}) to read a value from an environment",
+        theme.dim(),
+    )));
+    lines.push(Line::from(Span::styled(
+        "variable — only the name is saved, never the resolved value.",
+        theme.dim(),
+    )));
 
     // Status line from the last connection test (color-coded by outcome).
     if let Some(status) = &s.status {
@@ -3134,12 +3694,12 @@ fn draw_coach_settings(frame: &mut Frame, app: &mut App, area: Rect) {
 
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
-        "Tab/↑↓ field · Ctrl+T test · Ctrl+N/P model · Enter save · Esc cancel",
+        "Tab/↑↓ field · ←/→ provider/toggle · Ctrl+T test · Ctrl+N/P model · Enter save · Esc",
         theme.dim(),
     )));
 
     let height = (lines.len() as u16) + 2; // borders
-    let rect = centered_rect_abs(66, height, area);
+    let rect = centered_rect_abs(76, height, area);
     app.coach_settings_rect = rect;
 
     let block = Block::default()
@@ -3164,18 +3724,27 @@ fn draw_coach_settings(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
         Rect::default()
     };
+    // Record each field's absolute row so clicks and the caret can find them.
+    for (idx, line_idx) in field_line_idx.iter().enumerate() {
+        app.coach_field_rows[idx] = inner.y + *line_idx as u16;
+    }
 
     frame.render_widget(Clear, rect);
     frame.render_widget(Paragraph::new(lines).block(block), rect);
 
-    // Caret at the end of the focused field's value.
+    // Caret at the end of a text field's value; for provider/toggle fields it
+    // sits at the value start (they're cycled, not typed).
     let val_len = match s.field {
-        0 => s.base_url.chars().count(),
-        1 => s.api_key.chars().count(),
-        _ => s.model.chars().count(),
+        F_BASE_URL => s.base_url.chars().count(),
+        F_API_KEY => s.api_key.chars().count(),
+        F_MODEL => s.model.chars().count(),
+        F_JUDGE_BASE_URL => s.judge_base_url.chars().count(),
+        F_JUDGE_API_KEY => s.judge_api_key.chars().count(),
+        F_JUDGE_MODEL => s.judge_model.chars().count(),
+        _ => 0,
     } as u16;
     let cx = (inner.x + gutter + val_len).min(inner.right().saturating_sub(1));
-    let cy = inner.y + s.field as u16;
+    let cy = app.coach_field_rows[s.field];
     frame.set_cursor_position((cx, cy));
 }
 
@@ -3311,6 +3880,106 @@ fn draw_theme_picker(frame: &mut Frame, app: &mut App, area: Rect) {
     )));
     frame.render_widget(Clear, rect);
     frame.render_widget(Paragraph::new(lines).block(block), rect);
+}
+
+fn draw_grammar_settings(frame: &mut Frame, app: &mut App, area: Rect) {
+    /// Lint rules visible at once; the rest scroll into view.
+    const RULE_ROWS: usize = 12;
+
+    let Some(g) = app.grammar_settings.as_ref() else {
+        return;
+    };
+    let theme = app.theme;
+
+    let rect = centered_rect_abs(70, RULE_ROWS as u16 + 8, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme.border(true))
+        .style(theme.panel_bg())
+        .title(Line::from(Span::styled(
+            " Grammar (Harper) ",
+            theme.title(true),
+        )));
+    let inner = block.inner(rect);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    // Row 0: dialect selector.
+    let dialect_focused = g.sel == 0;
+    lines.push(Line::from(vec![
+        Span::styled(
+            if dialect_focused { "▸ " } else { "  " }.to_string(),
+            theme.accent(),
+        ),
+        Span::styled(
+            "Dialect  ".to_string(),
+            if dialect_focused {
+                theme.accent()
+            } else {
+                theme.dim()
+            },
+        ),
+        Span::styled(format!("◄ {} ►", g.dialect.label()), theme.text()),
+    ]));
+    lines.push(Line::from(Span::styled(
+        "Lint rules (Space toggles):",
+        theme.dim(),
+    )));
+
+    // Scroll the rule list to keep the selected rule visible.
+    let n = g.rules.len();
+    let sel_rule = g.sel.saturating_sub(1);
+    let start = if g.sel == 0 {
+        0
+    } else {
+        sel_rule
+            .saturating_sub(RULE_ROWS - 1)
+            .min(n.saturating_sub(RULE_ROWS))
+    };
+    let rows_top = lines.len();
+    for (i, (key, _desc)) in g.rules.iter().enumerate().skip(start).take(RULE_ROWS) {
+        let enabled = !g.disabled.contains(key);
+        let selected = g.sel == i + 1;
+        let check = if enabled { "[x]" } else { "[ ]" };
+        let marker = if selected { "▸ " } else { "  " };
+        let style = if selected {
+            theme.selected()
+        } else if enabled {
+            theme.text()
+        } else {
+            theme.dim()
+        };
+        lines.push(Line::from(Span::styled(
+            format!("{marker}{check} {key}"),
+            style,
+        )));
+    }
+    let shown = RULE_ROWS.min(n.saturating_sub(start));
+    if n > start + shown {
+        lines.push(Line::from(Span::styled(
+            format!("  … {n} rules total"),
+            theme.dim(),
+        )));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "↑/↓ move · ←/→ dialect · Space toggle · Enter apply · Esc cancel",
+        theme.dim(),
+    )));
+
+    frame.render_widget(Clear, rect);
+    frame.render_widget(Paragraph::new(lines).block(block), rect);
+
+    // Record geometry for click hit-testing.
+    if let Some(g) = app.grammar_settings.as_mut() {
+        g.rect = rect;
+        g.row_start = start;
+        g.rows_rect = Rect {
+            x: inner.x,
+            y: inner.y + rows_top as u16,
+            width: inner.width,
+            height: shown as u16,
+        };
+    }
 }
 
 fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -3630,6 +4299,133 @@ fn draw_preview(frame: &mut Frame, app: &mut App, area: Rect) {
         app.preview_height,
         theme,
     );
+}
+
+/// Draw the bottom-right pane: a one-row tab header (Coach ⇄ Suggestions) over
+/// whichever tab is active.
+fn draw_right_pane(frame: &mut Frame, app: &mut App, area: Rect) {
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(area);
+    let theme = app.theme;
+    app.right_tab_rect = parts[0];
+
+    let coach_sel = app.right_tab == RightTab::Coach;
+    let issues = app.diagnostics.len();
+    let tab = |label: String, selected: bool| {
+        let style = if selected {
+            theme.menu_selected()
+        } else {
+            theme.menu()
+        };
+        Span::styled(label, style)
+    };
+    let header = Line::from(vec![
+        tab(" Coach ".to_string(), coach_sel),
+        Span::styled(" ", theme.menu()),
+        tab(format!(" Suggestions ({issues}) "), !coach_sel),
+    ]);
+    frame.render_widget(Paragraph::new(header).style(theme.menu()), parts[0]);
+
+    match app.right_tab {
+        RightTab::Coach => draw_coach(frame, app, parts[1]),
+        RightTab::Suggestions => draw_suggestions(frame, app, parts[1]),
+    }
+}
+
+/// Draw the Harper suggestions list: one selectable row per diagnostic, each
+/// showing a severity icon, the message, and (if any) the primary fix.
+fn draw_suggestions(frame: &mut Frame, app: &mut App, area: Rect) {
+    let theme = app.theme;
+    let focused = app.focus == Focus::Suggestions;
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme.border(focused))
+        .style(theme.panel_bg())
+        .title(Line::from(Span::styled(
+            " SUGGESTIONS ",
+            theme.title(focused),
+        )));
+    let inner = block.inner(area);
+    frame.render_widget(Clear, area);
+
+    if app.diagnostics.is_empty() {
+        let p = Paragraph::new(Line::from(Span::styled(
+            "No grammar issues found.",
+            theme.dim(),
+        )))
+        .block(block)
+        .style(theme.text());
+        frame.render_widget(p, area);
+        app.suggest_rect = Rect::default();
+        return;
+    }
+
+    // Reserve the last inner row for a key hint; the rest is the scrolling list.
+    let hint_h = if inner.height >= 2 { 1 } else { 0 };
+    let list_h = inner.height.saturating_sub(hint_h) as usize;
+    let n = app.diagnostics.len();
+    if app.suggest_sel >= n {
+        app.suggest_sel = n - 1;
+    }
+    let start = app
+        .suggest_sel
+        .saturating_sub(list_h.saturating_sub(1))
+        .min(n.saturating_sub(list_h.max(1)));
+    app.suggest_start = start;
+
+    let width = inner.width as usize;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (i, d) in app.diagnostics.iter().enumerate().skip(start).take(list_h) {
+        let (icon, color) = match d.severity {
+            Severity::Error => ("✗", theme.error),
+            Severity::Warning => ("▲", theme.accent),
+            Severity::Style => ("•", theme.dim),
+        };
+        let selected = i == app.suggest_sel;
+        let marker = if selected { "▸" } else { " " };
+        let fix = d
+            .suggestions
+            .first()
+            .map(|f| format!("  →  {}", f.label))
+            .unwrap_or_default();
+        let body = format!("{marker}{icon} {}{fix}", d.message);
+        let body = truncate_to(&body, width);
+        let style = if selected {
+            theme.selected()
+        } else {
+            Style::default().fg(color).bg(theme.bg)
+        };
+        lines.push(Line::from(Span::styled(body, style)));
+    }
+    if hint_h == 1 {
+        lines.push(Line::from(Span::styled(
+            "↑/↓ select · Enter apply · Tab → Coach · Esc editor",
+            theme.dim(),
+        )));
+    }
+
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+    app.suggest_rect = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: list_h as u16,
+    };
+}
+
+/// Truncate `s` to at most `width` columns (char-approximate), adding an ellipsis.
+fn truncate_to(s: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if s.chars().count() <= width {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(width.saturating_sub(1)).collect();
+    out.push('…');
+    out
 }
 
 fn draw_coach(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -4253,14 +5049,25 @@ mod tests {
         for needle in ["Endpoint", "API key", "Model"] {
             assert!(s.contains(needle), "settings dialog missing {needle:?}");
         }
-        // Type into the focused (endpoint) field.
+        // Field 0 is the provider selector; Tab to the endpoint field and type.
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.coach_settings.as_ref().unwrap().field, F_BASE_URL);
         for ch in "http://x".chars() {
             app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
         }
         assert_eq!(app.coach_settings.as_ref().unwrap().base_url, "http://x");
         // Tab advances the focused field.
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        assert_eq!(app.coach_settings.as_ref().unwrap().field, 1);
+        assert_eq!(app.coach_settings.as_ref().unwrap().field, F_API_KEY);
+        // ←/→ cycles the provider selector (field 0).
+        app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
+        assert_eq!(app.coach_settings.as_ref().unwrap().field, F_PROVIDER);
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(
+            app.coach_settings.as_ref().unwrap().provider,
+            Some(Provider::OpenAi)
+        );
         // Esc cancels without enabling the coach (no disk write).
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(app.coach_settings.is_none());
@@ -4575,7 +5382,83 @@ mod tests {
         app.cycle_model(-1); // wraps before the start
         assert_eq!(app.coach_settings.as_ref().unwrap().model, "c");
         // Cycling also moves focus to the Model field.
-        assert_eq!(app.coach_settings.as_ref().unwrap().field, 2);
+        assert_eq!(app.coach_settings.as_ref().unwrap().field, F_MODEL);
+    }
+
+    #[test]
+    fn suggestions_tab_lists_and_applies_a_fix() {
+        let rt = rt();
+        let mut app = App::new(
+            "This is a sentance.".to_string(),
+            std::path::PathBuf::from("test.qmd"),
+            None,
+            rt.handle().clone(),
+        );
+        // A misspelling should produce at least one fixable diagnostic.
+        let fixable = app
+            .diagnostics
+            .iter()
+            .position(|d| !d.suggestions.is_empty());
+        assert!(fixable.is_some(), "expected a fixable spelling diagnostic");
+
+        // Switch to the Suggestions tab and confirm it renders.
+        app.show_right_tab(RightTab::Suggestions);
+        assert_eq!(app.focus, Focus::Suggestions);
+        let screen = render(&mut app);
+        assert!(screen.contains("SUGGESTIONS"), "suggestions pane not shown");
+
+        // Select the fixable diagnostic and apply its primary fix.
+        app.suggest_sel = fixable.unwrap();
+        let before = app.buffer.text();
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_ne!(
+            app.buffer.text(),
+            before,
+            "applying a fix should edit the buffer"
+        );
+        assert!(
+            !app.buffer.text().contains("sentance"),
+            "misspelling not corrected"
+        );
+
+        // The edit is a single undo step.
+        app.undo();
+        assert_eq!(app.buffer.text(), before, "fix should undo in one step");
+    }
+
+    #[test]
+    fn judge_withholds_a_disallowed_reply() {
+        let rt = rt();
+        let mut app = test_app(&rt);
+        app.coach_mode = CoachMode::Chat;
+        app.accept_coach_reply(
+            "What is the core claim you want the reader to accept?".into(),
+            Some(Ok(crate::coach::Verdict {
+                allow: false,
+                reason: "smuggles a rewrite".into(),
+            })),
+        );
+        let last = app.coach_turns.last().unwrap();
+        assert!(
+            last.text.contains("withheld by judge") && last.text.contains("smuggles a rewrite"),
+            "got: {}",
+            last.text
+        );
+    }
+
+    #[test]
+    fn judge_failure_fails_open_with_a_note() {
+        let rt = rt();
+        let mut app = test_app(&rt);
+        app.coach_mode = CoachMode::Chat;
+        let reply = "What is the core claim you want the reader to accept?".to_string();
+        app.accept_coach_reply(reply.clone(), Some(Err("connection refused".into())));
+        assert_eq!(app.coach_turns.last().unwrap().text, reply);
+        assert!(
+            app.message.contains("judge unavailable"),
+            "expected a fail-open note, got: {}",
+            app.message
+        );
     }
 
     #[test]

@@ -30,8 +30,8 @@ beyond transient menus/dialogs). Press **F1** for the keybinding cheat-sheet or
 | `Ctrl+M` | Mark the pasted region under the cursor as a quotation |
 | `Ctrl+B` | Outline — list headings and jump to one |
 | `Ctrl+R` | Render the document with Quarto (saves first) |
-| `Ctrl+L` | Focus the coach panel; `Ctrl+J` coach the current selection |
-| `Ctrl+E` | AI settings (endpoint, API key, model) |
+| `Ctrl+L` | Move focus to the bottom-right pane (Coach or Suggestions tab); `Tab` switches the tab; `Ctrl+J` coaches the current selection |
+| `Ctrl+E` | AI settings (provider, endpoint, API key, model, + optional judge) |
 | `Ctrl+P` | Process / journal view |
 | `Ctrl+T` | Theme picker (live preview) |
 | `Ctrl+D` | Export the disclosure document (File ▸ Preview to view in-app) |
@@ -45,10 +45,25 @@ a `()`, `[]`, or `{}` bracket, it and its matching partner are highlighted.
 
 ## AI coach (optional)
 
-The coach speaks the OpenAI-compatible Chat Completions API against **any** base
-URL (Ollama, LM Studio, OpenAI, OpenRouter, …). Configure it in-app via
-**Coach ▸ AI settings** (`Ctrl+E`) — endpoint, API key, and model — applied
-immediately and saved to `~/.config/whetstone/coach.json` (`0600`).
+The coach speaks two protocols so you are **not locked to one vendor**:
+OpenAI-compatible Chat Completions (Ollama, LM Studio, OpenAI, OpenRouter, …)
+and **Anthropic** Messages. The provider is chosen in the settings dialog
+(Auto-detect / OpenAI-compatible / Anthropic); *Auto-detect* infers Anthropic
+from an `api.anthropic.com` base URL and OpenAI-compatible otherwise. Configure
+it in-app via **Coach ▸ AI settings** (`Ctrl+E`) — provider, endpoint, API key,
+and model — applied immediately and saved to `~/.config/whetstone/coach.json`
+(`0600`).
+
+### Optional LLM judge
+
+The same dialog can enable a **response judge**: a second model that re-screens
+each coach reply and can only ever *withhold* it (never rewrite or add to it).
+It runs *after* the always-on deterministic guard, so it is defence-in-depth,
+not a replacement. The judge has its own model, and optionally its own provider
+/ endpoint / key — blank fields inherit the coach's — so you can pair a large
+local coach with a small remote judge, or vice versa. If the judge can't be
+reached the coach **fails open** (the deterministic guard already passed) and
+the status bar says so.
 
 Inside that dialog, `Ctrl+T` runs a **connection test**: it fetches the
 endpoint's `/models` list, so you get an immediate ✓/✗ on whether the URL and
@@ -69,10 +84,15 @@ Environment variables still work and override the saved file at startup:
 | `WHETSTONE_BASE_URL` | e.g. `http://localhost:11434/v1` (no trailing slash) |
 | `WHETSTONE_API_KEY` | bearer token (optional for local servers) |
 | `WHETSTONE_MODEL` | e.g. `llama3.1`, `gpt-oss:latest` (default `gpt-oss:latest`) |
+| `WHETSTONE_PROVIDER` | `openai` or `anthropic` (omit to auto-detect from the URL) |
+| `WHETSTONE_JUDGE` | `1`/`true` to enable the LLM judge |
+| `WHETSTONE_JUDGE_MODEL` | judge model (blank inherits the coach model) |
+| `WHETSTONE_JUDGE_BASE_URL` / `WHETSTONE_JUDGE_API_KEY` / `WHETSTONE_JUDGE_PROVIDER` | judge endpoint overrides (blank inherits the coach's) |
 
 Every coach reply is screened before it is shown (length cap, rewrite/dictation
-patterns, n-gram overlap with the draft, and the forbidden-label guard); the
-draft and your message are injection-screened before egress.
+patterns, n-gram overlap with the draft, and the forbidden-label guard) — and,
+if the judge is enabled, by the LLM judge on top of that; the draft and your
+message are injection-screened before egress.
 
 ## Preferences
 
@@ -136,6 +156,45 @@ editor stays responsive. On success the status bar confirms it; if the render
 fails (or Quarto isn't installed), the captured output opens in a scrollable
 overlay so you can read the error. Requires [Quarto](https://quarto.org) on your
 `PATH`.
+
+## Grammar & suggestions (Harper)
+
+Grammar/spell checking is local (via `harper-core`, no external calls). Issues
+are underlined in the editor and also collected in a **Suggestions** tab in the
+bottom-right pane — switch to it from the **View ▸ Suggestions** menu, by
+clicking the tab header, or with `Ctrl+L` then `Tab`. In the list, `↑`/`↓`
+select (scrolling the editor to the issue) and **Enter** applies the suggested
+fix as a single undoable edit (number keys `1`–`9` pick among multiple
+suggestions). Applying a fix is a normal local edit — it is *not* journaled as
+AI assistance.
+
+Open **View ▸ Grammar (spelling)…** to choose the **dialect** (American,
+British, Canadian, Australian, Indian) and to toggle individual lint rules on or
+off; choices persist to `ui.json`. `WHETSTONE_DIALECT` overrides the dialect at
+startup.
+
+## Headless / agentic use
+
+Besides the editor, `whetstone-tui` exposes non-interactive subcommands that
+print JSON, so an agent, script, or CI step can drive the same core logic. A
+bare file path still opens the editor.
+
+```sh
+whetstone-tui lint file.qmd                       # Harper diagnostics + fixes
+whetstone-tui coach file.qmd --message "…"        # one guarded (+ judged) coach turn
+whetstone-tui guard --reply "…" --draft file.qmd  # screen an arbitrary reply
+whetstone-tui ownership --original a.txt --current b.txt   # claim-to-own survival
+whetstone-tui disclosure --journal events.json --doc-id essay.qmd
+```
+
+## Screenshots
+
+PNG screenshots of the TUI are rendered in-process (no external tools) from the
+same headless harness the tests use:
+
+```sh
+cargo run --features screenshots --bin whetstone-screenshots   # → docs/screenshots/
+```
 
 ## Not yet implemented
 

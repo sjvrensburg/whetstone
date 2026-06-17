@@ -30,5 +30,20 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 futures = "0.3"
 
+# Screenshots (optional) — render the TUI to a PNG in-process, no external tools.
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+ab_glyph = { version = "0.2", optional = true }
+
+[features]
+# Reusable headless-driving harness (also compiled under `cargo test`).
+harness = []
+# In-process PNG screenshot rendering (pulls in `image` + `ab_glyph`).
+screenshots = ["dep:image", "dep:ab_glyph", "harness"]
+
+[[bin]]
+name = "whetstone-screenshots"
+path = "src/bin/screenshots.rs"
+required-features = ["screenshots"]
+
 [dev-dependencies]
 pretty_assertions = "1"

@@ -6,6 +6,13 @@
 //! With neither a file nor an endpoint, the coach is disabled and the editor
 //! works fully offline until the user fills in the settings dialog.
 //!
+//! Two providers are supported so the user is not locked to one vendor:
+//! OpenAI-compatible (Ollama, LM Studio, OpenAI, OpenRouter, …) and Anthropic.
+//! The provider can be set explicitly or left to auto-detect from the base URL.
+//! The coach and the optional LLM judge each resolve to their own [`Endpoint`]
+//! (own model, and optionally own provider/endpoint/key), so a writer can run
+//! a big local coach and a small remote judge, or vice versa.
+//!
 //! Settings entered in the TUI are persisted with [`CoachConfig::save`] to
 //! `$XDG_CONFIG_HOME/whetstone/coach.json` (falling back to
 //! `$HOME/.config/...`), `0600` on Unix since it may hold an API key.
@@ -18,14 +25,140 @@ use serde::{Deserialize, Serialize};
 /// The default model used when none is configured.
 pub const DEFAULT_MODEL: &str = "gpt-oss:latest";
 
+/// The `anthropic-version` header value sent with Anthropic Messages requests.
+pub const ANTHROPIC_VERSION: &str = "2023-06-01";
+
+/// `max_tokens` for Anthropic requests (required by their API). Coach/judge
+/// replies are short — the chat guard caps user-facing replies at 900 chars.
+pub const ANTHROPIC_MAX_TOKENS: u32 = 1024;
+
+/// Which wire protocol an endpoint speaks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Provider {
+    /// OpenAI-compatible Chat Completions (`POST {base}/chat/completions`).
+    #[default]
+    #[serde(
+        alias = "openai-compatible",
+        alias = "openai_compatible",
+        alias = "oai"
+    )]
+    OpenAi,
+    /// Anthropic Messages (`POST {base}/messages`).
+    Anthropic,
+}
+
+impl Provider {
+    /// Best-effort guess from a base URL when no provider is set explicitly.
+    /// Anything that looks like Anthropic (the canonical host, or a gateway
+    /// path mentioning it) maps to [`Provider::Anthropic`]; everything else is
+    /// treated as OpenAI-compatible.
+    pub fn detect(base_url: &str) -> Self {
+        if base_url.to_ascii_lowercase().contains("anthropic") {
+            Provider::Anthropic
+        } else {
+            Provider::OpenAi
+        }
+    }
+
+    /// Parse a free-form string (env var / config) into a provider.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "anthropic" | "claude" => Some(Provider::Anthropic),
+            "openai" | "openai-compatible" | "openai_compatible" | "oai" | "compatible" => {
+                Some(Provider::OpenAi)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Provider::OpenAi => "OpenAI-compatible",
+            Provider::Anthropic => "Anthropic",
+        }
+    }
+}
+
+/// Tidy a base URL: trim whitespace and any trailing slash.
+fn tidy_base(value: &str) -> String {
+    value.trim().trim_end_matches('/').to_string()
+}
+
+/// A fully-resolved endpoint for one role (coach or judge): the concrete
+/// values the client actually sends, with `env:NAME` references already
+/// expanded and the provider decided.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Endpoint {
+    pub provider: Provider,
+    pub base_url: String,
+    pub api_key: String,
+    pub model: String,
+}
+
+impl Endpoint {
+    /// The full chat URL for this endpoint's provider.
+    pub fn url(&self) -> String {
+        match self.provider {
+            Provider::OpenAi => format!("{}/chat/completions", self.base_url),
+            Provider::Anthropic => format!("{}/messages", self.base_url),
+        }
+    }
+
+    /// The model-list URL (OpenAI-compatible only; used by the connection test).
+    pub fn models_url(&self) -> String {
+        format!("{}/models", self.base_url)
+    }
+}
+
+/// The optional LLM-judge configuration. When [`JudgeSettings::enabled`] is
+/// false the judge is off and only the deterministic guard runs. Blank
+/// connection fields inherit the coach's, so the common case ("same endpoint,
+/// a smaller model") needs only `enabled` + `model`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct JudgeSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Judge model; blank inherits the coach model.
+    #[serde(default)]
+    pub model: String,
+    /// Blank inherits the coach provider / auto-detects from `base_url`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<Provider>,
+    /// Blank inherits the coach base URL.
+    #[serde(default)]
+    pub base_url: String,
+    /// Blank inherits the coach API key.
+    #[serde(default)]
+    pub api_key: String,
+}
+
+impl JudgeSettings {
+    /// Whether this is the all-default (judge-off) value — used to keep
+    /// `coach.json` tidy by not serializing an empty judge block.
+    fn is_unset(&self) -> bool {
+        !self.enabled
+            && self.model.is_empty()
+            && self.provider.is_none()
+            && self.base_url.is_empty()
+            && self.api_key.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoachConfig {
+    /// `None` = auto-detect from `base_url`. Set explicitly to override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<Provider>,
     /// e.g. `http://localhost:11434/v1` (no trailing slash).
     pub base_url: String,
     /// Many local servers ignore this; real providers require it.
     pub api_key: String,
-    /// e.g. `llama3.1`, `gpt-oss:latest`, `qwen2.5`.
+    /// The coach model, e.g. `llama3.1`, `gpt-oss:latest`, `claude-opus-4-8`.
     pub model: String,
+    /// The optional LLM judge that screens coach replies (see [`JudgeSettings`]).
+    #[serde(default, skip_serializing_if = "JudgeSettings::is_unset")]
+    pub judge: JudgeSettings,
 }
 
 impl CoachConfig {
@@ -33,14 +166,16 @@ impl CoachConfig {
     /// overlay. Returns `None` (coach disabled) when no endpoint is set.
     pub fn load() -> Option<Self> {
         let mut cfg = Self::from_file().unwrap_or(Self {
+            provider: None,
             base_url: String::new(),
             api_key: String::new(),
             model: DEFAULT_MODEL.to_string(),
+            judge: JudgeSettings::default(),
         });
         if let Ok(base) = std::env::var("WHETSTONE_BASE_URL") {
             let base = base.trim();
             if !base.is_empty() {
-                cfg.base_url = base.trim_end_matches('/').to_string();
+                cfg.base_url = tidy_base(base);
             }
         }
         if let Ok(key) = std::env::var("WHETSTONE_API_KEY") {
@@ -50,6 +185,31 @@ impl CoachConfig {
             && !model.trim().is_empty()
         {
             cfg.model = model;
+        }
+        if let Ok(p) = std::env::var("WHETSTONE_PROVIDER")
+            && let Some(p) = Provider::parse(&p)
+        {
+            cfg.provider = Some(p);
+        }
+        // Judge env overlay.
+        if let Ok(v) = std::env::var("WHETSTONE_JUDGE") {
+            cfg.judge.enabled = is_truthy(&v);
+        }
+        if let Ok(m) = std::env::var("WHETSTONE_JUDGE_MODEL")
+            && !m.trim().is_empty()
+        {
+            cfg.judge.model = m;
+        }
+        if let Ok(b) = std::env::var("WHETSTONE_JUDGE_BASE_URL") {
+            cfg.judge.base_url = b;
+        }
+        if let Ok(k) = std::env::var("WHETSTONE_JUDGE_API_KEY") {
+            cfg.judge.api_key = k;
+        }
+        if let Ok(p) = std::env::var("WHETSTONE_JUDGE_PROVIDER")
+            && let Some(p) = Provider::parse(&p)
+        {
+            cfg.judge.provider = Some(p);
         }
         if cfg.base_url.trim().is_empty() {
             return None;
@@ -81,26 +241,68 @@ impl CoachConfig {
         Ok(path)
     }
 
-    /// The full Chat Completions URL.
-    pub fn endpoint(&self) -> String {
-        format!("{}/chat/completions", self.base_url)
-    }
-
-    /// A copy with every field's environment-variable reference resolved (see
-    /// [`resolve_env_value`]) and a tidy `base_url` (no trailing slash). The
-    /// raw config keeps the `env:NAME` form for persistence; this is what the
-    /// client actually sends, so a secret is read from the environment at
-    /// request time and never written to `coach.json`.
-    pub fn resolved(&self) -> Self {
-        Self {
-            base_url: resolve_env_value(&self.base_url)
-                .trim()
-                .trim_end_matches('/')
-                .to_string(),
+    /// The resolved coach endpoint: every field's `env:NAME` reference expanded,
+    /// the base URL tidied, and the provider decided (explicit, else detected).
+    pub fn coach_endpoint(&self) -> Endpoint {
+        let base_url = tidy_base(&resolve_env_value(&self.base_url));
+        let provider = self.provider.unwrap_or_else(|| Provider::detect(&base_url));
+        Endpoint {
+            provider,
+            base_url,
             api_key: resolve_env_value(&self.api_key),
             model: resolve_env_value(&self.model),
         }
     }
+
+    /// The resolved judge endpoint, or `None` when the judge is disabled. Blank
+    /// judge fields inherit from the coach endpoint; the provider is explicit if
+    /// set, else detected from the (possibly inherited) base URL, else the
+    /// coach's provider.
+    pub fn judge_endpoint(&self) -> Option<Endpoint> {
+        if !self.judge.enabled {
+            return None;
+        }
+        let coach = self.coach_endpoint();
+        let own_base = resolve_env_value(&self.judge.base_url);
+        let base_url = if own_base.trim().is_empty() {
+            coach.base_url.clone()
+        } else {
+            tidy_base(&own_base)
+        };
+        let own_key = resolve_env_value(&self.judge.api_key);
+        let api_key = if own_key.is_empty() {
+            coach.api_key.clone()
+        } else {
+            own_key
+        };
+        let own_model = resolve_env_value(&self.judge.model);
+        let model = if own_model.trim().is_empty() {
+            coach.model.clone()
+        } else {
+            own_model
+        };
+        let provider = self.judge.provider.unwrap_or_else(|| {
+            if self.judge.base_url.trim().is_empty() {
+                coach.provider
+            } else {
+                Provider::detect(&base_url)
+            }
+        });
+        Some(Endpoint {
+            provider,
+            base_url,
+            api_key,
+            model,
+        })
+    }
+}
+
+/// Whether an env-var string means "on" (`1`, `true`, `yes`, `on`).
+fn is_truthy(v: &str) -> bool {
+    matches!(
+        v.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 /// Whether `value` is an environment-variable reference (`env:NAME` or
@@ -143,29 +345,85 @@ fn config_path() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn endpoint_joins_path() {
-        let c = CoachConfig {
-            base_url: "http://localhost:11434/v1".into(),
+    fn cfg(base_url: &str, model: &str) -> CoachConfig {
+        CoachConfig {
+            provider: None,
+            base_url: base_url.into(),
             api_key: String::new(),
-            model: "x".into(),
+            model: model.into(),
+            judge: JudgeSettings::default(),
+        }
+    }
+
+    #[test]
+    fn openai_endpoint_joins_chat_completions() {
+        let e = cfg("http://localhost:11434/v1", "x").coach_endpoint();
+        assert_eq!(e.provider, Provider::OpenAi);
+        assert_eq!(e.url(), "http://localhost:11434/v1/chat/completions");
+    }
+
+    #[test]
+    fn provider_auto_detects_anthropic_from_base_url() {
+        let e = cfg("https://api.anthropic.com/v1", "claude-opus-4-8").coach_endpoint();
+        assert_eq!(e.provider, Provider::Anthropic);
+        assert_eq!(e.url(), "https://api.anthropic.com/v1/messages");
+    }
+
+    #[test]
+    fn explicit_provider_overrides_detection() {
+        let mut c = cfg("https://api.anthropic.com/v1", "m");
+        c.provider = Some(Provider::OpenAi);
+        assert_eq!(c.coach_endpoint().provider, Provider::OpenAi);
+    }
+
+    #[test]
+    fn old_flat_config_deserializes_with_defaults() {
+        // A pre-existing coach.json with no provider / judge fields must load.
+        let json = r#"{"base_url":"http://localhost:11434/v1","api_key":"","model":"llama3.1"}"#;
+        let c: CoachConfig = serde_json::from_str(json).unwrap();
+        assert!(c.provider.is_none());
+        assert!(!c.judge.enabled);
+        assert_eq!(c.coach_endpoint().model, "llama3.1");
+        assert!(c.judge_endpoint().is_none());
+    }
+
+    #[test]
+    fn judge_inherits_blank_fields_from_coach() {
+        let mut c = cfg("https://api.anthropic.com/v1", "big-model");
+        c.api_key = "secret".into();
+        c.judge.enabled = true; // model/base/key/provider all blank → inherit
+        let j = c.judge_endpoint().unwrap();
+        assert_eq!(j.base_url, "https://api.anthropic.com/v1");
+        assert_eq!(j.api_key, "secret");
+        assert_eq!(j.model, "big-model");
+        assert_eq!(j.provider, Provider::Anthropic);
+    }
+
+    #[test]
+    fn judge_uses_own_model_and_independent_endpoint() {
+        let mut c = cfg("http://localhost:11434/v1", "big-model");
+        c.judge = JudgeSettings {
+            enabled: true,
+            model: "small-judge".into(),
+            base_url: "https://api.anthropic.com/v1".into(),
+            api_key: "k2".into(),
+            provider: None, // detect from judge base_url
         };
-        assert_eq!(c.endpoint(), "http://localhost:11434/v1/chat/completions");
+        let j = c.judge_endpoint().unwrap();
+        assert_eq!(j.model, "small-judge");
+        assert_eq!(j.base_url, "https://api.anthropic.com/v1");
+        assert_eq!(j.api_key, "k2");
+        assert_eq!(j.provider, Provider::Anthropic);
     }
 
     #[test]
     fn plain_values_resolve_to_themselves() {
         assert_eq!(resolve_env_value("sk-abc123"), "sk-abc123");
-        assert_eq!(
-            resolve_env_value("http://localhost:11434/v1"),
-            "http://localhost:11434/v1"
-        );
         assert!(!is_env_ref("sk-abc123"));
     }
 
     #[test]
     fn env_references_resolve_against_the_environment() {
-        // A uniquely named var so this can't collide with another test.
         let var = "WHETSTONE_TEST_KEY_XYZZY";
         // SAFETY: single-threaded within this test; the var name is unique.
         unsafe {
@@ -181,7 +439,6 @@ mod tests {
             resolve_env_value("${WHETSTONE_TEST_KEY_XYZZY}"),
             "secret-value"
         );
-        // An unset var resolves to empty rather than leaking the reference.
         assert_eq!(resolve_env_value("env:WHETSTONE_DEFINITELY_UNSET_VAR"), "");
         unsafe {
             std::env::remove_var(var);
@@ -189,21 +446,23 @@ mod tests {
     }
 
     #[test]
-    fn resolved_keeps_raw_form_intact_and_tidies_base_url() {
+    fn endpoint_resolves_env_refs_and_tidies_base_url() {
         let var = "WHETSTONE_TEST_BASE_XYZZY";
         // SAFETY: unique var name, set/cleared within this test.
         unsafe {
             std::env::set_var(var, "http://example.test/v1/");
         }
         let raw = CoachConfig {
+            provider: None,
             base_url: "env:WHETSTONE_TEST_BASE_XYZZY".into(),
             api_key: "env:WHETSTONE_DEFINITELY_UNSET_VAR".into(),
             model: "llama3.1".into(),
+            judge: JudgeSettings::default(),
         };
-        let r = raw.resolved();
-        assert_eq!(r.base_url, "http://example.test/v1"); // trailing slash trimmed
-        assert_eq!(r.api_key, ""); // unset → empty
-        assert_eq!(r.model, "llama3.1");
+        let e = raw.coach_endpoint();
+        assert_eq!(e.base_url, "http://example.test/v1"); // trailing slash trimmed
+        assert_eq!(e.api_key, ""); // unset → empty
+        assert_eq!(e.model, "llama3.1");
         // The raw config is untouched, so it persists as a reference.
         assert_eq!(raw.base_url, "env:WHETSTONE_TEST_BASE_XYZZY");
         unsafe {
@@ -213,7 +472,6 @@ mod tests {
 
     #[test]
     fn config_path_is_under_config_dir() {
-        // Whatever the environment, the path ends with the expected suffix.
         if let Some(p) = config_path() {
             assert!(p.ends_with("whetstone/coach.json"));
         }
