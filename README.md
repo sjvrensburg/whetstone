@@ -1,5 +1,7 @@
 # whetstone-tui
 
+**Website:** https://sjvrensburg.github.io/whetstone/ (source under [`docs/`](docs/))
+
 A friction-first Quarto/Markdown editor for the terminal, written in Rust. It
 keeps the writing *yours*: pastes are quarantined and
 must be rewritten ("claim-to-own") or attributed, the optional AI coach can only

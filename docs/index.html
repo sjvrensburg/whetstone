@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Whetstone · the friction you'll love to hate</title>
+  <meta name="description" content="Whetstone is a friction-first Markdown editor for the terminal. Pastes are quarantined, the optional AI coach can only ask questions, and you can export an honest record of how a draft was written. It adds friction, not proof." />
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
+  <meta property="og:title" content="Whetstone · the friction you'll love to hate" />
+  <meta property="og:description" content="An AI coach and Markdown editor the 90s deserves. A terminal writing surface that keeps the words yours." />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="screenshots/editor.png" />
+  <link rel="stylesheet" href="assets/forge.css" />
+  <link rel="stylesheet" href="assets/site.css" />
+</head>
+<body>
+  <div class="page-heat" aria-hidden="true"></div>
+
+  <!-- ===================== Navigation ===================== -->
+  <nav class="site-nav">
+    <div class="container site-nav__inner">
+      <a class="brand" href="#top">
+        <span class="brand__mark">W</span>
+        <span class="brand__word">Whetstone</span>
+      </a>
+      <div class="site-nav__links">
+        <a href="#friction">Friction</a>
+        <a href="#coach">Coach</a>
+        <a href="#disclosure">Disclosure</a>
+        <a href="#themes">Themes</a>
+        <a href="#install">Install</a>
+        <a class="btn btn--primary btn--sm site-nav__cta" href="https://github.com/sjvrensburg/whetstone">View on GitHub</a>
+      </div>
+    </div>
+  </nav>
+
+  <main id="top">
+
+    <!-- ===================== Hero ===================== -->
+    <header class="section section--flush hero">
+      <div class="container hero__grid">
+        <div>
+          <h1 class="display-xl hero__title">The friction you'll <span class="text-accent">love to hate</span>.</h1>
+          <p class="body-lg hero__sub">Finally, an AI coach and Markdown editor the 90s deserves. A terminal writing surface that keeps the words yours.</p>
+          <p class="body-md hero__claim text-muted">Pastes are quarantined until you rewrite or attribute them. The optional coach can only ask questions, never write your sentences. When you are done, export an honest record of how the piece came together. It adds friction, not proof: it never claims to verify who wrote anything.</p>
+          <div class="hero__actions">
+            <a class="btn btn--primary btn--lg" href="https://github.com/sjvrensburg/whetstone">View on GitHub</a>
+            <a class="btn btn--secondary btn--lg" href="#friction">How it works</a>
+          </div>
+          <div class="statline">
+            <div class="stat">
+              <div class="stat__num">0</div>
+              <div class="stat__label">cloud calls for grammar. Checking runs on your machine.</div>
+            </div>
+            <div class="stat">
+              <div class="stat__num">2</div>
+              <div class="stat__label">AI protocols: OpenAI-compatible and Anthropic.</div>
+            </div>
+            <div class="stat">
+              <div class="stat__num">6</div>
+              <div class="stat__label">built-in themes, switched live.</div>
+            </div>
+          </div>
+        </div>
+        <div class="shot shot--hero">
+          <div class="shot__bar">
+            <span class="shot__name shot__name--accent">on-friction.qmd</span>
+            <span class="shot__dots">
+              <span class="shot__dot"></span><span class="shot__dot"></span><span class="shot__dot"></span>
+            </span>
+          </div>
+          <img src="screenshots/editor.png" width="1080" height="722"
+               alt="The Whetstone editor: a draft on the left, a live rendered preview on the right, and the coach pane below." />
+        </div>
+      </div>
+    </header>
+
+    <!-- ===================== Friction instruments ===================== -->
+    <section class="section" id="friction">
+      <div class="container">
+        <p class="section__title">Friction, not proof</p>
+        <div class="section__lead">
+          <h2 class="display-md">Four ways it slows you down on purpose</h2>
+          <p class="body-lg">Each instrument responds to a friction dial from Quiet to Deep Work, so you choose how much resistance the draft puts up.</p>
+        </div>
+
+        <div class="feature-grid">
+          <article class="feature">
+            <div class="shot">
+              <div class="shot__bar"><span class="shot__name">paste, held for review</span></div>
+              <img src="screenshots/paste-quarantine.png" width="1080" height="722"
+                   alt="A pasted passage highlighted in the editor, held in quarantine." />
+            </div>
+            <h3 class="title-md feature__title">Paste quarantine</h3>
+            <p class="feature__text">Anything you paste is held apart and marked. To release it, rewrite it in your own words or tag it as a quotation. Borrowed text cannot quietly become your draft.</p>
+          </article>
+
+          <article class="feature">
+            <div class="shot">
+              <div class="shot__bar"><span class="shot__name">claim to own</span></div>
+              <img src="screenshots/edit-claim.png" width="1080" height="722"
+                   alt="The claim editor: the writer states what the piece sets out to argue." />
+            </div>
+            <h3 class="title-md feature__title">Claim to own</h3>
+            <p class="feature__text">Ownership is measured as how much of the original paste survives your rewriting, not the reverse. State your claim, and it travels with the draft into the disclosure.</p>
+          </article>
+
+          <article class="feature">
+            <div class="shot">
+              <div class="shot__bar"><span class="shot__name">teach-back checkpoint</span></div>
+              <img src="screenshots/teach-back.png" width="1080" height="722"
+                   alt="A teach-back checkpoint asking the writer to summarize the argument so far." />
+            </div>
+            <h3 class="title-md feature__title">Teach-back</h3>
+            <p class="feature__text">At a cadence you set, Whetstone pauses and asks you to summarize the argument so far in your own words before you keep writing.</p>
+          </article>
+
+          <article class="feature">
+            <div class="shot">
+              <div class="shot__bar"><span class="shot__name shot__name--accent">coach: question-only</span></div>
+              <img src="screenshots/coach.png" width="1080" height="722"
+                   alt="The coach pane replying to the writer with a question about the draft." />
+            </div>
+            <h3 class="title-md feature__title">A coach that only asks</h3>
+            <p class="feature__text">The optional coach reads your draft and replies with questions. A deterministic guard screens every reply, so it can sharpen your thinking but never hand you sentences.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== Writing surface ===================== -->
+    <section class="section" id="writing">
+      <div class="container">
+        <p class="section__title">The writing surface</p>
+        <div class="split split--wide-right">
+          <div>
+            <h2 class="display-md">A plain editor, a live preview</h2>
+            <p class="body-lg text-muted" style="margin-top: var(--space-md);">No modes to memorize and nothing to learn from a manual. It is mouse and keyboard driven in the Fresh and Micro tradition: menus, theming, click to place the cursor, drag to select.</p>
+            <div class="split__points">
+              <div class="point">
+                <div class="point__text"><span class="point__title">Live Markdown and Quarto preview.</span> Headings, emphasis, code, blockquotes, and LaTeX math rendered as you type.</div>
+              </div>
+              <div class="point">
+                <div class="point__text"><span class="point__title">Local grammar via Harper.</span> Issues are underlined and collected in a Suggestions pane. Apply a fix with Enter. No text leaves your machine.</div>
+              </div>
+              <div class="point">
+                <div class="point__text"><span class="point__title">Outline, find, replace, go to line.</span> Jump by heading, search the draft, and render with Quarto from a single key.</div>
+              </div>
+            </div>
+          </div>
+          <div class="shot">
+            <div class="shot__bar"><span class="shot__name">suggestions · harper</span></div>
+            <img src="screenshots/suggestions.png" width="1080" height="722"
+                 alt="The Suggestions pane listing a grammar issue with a one-key fix." />
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== The coach ===================== -->
+    <section class="section" id="coach">
+      <div class="container">
+        <p class="section__title">The coach</p>
+        <div class="split">
+          <div>
+            <h2 class="display-md">It can only ask questions</h2>
+            <p class="body-lg text-muted" style="margin-top: var(--space-md);">The coach is optional and off until you point it at an endpoint. When it is on, it is question-only by construction, not by polite request.</p>
+            <div class="split__points">
+              <div class="point">
+                <svg class="icon point__icon" viewBox="0 0 24 24" stroke-width="2" aria-hidden="true">
+                  <path d="M12 3a12 12 0 0 0 8.5 3 12 12 0 0 1 -8.5 15 12 12 0 0 1 -8.5 -15 12 12 0 0 0 8.5 -3" />
+                </svg>
+                <div class="point__text"><span class="point__title">A guard that always runs.</span> Every reply is screened for length, rewrite and dictation patterns, n-gram overlap with your draft, and forbidden labels before you ever see it.</div>
+              </div>
+              <div class="point">
+                <svg class="icon point__icon" viewBox="0 0 24 24" stroke-width="2" aria-hidden="true">
+                  <path d="M3 12a9 9 0 1 0 18 0 9 9 0 0 0 -18 0" />
+                  <path d="M12 16v.01" />
+                  <path d="M12 13a2 2 0 0 0 .914 -3.782 1.98 1.98 0 0 0 -2.414 .483" />
+                </svg>
+                <div class="point__text"><span class="point__title">An optional second opinion.</span> A response judge (a second model) can re-screen each reply and only ever withhold it. If it cannot be reached, the coach fails open on the guard that already passed.</div>
+              </div>
+              <div class="point">
+                <svg class="icon point__icon" viewBox="0 0 24 24" stroke-width="2" aria-hidden="true">
+                  <path d="M5 13a2 2 0 0 1 2 -2h10a2 2 0 0 1 2 2v6a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2z" />
+                  <path d="M11 16a1 1 0 1 0 2 0 1 1 0 0 0 -2 0" />
+                  <path d="M8 11v-4a4 4 0 0 1 8 0v4" />
+                </svg>
+                <div class="point__text"><span class="point__title">Your endpoint, your keys.</span> Point it at a local server or a hosted provider. An API key field accepts an <span class="mono text-accent">env:NAME</span> reference, so a secret never has to touch disk.</div>
+              </div>
+            </div>
+            <table class="spec-table">
+              <tr><th>Protocols</th><td>OpenAI-compatible Chat Completions, Anthropic Messages</td></tr>
+              <tr><th>Screening</th><td>Deterministic guard (always), optional LLM judge (defence in depth)</td></tr>
+              <tr><th>History</th><td>Per document, owner-only on disk. The draft itself is never stored here.</td></tr>
+            </table>
+          </div>
+          <div class="shot">
+            <div class="shot__bar"><span class="shot__name">ai settings · ctrl+e</span></div>
+            <img src="screenshots/ai-settings.png" width="1080" height="722"
+                 alt="The AI settings dialog: provider, endpoint, model, and an optional response judge." />
+          </div>
+        </div>
+
+        <div class="code" style="margin-top: var(--space-2xl);">
+          <div class="code__bar">Screen a reply without opening the editor</div>
+<pre><span class="c"># is this reply allowed against the draft? prints a JSON verdict</span>
+whetstone-tui guard <span class="a">--reply</span> "Have you considered the counterargument in section 2?" \
+  <span class="a">--draft</span> essay.qmd
+
+<span class="c"># one guarded (and optionally judged) coaching turn, headless</span>
+whetstone-tui coach essay.qmd <span class="a">--message</span> "Where is my argument weakest?"</pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== Disclosure ===================== -->
+    <section class="section" id="disclosure">
+      <div class="container">
+        <p class="section__title">An honest record</p>
+        <div class="section__lead">
+          <h2 class="display-md">Export how it was written</h2>
+          <p class="body-lg">An append-only journal records the shape of your process: paste sizes, claims, attributions, and edit bursts. It holds metadata only. Your prose is never written to it. From that journal you can render a plain disclosure document, a self-reported account, not a verdict on who you are.</p>
+        </div>
+        <div class="feature-grid">
+          <article class="feature">
+            <div class="shot">
+              <div class="shot__bar"><span class="shot__name">process journal · ctrl+p</span></div>
+              <img src="screenshots/journal.png" width="1080" height="722"
+                   alt="The process journal: a timeline of paste, claim, and typing events with no prose." />
+            </div>
+            <h3 class="title-md feature__title">The journal</h3>
+            <p class="feature__text">A timeline of what happened, kept to sizes, locations, and your own stated claim. Metadata only, by design.</p>
+          </article>
+          <article class="feature">
+            <div class="shot">
+              <div class="shot__bar"><span class="shot__name">disclosure preview · ctrl+d</span></div>
+              <img src="screenshots/disclosure.png" width="1080" height="722"
+                   alt="A rendered disclosure document summarizing how the piece was written." />
+            </div>
+            <h3 class="title-md feature__title">The disclosure</h3>
+            <p class="feature__text">A readable account you can hand in alongside the work. It says how the draft came together. It never claims to verify authorship or personhood.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== Themes ===================== -->
+    <section class="section" id="themes">
+      <div class="container">
+        <p class="section__title">Themes</p>
+        <div class="section__lead">
+          <h2 class="display-md">Six built-in themes, switched live</h2>
+          <p class="body-lg">Press Ctrl+T to preview and switch. The choice persists between sessions.</p>
+        </div>
+        <div class="theme-grid">
+          <figure class="theme">
+            <img src="screenshots/theme-whetstone-dark.png" width="1080" height="722" alt="Whetstone Dark theme" />
+            <figcaption class="theme__name"><strong>Whetstone Dark</strong> · default</figcaption>
+          </figure>
+          <figure class="theme">
+            <img src="screenshots/theme-fresh-dark.png" width="1080" height="722" alt="Fresh Dark theme" />
+            <figcaption class="theme__name">Fresh Dark</figcaption>
+          </figure>
+          <figure class="theme">
+            <img src="screenshots/theme-fresh-light.png" width="1080" height="722" alt="Fresh Light theme" />
+            <figcaption class="theme__name">Fresh Light</figcaption>
+          </figure>
+          <figure class="theme">
+            <img src="screenshots/theme-solarized-dark.png" width="1080" height="722" alt="Solarized Dark theme" />
+            <figcaption class="theme__name">Solarized Dark</figcaption>
+          </figure>
+          <figure class="theme">
+            <img src="screenshots/theme-gruvbox-dark.png" width="1080" height="722" alt="Gruvbox Dark theme" />
+            <figcaption class="theme__name">Gruvbox Dark</figcaption>
+          </figure>
+          <figure class="theme">
+            <img src="screenshots/theme-terminal.png" width="1080" height="722" alt="Terminal theme using the terminal's own palette" />
+            <figcaption class="theme__name">Terminal</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== Headless ===================== -->
+    <section class="section" id="headless">
+      <div class="container">
+        <p class="section__title">Scriptable</p>
+        <div class="section__lead">
+          <h2 class="display-md">Drive the same core from a script</h2>
+          <p class="body-lg">Every guarantee in the editor is also a subcommand that prints JSON, so an agent, a script, or a CI step can run the same checks. A bare file path opens the editor.</p>
+        </div>
+        <div class="code">
+          <div class="code__bar">whetstone-tui --help</div>
+<pre>whetstone-tui lint essay.qmd                              <span class="c"># Harper diagnostics + fixes</span>
+whetstone-tui coach essay.qmd <span class="a">--message</span> "…"             <span class="c"># one guarded coaching turn</span>
+whetstone-tui guard <span class="a">--reply</span> "…" <span class="a">--draft</span> essay.qmd        <span class="c"># screen an arbitrary reply</span>
+whetstone-tui ownership <span class="a">--original</span> a.txt <span class="a">--current</span> b.txt  <span class="c"># claim-to-own survival</span>
+whetstone-tui disclosure <span class="a">--journal</span> events.json <span class="a">--doc-id</span> essay.qmd</pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== Install / CTA ===================== -->
+    <section class="section" id="install">
+      <div class="container">
+        <div class="cta">
+          <div>
+            <h2 class="display-md">Bring back the friction</h2>
+            <p class="body-lg text-muted" style="margin-top: var(--space-md);">Whetstone is a single Rust binary. It needs a recent toolchain (edition 2024). Quarto is optional and only used when you render with Ctrl+R.</p>
+            <div class="cta__actions">
+              <a class="btn btn--primary btn--lg" href="https://github.com/sjvrensburg/whetstone">View on GitHub</a>
+              <a class="btn btn--secondary btn--lg" href="https://github.com/sjvrensburg/whetstone/blob/main/LICENSE">MIT License</a>
+            </div>
+          </div>
+          <div class="code">
+            <div class="code__bar">build from source</div>
+<pre>git clone https://github.com/sjvrensburg/whetstone.git
+cd whetstone
+cargo run <span class="a">--</span> draft.qmd        <span class="c"># opens, creates if missing</span>
+cargo build <span class="a">--release</span>         <span class="c"># ./target/release/whetstone-tui</span></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ===================== Footer ===================== -->
+  <footer class="site-footer">
+    <div class="container site-footer__grid">
+      <div>
+        <a class="brand" href="#top">
+          <span class="brand__mark">W</span>
+          <span class="brand__word">Whetstone</span>
+        </a>
+        <p class="footer__note">A friction-first writing surface for the terminal. Friction, not proof.</p>
+      </div>
+      <div class="footer-col">
+        <p class="footer-col__head">Project</p>
+        <a href="https://github.com/sjvrensburg/whetstone">Source on GitHub</a>
+        <a href="https://github.com/sjvrensburg/whetstone/issues">Issues</a>
+        <a href="https://github.com/sjvrensburg/whetstone/blob/main/LICENSE">MIT License</a>
+      </div>
+      <div class="footer-col">
+        <p class="footer-col__head">On this page</p>
+        <a href="#friction">Friction</a>
+        <a href="#coach">The coach</a>
+        <a href="#disclosure">Disclosure</a>
+        <a href="#install">Install</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>
