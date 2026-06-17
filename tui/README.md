@@ -48,6 +48,12 @@ URL (Ollama, LM Studio, OpenAI, OpenRouter, …). Configure it in-app via
 **Coach ▸ AI settings** (`Ctrl+E`) — endpoint, API key, and model — applied
 immediately and saved to `~/.config/whetstone/coach.json` (`0600`).
 
+Inside that dialog, `Ctrl+T` runs a **connection test**: it fetches the
+endpoint's `/models` list, so you get an immediate ✓/✗ on whether the URL and
+key are right instead of finding out the first time you ask the coach. On
+success the discovered models are listed — cycle through them with
+`Ctrl+N` / `Ctrl+P` or click one to fill the Model field.
+
 Environment variables still work and override the saved file at startup:
 
 | Variable | Meaning |
@@ -76,6 +82,5 @@ push-cadence coaching that reviews each finished paragraph (ADR-008).
 ## Not yet implemented
 
 Multiple files / tabs (the editor holds one buffer at a time), an interactive
-keybinding editor, a connection test / model listing in the settings dialog,
-cross-session coach-conversation persistence, and per-instrument friction
-overrides are not built yet.
+keybinding editor, cross-session coach-conversation persistence, and
+per-instrument friction overrides are not built yet.

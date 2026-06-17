@@ -123,6 +123,20 @@ struct CoachSettings {
     api_key: String,
     model: String,
     field: usize,
+    /// True while a connection test is in flight.
+    testing: bool,
+    /// One-line result of the last connection test, shown in the dialog.
+    status: Option<String>,
+    /// Model ids returned by the last successful test (Ctrl+N/Ctrl+P / click
+    /// to choose; populates the Model field).
+    models: Vec<String>,
+}
+
+/// Result of a settings-dialog connection test, tagged with a generation so a
+/// stale result (the endpoint was edited and retested) is ignored.
+struct ConnTestEvent {
+    generation: u64,
+    result: Result<Vec<String>, String>,
 }
 
 /// Which single-/two-field input prompt is open.
@@ -264,6 +278,14 @@ pub struct App {
     /// AI/coach settings dialog state + its rect.
     coach_settings: Option<CoachSettings>,
     coach_settings_rect: Rect,
+    /// Rect of the discovered-model list inside the settings dialog (for clicks)
+    /// and the index of its first visible row (the list scrolls when long).
+    coach_models_rect: Rect,
+    coach_models_start: usize,
+    /// Connection-test result channel + the latest in-flight generation.
+    conn_tx: mpsc::Sender<ConnTestEvent>,
+    conn_rx: mpsc::Receiver<ConnTestEvent>,
+    conn_generation: u64,
     /// Whether the keybindings/help popup is showing.
     help_open: bool,
     /// Whether the process/journal view is showing, and its scroll.
@@ -359,6 +381,7 @@ impl App {
         // The channel is always live so the coach can be enabled at runtime via
         // the AI settings dialog; `client.is_some()` is the single enabled flag.
         let (coach_tx, coach_rx) = mpsc::channel();
+        let (conn_tx, conn_rx) = mpsc::channel();
 
         Self {
             buffer,
@@ -424,6 +447,11 @@ impl App {
             theme_picker_rect: Rect::default(),
             coach_settings: None,
             coach_settings_rect: Rect::default(),
+            coach_models_rect: Rect::default(),
+            coach_models_start: 0,
+            conn_tx,
+            conn_rx,
+            conn_generation: 0,
             help_open: false,
             journal_open: false,
             journal_scroll: 0,
@@ -1126,11 +1154,16 @@ impl App {
             api_key,
             model,
             field: 0,
+            testing: false,
+            status: None,
+            models: Vec::new(),
         });
     }
 
     fn handle_coach_settings_key(&mut self, key: KeyEvent) {
-        // Enter/Esc need &mut self, so handle them before borrowing the buffers.
+        // Actions needing &mut self (or modifiers) come first, before the buffer
+        // borrow below.
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => {
                 self.coach_settings = None;
@@ -1139,6 +1172,18 @@ impl App {
             }
             KeyCode::Enter => {
                 self.save_coach_settings();
+                return;
+            }
+            KeyCode::Char('t') if ctrl => {
+                self.test_connection();
+                return;
+            }
+            KeyCode::Char('n') if ctrl => {
+                self.cycle_model(1);
+                return;
+            }
+            KeyCode::Char('p') if ctrl => {
+                self.cycle_model(-1);
                 return;
             }
             _ => {}
@@ -1156,12 +1201,97 @@ impl App {
                     _ => s.model.pop(),
                 };
             }
-            KeyCode::Char(c) if !c.is_control() => match s.field {
+            // Reject Ctrl-modified chars so e.g. Ctrl+T isn't also typed as 't'.
+            KeyCode::Char(c) if !c.is_control() && !ctrl => match s.field {
                 0 => s.base_url.push(c),
                 1 => s.api_key.push(c),
                 _ => s.model.push(c),
             },
             _ => {}
+        }
+    }
+
+    /// Probe the endpoint currently typed in the dialog (not the saved client)
+    /// for reachability and its model list. Result arrives via `conn_rx` and is
+    /// folded in by [`Self::drain_conn_test_events`].
+    fn test_connection(&mut self) {
+        let Some(s) = self.coach_settings.as_mut() else {
+            return;
+        };
+        let base_url = s.base_url.trim().trim_end_matches('/').to_string();
+        if base_url.is_empty() {
+            s.status = Some("Enter an endpoint first.".into());
+            return;
+        }
+        if s.testing {
+            return;
+        }
+        let cfg = CoachConfig {
+            base_url,
+            api_key: s.api_key.clone(),
+            model: s.model.clone(),
+        };
+        s.testing = true;
+        s.status = Some("Testing connection…".into());
+        self.conn_generation += 1;
+        let generation = self.conn_generation;
+        let tx = self.conn_tx.clone();
+        let client = CoachClient::new(cfg);
+        self.tokio.spawn(async move {
+            let result = client.list_models().await.map_err(|e| e.to_string());
+            let _ = tx.send(ConnTestEvent { generation, result });
+        });
+    }
+
+    /// Step the Model field through the discovered model list (Ctrl+N/Ctrl+P).
+    fn cycle_model(&mut self, dir: isize) {
+        let Some(s) = self.coach_settings.as_mut() else {
+            return;
+        };
+        if s.models.is_empty() {
+            s.status = Some("Test the connection first (Ctrl+T) to list models.".into());
+            return;
+        }
+        let n = s.models.len() as isize;
+        let next = match s.models.iter().position(|m| m == &s.model) {
+            Some(i) => (i as isize + dir).rem_euclid(n) as usize,
+            None if dir >= 0 => 0,
+            None => (n - 1) as usize,
+        };
+        s.model = s.models[next].clone();
+        s.field = 2;
+    }
+
+    /// Fold finished connection tests into the open dialog, ignoring stale
+    /// results (superseded generation) and results that arrive after the dialog
+    /// closed.
+    pub fn drain_conn_test_events(&mut self) {
+        while let Ok(ev) = self.conn_rx.try_recv() {
+            if ev.generation != self.conn_generation {
+                continue;
+            }
+            let Some(s) = self.coach_settings.as_mut() else {
+                continue;
+            };
+            s.testing = false;
+            match ev.result {
+                Ok(models) => {
+                    s.status = Some(match models.len() {
+                        0 => "✓ Reachable — server listed no models.".to_string(),
+                        1 => "✓ Reachable — 1 model. Ctrl+N/Ctrl+P or click to choose.".to_string(),
+                        n => format!("✓ Reachable — {n} models. Ctrl+N/Ctrl+P or click to choose."),
+                    });
+                    // If the typed model isn't on offer, default to the first.
+                    if !models.is_empty() && !models.iter().any(|m| m == &s.model) {
+                        s.model = models[0].clone();
+                    }
+                    s.models = models;
+                }
+                Err(e) => {
+                    s.status = Some(format!("✗ {}", truncate_status(&e)));
+                    s.models.clear();
+                }
+            }
         }
     }
 
@@ -2217,12 +2347,23 @@ impl App {
             return;
         }
 
-        // AI settings dialog: click a field row to focus it, outside to cancel.
+        // AI settings dialog: click a field row to focus it, a model row to
+        // select it, outside to cancel.
         if self.coach_settings.is_some() {
             if let MouseEventKind::Down(MouseButton::Left) = ev.kind {
                 let rect = self.coach_settings_rect;
-                if over(rect) {
-                    if ev.row > rect.y && ev.row + 1 < rect.y + rect.height {
+                let models = self.coach_models_rect;
+                if models.height > 0 && over(models) {
+                    let idx = self.coach_models_start + (ev.row - models.y) as usize;
+                    if let Some(s) = self.coach_settings.as_mut()
+                        && let Some(m) = s.models.get(idx)
+                    {
+                        s.model = m.clone();
+                        s.field = 2;
+                    }
+                } else if over(rect) {
+                    // First three inner rows are the editable fields.
+                    if ev.row > rect.y && ev.row < rect.y + 4 {
                         let row = (ev.row - rect.y - 1) as usize;
                         if row < 3 {
                             self.coach_settings.as_mut().unwrap().field = row;
@@ -2606,22 +2747,13 @@ fn kind_label(k: ObservationKind) -> &'static str {
 }
 
 fn draw_coach_settings(frame: &mut Frame, app: &mut App, area: Rect) {
+    /// Most discovered models to show at once; the rest are reachable by cycling.
+    const MODEL_ROWS: usize = 6;
+
     let Some(s) = app.coach_settings.as_ref() else {
         return;
     };
     let theme = app.theme;
-    let rect = centered_rect_abs(66, 9, area);
-    app.coach_settings_rect = rect;
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(theme.border(true))
-        .style(theme.panel_bg())
-        .title(Line::from(Span::styled(
-            " AI / Coach settings ",
-            theme.title(true),
-        )));
-    let inner = block.inner(rect);
 
     // Marker (2) + label padded to 9 + space = 12-cell gutter before the value.
     let gutter = 12u16;
@@ -2635,16 +2767,85 @@ fn draw_coach_settings(frame: &mut Frame, app: &mut App, area: Rect) {
         ])
     };
     let masked: String = "•".repeat(s.api_key.chars().count());
-    let lines = vec![
+    let mut lines = vec![
         field_line(0, "Endpoint", s.base_url.clone()),
         field_line(1, "API key", masked),
         field_line(2, "Model", s.model.clone()),
         Line::raw(""),
-        Line::from(Span::styled(
-            "Tab/↑↓ field · Enter save · Esc cancel · empty endpoint disables",
-            theme.dim(),
-        )),
     ];
+
+    // Status line from the last connection test (color-coded by outcome).
+    if let Some(status) = &s.status {
+        let style = if status.starts_with('✓') {
+            theme.accent()
+        } else if status.starts_with('✗') {
+            Style::default().fg(theme.error).bg(theme.bg)
+        } else {
+            theme.dim()
+        };
+        lines.push(Line::from(Span::styled(status.clone(), style)));
+    }
+
+    // Discovered models: keep the selected one in view, mark it.
+    let model_count = s.models.len();
+    let mut models_top = 0usize; // y of the first model row inside `inner`
+    let mut models_start = 0usize;
+    let mut models_shown = 0usize;
+    if model_count > 0 {
+        let sel = s.models.iter().position(|m| m == &s.model).unwrap_or(0);
+        let start = sel
+            .saturating_sub(MODEL_ROWS - 1)
+            .min(model_count.saturating_sub(MODEL_ROWS));
+        models_top = lines.len();
+        models_start = start;
+        for (i, m) in s.models.iter().enumerate().skip(start).take(MODEL_ROWS) {
+            let chosen = i == sel;
+            let marker = if chosen { "  ● " } else { "  ○ " };
+            let style = if chosen { theme.accent() } else { theme.dim() };
+            lines.push(Line::from(Span::styled(format!("{marker}{m}"), style)));
+        }
+        models_shown = MODEL_ROWS.min(model_count - start);
+        if model_count > models_shown {
+            lines.push(Line::from(Span::styled(
+                format!("  … {model_count} total"),
+                theme.dim(),
+            )));
+        }
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "Tab/↑↓ field · Ctrl+T test · Ctrl+N/P model · Enter save · Esc cancel",
+        theme.dim(),
+    )));
+
+    let height = (lines.len() as u16) + 2; // borders
+    let rect = centered_rect_abs(66, height, area);
+    app.coach_settings_rect = rect;
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme.border(true))
+        .style(theme.panel_bg())
+        .title(Line::from(Span::styled(
+            " AI / Coach settings ",
+            theme.title(true),
+        )));
+    let inner = block.inner(rect);
+
+    // Record where the model list landed so clicks can hit it.
+    app.coach_models_start = models_start;
+    app.coach_models_rect = if models_shown > 0 {
+        Rect {
+            x: inner.x,
+            y: inner.y + models_top as u16,
+            width: inner.width,
+            height: models_shown as u16,
+        }
+    } else {
+        Rect::default()
+    };
+
     frame.render_widget(Clear, rect);
     frame.render_widget(Paragraph::new(lines).block(block), rect);
 
@@ -2848,6 +3049,19 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// A centered rect of an absolute size, clamped to `area`.
+/// Clamp a connection-test error to one dialog line (errors from reqwest can be
+/// long), appending an ellipsis when truncated.
+fn truncate_status(msg: &str) -> String {
+    const MAX: usize = 56;
+    let one_line = msg.replace('\n', " ");
+    if one_line.chars().count() <= MAX {
+        one_line
+    } else {
+        let head: String = one_line.chars().take(MAX - 1).collect();
+        format!("{head}…")
+    }
+}
+
 fn centered_rect_abs(width: u16, height: u16, area: Rect) -> Rect {
     let w = width.min(area.width);
     let h = height.min(area.height);
@@ -3717,5 +3931,102 @@ mod tests {
             });
         }
         assert_eq!(app.buffer.selected_text().as_deref(), Some("Title"));
+    }
+
+    #[test]
+    fn truncate_status_collapses_and_clamps() {
+        assert_eq!(truncate_status("line one\nline two"), "line one line two");
+        let long = "x".repeat(80);
+        let out = truncate_status(&long);
+        assert_eq!(out.chars().count(), 56);
+        assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn cycle_model_steps_and_wraps_through_discovered_list() {
+        let rt = rt();
+        let mut app = test_app(&rt);
+        app.open_coach_settings();
+        {
+            let s = app.coach_settings.as_mut().unwrap();
+            s.models = vec!["a".into(), "b".into(), "c".into()];
+            s.model = "b".into();
+        }
+        app.cycle_model(1);
+        assert_eq!(app.coach_settings.as_ref().unwrap().model, "c");
+        app.cycle_model(1); // wraps past the end
+        assert_eq!(app.coach_settings.as_ref().unwrap().model, "a");
+        app.cycle_model(-1); // wraps before the start
+        assert_eq!(app.coach_settings.as_ref().unwrap().model, "c");
+        // Cycling also moves focus to the Model field.
+        assert_eq!(app.coach_settings.as_ref().unwrap().field, 2);
+    }
+
+    #[test]
+    fn cycle_model_without_a_list_just_hints() {
+        let rt = rt();
+        let mut app = test_app(&rt);
+        app.open_coach_settings();
+        app.cycle_model(1);
+        let s = app.coach_settings.as_ref().unwrap();
+        assert!(s.model.is_empty() || s.model == DEFAULT_MODEL);
+        assert!(s.status.as_deref().unwrap().contains("Test the connection"));
+    }
+
+    #[test]
+    fn conn_test_event_fills_dialog_and_defaults_model() {
+        let rt = rt();
+        let mut app = test_app(&rt);
+        app.open_coach_settings();
+        app.coach_settings.as_mut().unwrap().testing = true;
+        // Mimic test_connection bumping the generation before the task runs.
+        app.conn_generation += 1;
+        app.conn_tx
+            .send(ConnTestEvent {
+                generation: app.conn_generation,
+                result: Ok(vec!["m1".into(), "m2".into()]),
+            })
+            .unwrap();
+        app.drain_conn_test_events();
+        let s = app.coach_settings.as_ref().unwrap();
+        assert!(!s.testing);
+        assert_eq!(s.models, vec!["m1".to_string(), "m2".to_string()]);
+        assert_eq!(s.model, "m1"); // typed model wasn't offered → first listed
+        assert!(s.status.as_deref().unwrap().starts_with('✓'));
+    }
+
+    #[test]
+    fn stale_conn_test_event_is_ignored() {
+        let rt = rt();
+        let mut app = test_app(&rt);
+        app.open_coach_settings();
+        app.conn_generation = 5;
+        app.conn_tx
+            .send(ConnTestEvent {
+                generation: 4, // superseded
+                result: Ok(vec!["old".into()]),
+            })
+            .unwrap();
+        app.drain_conn_test_events();
+        assert!(app.coach_settings.as_ref().unwrap().models.is_empty());
+    }
+
+    #[test]
+    fn failed_conn_test_shows_error_and_clears_models() {
+        let rt = rt();
+        let mut app = test_app(&rt);
+        app.open_coach_settings();
+        app.coach_settings.as_mut().unwrap().models = vec!["stale".into()];
+        app.conn_generation += 1;
+        app.conn_tx
+            .send(ConnTestEvent {
+                generation: app.conn_generation,
+                result: Err("connection refused".into()),
+            })
+            .unwrap();
+        app.drain_conn_test_events();
+        let s = app.coach_settings.as_ref().unwrap();
+        assert!(s.models.is_empty());
+        assert!(s.status.as_deref().unwrap().starts_with('✗'));
     }
 }

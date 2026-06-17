@@ -80,6 +80,7 @@ fn run(terminal: &mut Tui, app: &mut App) -> Result<()> {
         app.maybe_lint();
         app.maybe_autosave();
         app.drain_coach_events();
+        app.drain_conn_test_events();
         terminal.draw(|f| draw(f, app))?;
         if !event::poll(Duration::from_millis(100))? {
             continue;
