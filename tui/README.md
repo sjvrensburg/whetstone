@@ -28,13 +28,15 @@ beyond transient menus/dialogs). Press **F1** for the keybinding cheat-sheet or
 | `Ctrl+C` / `Ctrl+X` | Copy / cut selection (system clipboard via OSC 52) |
 | `Ctrl+K` | State / edit your claim |
 | `Ctrl+M` | Mark the pasted region under the cursor as a quotation |
+| `Ctrl+B` | Outline — list headings and jump to one |
+| `Ctrl+R` | Render the document with Quarto (saves first) |
 | `Ctrl+L` | Focus the coach panel; `Ctrl+J` coach the current selection |
 | `Ctrl+E` | AI settings (endpoint, API key, model) |
 | `Ctrl+P` | Process / journal view |
 | `Ctrl+T` | Theme picker (live preview) |
 | `Ctrl+D` | Export the disclosure document (File ▸ Preview to view in-app) |
 | `Ctrl+Q` | Quit (asks if there are unsaved changes) |
-| `F10` / `F1` | Menu bar / help |
+| `F10` / `F1` | Menu bar / help (the help cheat-sheet scrolls with ↑/↓/wheel) |
 
 Mouse: click to place the cursor, click-drag to select, double-click a word,
 triple-click a line, wheel to scroll, and click menu titles / dialog rows.
@@ -53,6 +55,12 @@ endpoint's `/models` list, so you get an immediate ✓/✗ on whether the URL an
 key are right instead of finding out the first time you ask the coach. On
 success the discovered models are listed — cycle through them with
 `Ctrl+N` / `Ctrl+P` or click one to fill the Model field.
+
+Any field in the dialog also accepts an **environment-variable reference** —
+`env:NAME` or `${NAME}` — instead of a literal value. Only the reference is
+written to `coach.json`; the value is read from the environment at request
+time, so a secret key need never be stored on disk. For example, set the API
+key field to `env:OPENAI_API_KEY` and export that variable in your shell.
 
 Environment variables still work and override the saved file at startup:
 
@@ -113,7 +121,24 @@ history (there's no stable key until the file has a path). Only the chat is
 stored — the process journal stays metadata-only and the draft is never written
 here.
 
+## Outline & navigation
+
+Press **Ctrl+B** (or **View ▸ Outline…**) to open a document outline: every
+Markdown heading, indented by level. Move the selection with ↑/↓ (or the wheel)
+and press **Enter** to jump the cursor to that section; **Esc** closes it. The
+heading the cursor is currently in is pre-selected when the outline opens.
+
+## Render with Quarto
+
+Press **Ctrl+R** (or **File ▸ Render (Quarto)**) to render the current document.
+Whetstone saves first, then runs `quarto render <file>` in the background so the
+editor stays responsive. On success the status bar confirms it; if the render
+fails (or Quarto isn't installed), the captured output opens in a scrollable
+overlay so you can read the error. Requires [Quarto](https://quarto.org) on your
+`PATH`.
+
 ## Not yet implemented
 
-Multiple files / tabs (the editor holds one buffer at a time) and an
-interactive keybinding editor are not built yet.
+The editor is deliberately single-document and single-buffer — it is built to
+keep you focused on writing one piece well, so multiple files / tabs are out of
+scope by design.

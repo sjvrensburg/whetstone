@@ -11,4 +11,4 @@ pub mod math;
 pub mod render;
 
 pub use math::latex_to_unicode;
-pub use render::{frontmatter_claim, render_to_text};
+pub use render::{Heading, frontmatter_claim, outline, render_to_text};

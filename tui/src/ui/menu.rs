@@ -18,6 +18,8 @@ pub enum MenuAction {
     Open,
     Export,
     PreviewDisclosure,
+    Compile,
+    Outline,
     Quit,
     AttributeRegion,
     Find,
@@ -106,6 +108,7 @@ pub fn menus(coach_enabled: bool, friction: &FrictionPolicy, theme_name: &str) -
                 MenuItem::new("Edit claim", "Ctrl+K", MenuAction::EditClaim),
                 MenuItem::new("Export disclosure", "Ctrl+D", MenuAction::Export),
                 MenuItem::new("Preview disclosure", "", MenuAction::PreviewDisclosure),
+                MenuItem::new("Render (Quarto)", "Ctrl+R", MenuAction::Compile),
                 MenuItem::new("Quit", "Ctrl+Q", MenuAction::Quit),
             ],
         },
@@ -126,6 +129,7 @@ pub fn menus(coach_enabled: bool, friction: &FrictionPolicy, theme_name: &str) -
             title: "View",
             items: {
                 let mut items = vec![
+                    MenuItem::new("Outline…", "Ctrl+B", MenuAction::Outline),
                     MenuItem::new("Process / journal", "Ctrl+P", MenuAction::Journal),
                     MenuItem::new(
                         format!("Theme: {theme_name}"),

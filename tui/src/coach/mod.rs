@@ -10,4 +10,4 @@ pub mod config;
 pub mod history;
 
 pub use client::{CoachClient, parse_sse_chunk};
-pub use config::{CoachConfig, DEFAULT_MODEL};
+pub use config::{CoachConfig, DEFAULT_MODEL, is_env_ref, resolve_env_value};
