@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use futures::StreamExt;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::core::prompts::ChatMessage;
 
@@ -36,6 +36,34 @@ impl CoachClient {
 
     pub fn config(&self) -> &CoachConfig {
         &self.config
+    }
+
+    /// Probe the endpoint by fetching its OpenAI-compatible model list
+    /// (`GET {base_url}/models`). Used by the settings dialog's connection test:
+    /// success confirms the endpoint is reachable and the key (if any) is
+    /// accepted, and returns the model ids so the writer can pick one. Ids are
+    /// sorted for stable display.
+    pub async fn list_models(&self) -> Result<Vec<String>> {
+        #[derive(Deserialize)]
+        struct Model {
+            id: String,
+        }
+        #[derive(Deserialize)]
+        struct Resp {
+            data: Vec<Model>,
+        }
+        let url = format!("{}/models", self.config.base_url);
+        let resp = self
+            .http
+            .get(url)
+            .bearer_auth(&self.config.api_key)
+            .send()
+            .await?;
+        let resp = resp.error_for_status()?;
+        let parsed: Resp = resp.json().await?;
+        let mut ids: Vec<String> = parsed.data.into_iter().map(|m| m.id).collect();
+        ids.sort();
+        Ok(ids)
     }
 
     /// Stream a chat completion, calling `on_delta` with each text fragment as
@@ -248,6 +276,72 @@ mod tests {
         let out = rt.block_on(client.chat(&[], false, |_| {})).unwrap();
         server.join().unwrap();
         assert_eq!(out, "Hello");
+    }
+
+    #[test]
+    fn list_models_parses_and_sorts_ids_over_http() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = sock.read(&mut buf); // consume the request headers
+            let body = r#"{"object":"list","data":[{"id":"qwen2.5"},{"id":"llama3.1"}]}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            sock.write_all(resp.as_bytes()).unwrap();
+        });
+
+        let cfg = CoachConfig {
+            base_url: format!("http://{addr}"),
+            api_key: String::new(),
+            model: "m".into(),
+        };
+        let client = CoachClient::new(cfg);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let models = rt.block_on(client.list_models()).unwrap();
+        server.join().unwrap();
+        assert_eq!(models, vec!["llama3.1".to_string(), "qwen2.5".to_string()]);
+    }
+
+    #[test]
+    fn list_models_surfaces_http_error_status() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf);
+            let resp =
+                "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            sock.write_all(resp.as_bytes()).unwrap();
+        });
+
+        let cfg = CoachConfig {
+            base_url: format!("http://{addr}"),
+            api_key: "bad".into(),
+            model: "m".into(),
+        };
+        let client = CoachClient::new(cfg);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let err = rt.block_on(client.list_models());
+        server.join().unwrap();
+        assert!(err.is_err(), "401 must surface as an error");
     }
 
     #[test]
