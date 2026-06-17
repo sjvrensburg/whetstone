@@ -4,7 +4,7 @@
 //! each to `docs/screenshots/<scene>.png` — no external tools. Run with:
 //!
 //! ```text
-//! cargo run --features screenshots --bin whetstone-screenshots
+//! cargo run --features screenshots --example screenshots
 //! ```
 //!
 //! The coach scenes make a *real* request against the configured endpoint when
@@ -16,7 +16,7 @@
 //! WHETSTONE_API_KEY=env:Z_AI_API_KEY \
 //! WHETSTONE_MODEL=glm-5.1 \
 //! WHETSTONE_JUDGE=true WHETSTONE_JUDGE_MODEL=glm-5-turbo \
-//! cargo run --features screenshots --bin whetstone-screenshots
+//! cargo run --features screenshots --example screenshots
 //! ```
 
 use std::path::PathBuf;

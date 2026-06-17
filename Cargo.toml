@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 description = "Whetstone — a friction-first Quarto markdown editor for the terminal"
 license = "MIT"
+repository = "https://github.com/sjvrensburg/whetstone"
+homepage = "https://sjvrensburg.github.io/whetstone/"
 
 [dependencies]
 # Core domain (pure ports)
@@ -41,10 +43,17 @@ harness = []
 # In-process PNG screenshot rendering (pulls in `image` + `ab_glyph`).
 screenshots = ["dep:image", "dep:ab_glyph", "harness"]
 
-[[bin]]
-name = "whetstone-screenshots"
-path = "src/bin/screenshots.rs"
+# The screenshot renderer is a dev/docs tool, not a shipped binary — an example
+# so it never lands in release archives or the Homebrew formula.
+[[example]]
+name = "screenshots"
+path = "examples/screenshots.rs"
 required-features = ["screenshots"]
 
 [dev-dependencies]
 pretty_assertions = "1"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

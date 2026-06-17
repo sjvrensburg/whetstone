@@ -28,7 +28,7 @@ Run from the repo root:
   `guard`, `ownership`, `disclosure`) printing JSON; `--help` lists them
 - `cargo build --release` — produces `./target/release/whetstone-tui`
 - `cargo test` — run the test suite
-- `cargo run --features screenshots --bin whetstone-screenshots` — regenerate
+- `cargo run --features screenshots --example screenshots` — regenerate
   `docs/screenshots/*.png` (and `cargo test --features screenshots` covers the renderer)
 - `cargo clippy --all-targets -- -D warnings` — lint (CI treats warnings as errors)
 - `cargo fmt --check` — formatting check (`cargo fmt` to apply)
@@ -54,7 +54,7 @@ core -> coach -> instruments -> editor -> grammar -> markdown -> ui
   the optional LLM **judge** (`judge.rs`), and per-document chat history.
 - `src/cli.rs` — headless subcommands (lint / coach / guard / ownership /
   disclosure) printing JSON; a bare file path still opens the TUI (`main.rs`).
-- `src/screenshot.rs` + `src/bin/screenshots.rs` — in-process PNG rendering of
+- `src/screenshot.rs` + `examples/screenshots.rs` — in-process PNG rendering of
   the TUI (feature `screenshots`), built on `src/ui/testkit.rs`'s headless
   harness (feature `harness`, also on under `cargo test`).
 - `src/instruments/` — the friction instruments (paste cadence, teach-back,

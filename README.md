@@ -195,7 +195,7 @@ PNG screenshots of the TUI are rendered in-process (no external tools) from the
 same headless harness the tests use:
 
 ```sh
-cargo run --features screenshots --bin whetstone-screenshots   # → docs/screenshots/
+cargo run --features screenshots --example screenshots   # → docs/screenshots/
 ```
 
 ## Not yet implemented
