@@ -1,16 +1,8 @@
-node_modules/
-dist/
-out/
-coverage/
-.vscode-test/
-*.vsix
-*.log
-.DS_Store
-.claude/settings.local.json
-
-# Compozy workflow artifacts (local design history, ADRs, task specs)
-.compozy/
-
-# Rust (whetstone-tui)
-target/
+# Rust
+/target/
 **/*.rs.bk
+
+# Editor / OS
+.DS_Store
+*.log
+.claude/settings.local.json
