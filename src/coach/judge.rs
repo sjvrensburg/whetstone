@@ -47,14 +47,23 @@ pub async fn screen_with_judge(
 }
 
 /// Parse a judge verdict from raw model output, tolerating prose or a
-/// markdown code fence around the JSON object.
+/// markdown code fence around the JSON object. The judge's `reason` is itself
+/// user-facing (shown as "withheld by judge: …" / emitted in CLI JSON), so it
+/// passes the forbidden-label guard here — a judge that emitted a proof-of-
+/// personhood phrase must not smuggle it through (CLAUDE.md: every user-facing
+/// artifact must clear that guard).
 fn parse_verdict(raw: &str) -> Result<Verdict, String> {
     let json = extract_json_object(raw).ok_or_else(|| format!("no JSON object in: {raw:?}"))?;
     let v: RawVerdict =
         serde_json::from_str(json).map_err(|e| format!("unparseable verdict: {e}"))?;
+    let reason = if crate::core::labels::has_no_forbidden_labels(&v.reason) {
+        v.reason
+    } else {
+        "flagged by the judge".to_string()
+    };
     Ok(Verdict {
         allow: v.allow,
-        reason: v.reason,
+        reason,
     })
 }
 
@@ -130,5 +139,15 @@ mod tests {
         let v = parse_verdict(r#"{"allow": false, "reason": "has a { brace"}"#).unwrap();
         assert!(!v.allow);
         assert_eq!(v.reason, "has a { brace");
+    }
+
+    #[test]
+    fn forbidden_label_in_reason_is_scrubbed() {
+        // The judge's reason is user-facing, so it must clear the forbidden-label
+        // guard like any other artifact.
+        let v = parse_verdict(r#"{"allow": false, "reason": "the writer is a verified human"}"#)
+            .unwrap();
+        assert!(!v.allow);
+        assert_eq!(v.reason, "flagged by the judge");
     }
 }

@@ -13,7 +13,7 @@ use serde::Deserialize;
 
 use crate::core::prompts::ChatMessage;
 
-use super::config::{CoachConfig, Endpoint, Provider};
+use super::config::{ANTHROPIC_VERSION, CoachConfig, Endpoint, Provider};
 use super::provider::{build_request, extract_delta};
 
 #[derive(Clone)]
@@ -50,12 +50,12 @@ impl CoachClient {
         self.config.judge_endpoint()
     }
 
-    /// Probe the endpoint by fetching its OpenAI-compatible model list
-    /// (`GET {base_url}/models`). Used by the settings dialog's connection test:
-    /// success confirms the endpoint is reachable and the key (if any) is
-    /// accepted, and returns the model ids so the writer can pick one. Ids are
-    /// sorted for stable display. Anthropic exposes no such list, so this is a
-    /// no-op (empty) there — the dialog falls back to a curated model list.
+    /// Probe the endpoint by fetching its model list (`GET {base_url}/models`).
+    /// Used by the settings dialog's connection test: success confirms the
+    /// endpoint is reachable and the key (if any) is accepted, and returns the
+    /// model ids so the writer can pick one. Ids are sorted for stable display.
+    /// Both providers expose a `{data:[{id}]}` list (Anthropic needs its own
+    /// headers), so the test is a real request — and a real ✓/✗ — either way.
     pub async fn list_models(&self) -> Result<Vec<String>> {
         #[derive(Deserialize)]
         struct Model {
@@ -66,15 +66,14 @@ impl CoachClient {
             data: Vec<Model>,
         }
         let endpoint = self.coach_endpoint();
-        if endpoint.provider == Provider::Anthropic {
-            return Ok(Vec::new());
-        }
-        let resp = self
-            .http
-            .get(endpoint.models_url())
-            .bearer_auth(&endpoint.api_key)
-            .send()
-            .await?;
+        let req = self.http.get(endpoint.models_url());
+        let req = match endpoint.provider {
+            Provider::OpenAi => req.bearer_auth(&endpoint.api_key),
+            Provider::Anthropic => req
+                .header("x-api-key", &endpoint.api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION),
+        };
+        let resp = req.send().await?;
         let resp = resp.error_for_status()?;
         let parsed: Resp = resp.json().await?;
         let mut ids: Vec<String> = parsed.data.into_iter().map(|m| m.id).collect();

@@ -282,7 +282,11 @@ impl CoachConfig {
             own_model
         };
         let provider = self.judge.provider.unwrap_or_else(|| {
-            if self.judge.base_url.trim().is_empty() {
+            // Branch on the *resolved* own base URL: when the judge has no base
+            // of its own (blank, or an `env:NAME` that resolves empty) it
+            // inherits the coach's provider rather than re-detecting from the
+            // inherited URL — so an explicit coach-provider override is honoured.
+            if own_base.trim().is_empty() {
                 coach.provider
             } else {
                 Provider::detect(&base_url)
@@ -414,6 +418,23 @@ mod tests {
         assert_eq!(j.base_url, "https://api.anthropic.com/v1");
         assert_eq!(j.api_key, "k2");
         assert_eq!(j.provider, Provider::Anthropic);
+    }
+
+    #[test]
+    fn judge_with_env_empty_base_inherits_coach_provider() {
+        // Coach explicitly overrides the provider; the judge's own base is an
+        // env ref that resolves empty, so it must inherit the coach provider
+        // rather than re-detect from the inherited (anthropic-looking) URL.
+        let mut c = cfg("https://api.anthropic.com/v1", "m");
+        c.provider = Some(Provider::OpenAi);
+        c.judge = JudgeSettings {
+            enabled: true,
+            base_url: "env:WHETSTONE_DEFINITELY_UNSET_JUDGE_BASE".into(),
+            ..Default::default()
+        };
+        let j = c.judge_endpoint().unwrap();
+        assert_eq!(j.provider, Provider::OpenAi);
+        assert_eq!(j.base_url, "https://api.anthropic.com/v1");
     }
 
     #[test]

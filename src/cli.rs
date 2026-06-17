@@ -117,8 +117,18 @@ fn lint(file: &std::path::Path) -> Result<Value> {
     Ok(json!({ "file": file.display().to_string(), "count": diags.len(), "diagnostics": diags }))
 }
 
-/// Build the JSON for a guard (+ optional judge) screening of `reply`.
-fn screen_to_json(reply: &str, draft: &str) -> Value {
+/// The outcome of screening a reply: the deterministic guard, the optional LLM
+/// judge, and whether the reply is ultimately allowed through.
+struct Screened {
+    allowed: bool,
+    guard: Value,
+    judge: Value,
+}
+
+/// Screen `reply` with the deterministic guard and, if a judge is configured and
+/// the guard passes, the LLM judge. The caller supplies the runtime so a single
+/// one is reused (the `coach` path already has one for the chat request).
+fn screen_reply(rt: &tokio::runtime::Runtime, reply: &str, draft: &str) -> Screened {
     let guard = screen_chat_reply(reply, draft);
     let guard_ok = guard.is_ok();
     let guard_json = match &guard {
@@ -134,32 +144,26 @@ fn screen_to_json(reply: &str, draft: &str) -> Value {
         && let Some(endpoint) = cfg.judge_endpoint()
     {
         let client = CoachClient::new(cfg);
-        match tokio::runtime::Runtime::new() {
-            Ok(rt) => {
-                let verdict = rt.block_on(whetstone_tui::coach::screen_with_judge(
-                    &client,
-                    &endpoint,
-                    reply,
-                    Some(draft),
-                ));
-                match verdict {
-                    Ok(v) => {
-                        allowed = v.allow;
-                        judge_json = json!({ "allow": v.allow, "reason": v.reason });
-                    }
-                    // Fail-open: the deterministic guard already passed.
-                    Err(e) => judge_json = json!({ "error": e, "failed_open": true }),
-                }
+        match rt.block_on(whetstone_tui::coach::screen_with_judge(
+            &client,
+            &endpoint,
+            reply,
+            Some(draft),
+        )) {
+            Ok(v) => {
+                allowed = v.allow;
+                judge_json = json!({ "allow": v.allow, "reason": v.reason });
             }
-            Err(e) => judge_json = json!({ "error": e.to_string(), "failed_open": true }),
+            // Fail-open: the deterministic guard already passed.
+            Err(e) => judge_json = json!({ "error": e, "failed_open": true }),
         }
     }
 
-    json!({
-        "allowed": allowed,
-        "guard": guard_json,
-        "judge": judge_json,
-    })
+    Screened {
+        allowed,
+        guard: guard_json,
+        judge: judge_json,
+    }
 }
 
 fn guard(reply: &str, draft: Option<&std::path::Path>) -> Result<Value> {
@@ -167,7 +171,9 @@ fn guard(reply: &str, draft: Option<&std::path::Path>) -> Result<Value> {
         Some(p) => read(p)?,
         None => String::new(),
     };
-    Ok(screen_to_json(reply, &draft))
+    let rt = tokio::runtime::Runtime::new()?;
+    let s = screen_reply(&rt, reply, &draft);
+    Ok(json!({ "allowed": s.allowed, "guard": s.guard, "judge": s.judge }))
 }
 
 fn coach(file: &std::path::Path, message: &str) -> Result<Value> {
@@ -184,14 +190,13 @@ fn coach(file: &std::path::Path, message: &str) -> Result<Value> {
         .block_on(client.chat(&endpoint, &messages, false, |_| {}))
         .map_err(|e| anyhow::anyhow!("coach request failed: {e}"))?;
 
-    let screen = screen_to_json(&reply, &draft);
-    let allowed = screen["allowed"].as_bool().unwrap_or(false);
+    let s = screen_reply(&rt, &reply, &draft);
     Ok(json!({
         "model": endpoint.model,
-        "reply": if allowed { Value::String(reply) } else { Value::Null },
-        "withheld": !allowed,
-        "guard": screen["guard"].clone(),
-        "judge": screen["judge"].clone(),
+        "reply": if s.allowed { Value::String(reply) } else { Value::Null },
+        "withheld": !s.allowed,
+        "guard": s.guard,
+        "judge": s.judge,
     }))
 }
 
@@ -238,17 +243,28 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
     #[test]
     fn guard_blocks_forbidden_labels() {
-        let out = screen_to_json("Your authorship is a verified human result.", "");
-        assert_eq!(out["allowed"], json!(false));
-        assert_eq!(out["guard"]["ok"], json!(false));
+        let s = screen_reply(&rt(), "Your authorship is a verified human result.", "");
+        assert!(!s.allowed);
+        assert_eq!(s.guard["ok"], json!(false));
     }
 
     #[test]
     fn guard_allows_a_clean_question() {
-        let out = screen_to_json("What claim do you want the reader to accept?", "a draft");
-        assert_eq!(out["allowed"], json!(true));
-        assert_eq!(out["guard"]["ok"], json!(true));
+        let s = screen_reply(
+            &rt(),
+            "What claim do you want the reader to accept?",
+            "a draft",
+        );
+        assert!(s.allowed);
+        assert_eq!(s.guard["ok"], json!(true));
     }
 }

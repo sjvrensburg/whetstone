@@ -336,6 +336,8 @@ pub struct App {
     suggest_rect: Rect,
     /// Rect of the bottom-right pane's tab header (clicking it switches tabs).
     right_tab_rect: Rect,
+    /// Column where the Coach tab label ends (the click boundary in the header).
+    right_tab_split: u16,
 
     journal: Vec<ProcessEvent>,
     event_seq: u64,
@@ -576,6 +578,7 @@ impl App {
             suggest_start: 0,
             suggest_rect: Rect::default(),
             right_tab_rect: Rect::default(),
+            right_tab_split: 0,
             tokio,
             client,
             coach_tx,
@@ -886,9 +889,13 @@ impl App {
     /// and its verdict). Metadata only — never document prose.
     fn log_coach_consult_with(&mut self, refused: bool, mut extra: Vec<(&'static str, MetaValue)>) {
         let mut meta = vec![("refused", MetaValue::Bool(refused))];
-        if let Some(ep) = self.client.as_ref().map(|c| c.coach_endpoint()) {
-            meta.push(("provider", MetaValue::Str(ep.base_url)));
-            meta.push(("model", MetaValue::Str(ep.model)));
+        if let Some(client) = self.client.as_ref() {
+            // Record the provider label and the RAW model string (which keeps
+            // any `env:NAME` reference intact) — never the env-resolved values,
+            // so a secret embedded via an env ref can't leak into the journal.
+            let provider = client.coach_endpoint().provider;
+            meta.push(("provider", MetaValue::Str(provider.label().to_string())));
+            meta.push(("model", MetaValue::Str(client.config().model.clone())));
         }
         meta.append(&mut extra);
         let size = self.coach_pending_size;
@@ -2474,6 +2481,16 @@ impl App {
     /// re-lint. Harper is local/deterministic, so this is a plain edit — never
     /// journaled as AI assistance.
     fn apply_suggestion(&mut self, which: usize) {
+        // Diagnostic spans are char offsets into the buffer as it was last
+        // linted; linting is debounced, so if the buffer changed since, the
+        // spans are stale and would edit the wrong range. Re-lint first.
+        if self.lint_dirty {
+            self.diagnostics = self.linter.lint(&self.buffer.text());
+            self.lint_dirty = false;
+            if self.suggest_sel >= self.diagnostics.len() {
+                self.suggest_sel = self.diagnostics.len().saturating_sub(1);
+            }
+        }
         let Some(d) = self.diagnostics.get(self.suggest_sel) else {
             return;
         };
@@ -2763,12 +2780,18 @@ impl App {
         judge: Option<Result<crate::coach::Verdict, String>>,
     ) {
         // Metadata-only: which judge model ran (if any), so the disclosure can
-        // note the reply was double-screened. Never any prose.
-        let judge_model = self
-            .client
-            .as_ref()
-            .and_then(|c| c.judge_endpoint())
-            .map(|e| e.model);
+        // note the reply was double-screened. Never any prose, and the RAW model
+        // string (keeps any `env:NAME` ref) so a secret can't leak via the journal.
+        let judge_model = self.client.as_ref().and_then(|c| {
+            c.judge_endpoint().map(|_| {
+                let cfg = c.config();
+                if cfg.judge.model.trim().is_empty() {
+                    cfg.model.clone()
+                } else {
+                    cfg.judge.model.clone()
+                }
+            })
+        });
         let mut meta: Vec<(&'static str, MetaValue)> = Vec::new();
         if let Some(m) = judge_model {
             meta.push(("judge_model", MetaValue::Str(m)));
@@ -3208,9 +3231,10 @@ impl App {
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 if over(self.right_tab_rect) {
-                    // The tab header is two halves: left = Coach, right = Suggestions.
-                    let mid = self.right_tab_rect.x + self.right_tab_rect.width / 2;
-                    self.show_right_tab(if ev.column < mid {
+                    // Split at the end of the Coach label so clicking each tab's
+                    // text selects that tab (a midpoint split misses the labels,
+                    // which are packed at the left).
+                    self.show_right_tab(if ev.column < self.right_tab_split {
                         RightTab::Coach
                     } else {
                         RightTab::Suggestions
@@ -3744,7 +3768,9 @@ fn draw_coach_settings(frame: &mut Frame, app: &mut App, area: Rect) {
         _ => 0,
     } as u16;
     let cx = (inner.x + gutter + val_len).min(inner.right().saturating_sub(1));
-    let cy = app.coach_field_rows[s.field];
+    // Clamp into the (possibly screen-clipped) dialog so the caret never lands
+    // outside it on a short terminal where the lower fields are cut off.
+    let cy = app.coach_field_rows[s.field].min(inner.bottom().saturating_sub(1));
     frame.set_cursor_position((cx, cy));
 }
 
@@ -4070,13 +4096,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
 /// long), appending an ellipsis when truncated.
 fn truncate_status(msg: &str) -> String {
     const MAX: usize = 56;
-    let one_line = msg.replace('\n', " ");
-    if one_line.chars().count() <= MAX {
-        one_line
-    } else {
-        let head: String = one_line.chars().take(MAX - 1).collect();
-        format!("{head}…")
-    }
+    truncate_to(&msg.replace('\n', " "), MAX)
 }
 
 fn centered_rect_abs(width: u16, height: u16, area: Rect) -> Rect {
@@ -4321,16 +4341,28 @@ fn draw_right_pane(frame: &mut Frame, app: &mut App, area: Rect) {
         };
         Span::styled(label, style)
     };
+    let coach_label = " Coach ";
+    // The boundary between the two clickable tab labels (end of the Coach tab),
+    // so a click lands on the label actually under the pointer (not a midpoint).
+    app.right_tab_split = parts[0].x + coach_label.chars().count() as u16;
     let header = Line::from(vec![
-        tab(" Coach ".to_string(), coach_sel),
+        tab(coach_label.to_string(), coach_sel),
         Span::styled(" ", theme.menu()),
         tab(format!(" Suggestions ({issues}) "), !coach_sel),
     ]);
     frame.render_widget(Paragraph::new(header).style(theme.menu()), parts[0]);
 
+    // Only the active tab's pane is drawn, so clear the OTHER pane's recorded
+    // rect to stop stale mouse hit-testing against a region it no longer owns.
     match app.right_tab {
-        RightTab::Coach => draw_coach(frame, app, parts[1]),
-        RightTab::Suggestions => draw_suggestions(frame, app, parts[1]),
+        RightTab::Coach => {
+            app.suggest_rect = Rect::default();
+            draw_coach(frame, app, parts[1]);
+        }
+        RightTab::Suggestions => {
+            app.coach_inner = Rect::default();
+            draw_suggestions(frame, app, parts[1]);
+        }
     }
 }
 
