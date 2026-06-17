@@ -1,6 +1,6 @@
 [package]
 name = "whetstone-tui"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Whetstone — a friction-first Quarto markdown editor for the terminal"
 license = "MIT"
