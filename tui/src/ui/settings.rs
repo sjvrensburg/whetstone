@@ -10,6 +10,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::core::process_event::InstrumentOverrides;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Settings {
     /// Theme name (matched case-insensitively against the built-ins).
@@ -18,6 +20,10 @@ pub struct Settings {
     /// Friction preset (0–3).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub friction: Option<u8>,
+    /// Per-instrument friction overrides (ADR-008). Absent/empty → every
+    /// instrument follows the preset.
+    #[serde(default, skip_serializing_if = "InstrumentOverrides::is_empty")]
+    pub friction_overrides: InstrumentOverrides,
 }
 
 impl Settings {

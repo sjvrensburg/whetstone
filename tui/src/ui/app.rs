@@ -30,7 +30,7 @@ use crate::core::disclosure::{Composition, render_disclosure};
 use crate::core::guard::{screen_chat_reply, screen_coaching_output, screen_injection};
 use crate::core::mirror::{MirrorSnapshot, format_mirror_summary};
 use crate::core::process_event::{
-    FrictionPolicy, Location, MetaValue, ProcessEvent, ProcessEventType,
+    FrictionPolicy, Instrument, Location, MetaValue, ProcessEvent, ProcessEventType,
 };
 use crate::core::prompts::{ChatTurn, ChatTurnRole, build_chat_messages, build_coach_messages};
 use crate::editor::buffer::Buffer;
@@ -346,14 +346,20 @@ impl App {
 
         // Friction dial (ADR-008): institutional floor 0, writer preset from
         // WHETSTONE_FRICTION, else the saved preference, else 1 (Coach).
-        let friction = FrictionPolicy::new(
-            0,
-            std::env::var("WHETSTONE_FRICTION")
-                .ok()
-                .and_then(|s| s.trim().parse::<u8>().ok())
-                .or(saved.friction)
-                .unwrap_or(1),
-        );
+        let preset = std::env::var("WHETSTONE_FRICTION")
+            .ok()
+            .and_then(|s| s.trim().parse::<u8>().ok())
+            .or(saved.friction)
+            .unwrap_or(1);
+        // Per-instrument overrides: start from the saved file, then let
+        // `WHETSTONE_FRICTION_<INSTRUMENT>` env vars override at startup.
+        let mut overrides = saved.friction_overrides;
+        for inst in Instrument::ALL {
+            if let Some(level) = env_instrument_override(inst) {
+                overrides.set(inst, level);
+            }
+        }
+        let friction = FrictionPolicy::new(0, preset).with_overrides(overrides);
         let mut quarantine = Quarantine::new();
         quarantine.set_thresholds(
             friction.paste_threshold(),
@@ -943,11 +949,7 @@ impl App {
     /// The menu model for the current state (coach availability, friction
     /// level, active theme name drive enabled/checked flags + labels).
     fn menus(&self) -> Vec<Menu> {
-        menu::menus(
-            self.client.is_some(),
-            self.friction.level(),
-            self.theme.name,
-        )
+        menu::menus(self.client.is_some(), &self.friction, self.theme.name)
     }
 
     fn open_menu(&mut self) {
@@ -1035,6 +1037,7 @@ impl App {
             MenuAction::Replace => self.open_prompt(PromptKind::Replace),
             MenuAction::GotoLine => self.open_prompt(PromptKind::GotoLine),
             MenuAction::ThemePicker => self.open_theme_picker(),
+            MenuAction::CycleInstrument(inst) => self.cycle_instrument_friction(inst),
             MenuAction::SetFriction(n) => self.set_friction(n),
             MenuAction::ToggleCoach => {
                 if self.client.is_some() {
@@ -1063,7 +1066,44 @@ impl App {
 
     /// Re-set the friction level (ADR-008) live and re-tune the instruments.
     fn set_friction(&mut self, level: u8) {
-        self.friction = FrictionPolicy::new(self.friction.floor, level);
+        self.friction =
+            FrictionPolicy::new(self.friction.floor, level).with_overrides(self.friction.overrides);
+        let msg = format!(
+            "Friction: {} (level {level})",
+            menu::friction_level_name(level)
+        );
+        self.apply_friction_change(msg);
+    }
+
+    /// Cycle one instrument's per-instrument override (ADR-008): off → Quiet →
+    /// Coach → Engaged → Deep Work → off. "off" clears the override so the
+    /// instrument follows the global preset again.
+    fn cycle_instrument_friction(&mut self, inst: Instrument) {
+        let next = match self.friction.overrides.get(inst) {
+            None => Some(0),
+            Some(l) if l >= 3 => None,
+            Some(l) => Some(l + 1),
+        };
+        let mut overrides = self.friction.overrides;
+        overrides.set(inst, next);
+        self.friction = self.friction.with_overrides(overrides);
+        let msg = menu::instrument_label(inst, &self.friction);
+        self.apply_friction_change(msg);
+    }
+
+    /// Apply a friction-policy change that's already been written to
+    /// `self.friction`: re-tune the live instruments, surface `msg`, and persist.
+    /// Shared by [`set_friction`] and [`cycle_instrument_friction`].
+    fn apply_friction_change(&mut self, msg: String) {
+        self.retune_instruments();
+        self.message = msg;
+        self.persist_settings();
+    }
+
+    /// Re-tune the live instruments to the current friction policy (quarantine
+    /// thresholds + teach-back/push cadence counters). Called whenever the
+    /// policy changes (preset or a per-instrument override).
+    fn retune_instruments(&mut self) {
         self.quarantine.set_thresholds(
             self.friction.paste_threshold(),
             self.friction.claim_survival_threshold(),
@@ -1076,11 +1116,6 @@ impl App {
             Some(iv) => ((self.last_para_count / iv) + 1) * iv,
             None => usize::MAX,
         };
-        self.message = format!(
-            "Friction: {} (level {level})",
-            menu::friction_level_name(level)
-        );
-        self.persist_settings();
     }
 
     /// Persist the current theme + friction preference (best-effort).
@@ -1088,6 +1123,7 @@ impl App {
         let s = Settings {
             theme: Some(self.theme.name.to_string()),
             friction: Some(self.friction.preset),
+            friction_overrides: self.friction.overrides,
         };
         if let Err(e) = s.save() {
             self.message = format!("(preferences not saved: {e})");
@@ -3593,6 +3629,24 @@ fn file_mtime_of(path: &Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
+/// Parse a per-instrument friction override from the environment at startup.
+///
+/// `WHETSTONE_FRICTION_<INSTRUMENT>` (e.g. `WHETSTONE_FRICTION_PASTE`) sets one
+/// instrument's level. Returns:
+/// - `None` — the var is unset or unparseable (leave the saved value as-is);
+/// - `Some(None)` — `off` / `none` / `preset` (clear the override → follow the
+///   global preset);
+/// - `Some(Some(n))` — a level `0..=3`.
+fn env_instrument_override(inst: Instrument) -> Option<Option<u8>> {
+    let var = format!("WHETSTONE_FRICTION_{}", inst.key().to_uppercase());
+    let raw = std::env::var(var).ok()?;
+    match raw.trim().to_lowercase().as_str() {
+        "" => None,
+        "off" | "none" | "preset" => Some(None),
+        n => n.parse::<u8>().ok().filter(|l| *l <= 3).map(Some),
+    }
+}
+
 /// Write `bytes` to `path` atomically (temp file in the same dir, then rename),
 /// so a crash mid-write can't truncate the document.
 fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -3783,6 +3837,45 @@ mod tests {
         let mut app = test_app(&rt);
         app.dispatch(MenuAction::SetFriction(3));
         assert_eq!(app.friction.level(), 3);
+    }
+
+    #[test]
+    fn cycling_an_instrument_override_retunes_live() {
+        let rt = rt();
+        let mut app = test_app(&rt);
+        // Pin a known starting policy in-memory (the test harness's `App::new`
+        // loads the real `ui.json`, so don't depend on whatever it found).
+        app.friction = FrictionPolicy::new(0, 1); // Coach, no overrides
+        app.retune_instruments();
+        // Global preset is Coach (1) → push cadence off, quarantine at 40.
+        assert_eq!(app.next_push, usize::MAX);
+        assert_eq!(app.friction.paste_threshold(), 40);
+
+        // Cycle the Push instrument: None → 0 → 1 → 2 (Engaged), which turns
+        // proactive coaching on while the global preset stays Coach.
+        for _ in 0..3 {
+            app.dispatch(MenuAction::CycleInstrument(Instrument::Push));
+        }
+        assert_eq!(app.friction.overrides.get(Instrument::Push), Some(2));
+        assert_eq!(app.friction.level(), 1); // global preset unchanged
+        assert_ne!(app.next_push, usize::MAX); // push now scheduled
+
+        // Cycle Paste up to Deep Work (3) and confirm the quarantine retunes.
+        for _ in 0..4 {
+            app.dispatch(MenuAction::CycleInstrument(Instrument::Paste));
+        }
+        assert_eq!(app.friction.overrides.get(Instrument::Paste), Some(3));
+        assert_eq!(app.friction.paste_threshold(), 12);
+
+        // One more cycle past Deep Work clears the override (follows preset).
+        app.dispatch(MenuAction::CycleInstrument(Instrument::Paste));
+        assert_eq!(app.friction.overrides.get(Instrument::Paste), None);
+        assert_eq!(app.friction.paste_threshold(), 40);
+
+        // Leave the persisted preferences free of overrides so a later
+        // `App::new` (this suite or the real app) isn't contaminated.
+        app.friction = FrictionPolicy::new(0, 1);
+        app.persist_settings();
     }
 
     #[test]
