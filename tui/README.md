@@ -38,7 +38,8 @@ beyond transient menus/dialogs). Press **F1** for the keybinding cheat-sheet or
 
 Mouse: click to place the cursor, click-drag to select, double-click a word,
 triple-click a line, wheel to scroll, and click menu titles / dialog rows.
-Typing coalesces into single undo steps.
+Typing coalesces into single undo steps. When the caret sits on (or just after)
+a `()`, `[]`, or `{}` bracket, it and its matching partner are highlighted.
 
 ## AI coach (optional)
 
@@ -76,5 +77,5 @@ push-cadence coaching that reviews each finished paragraph (ADR-008).
 
 Multiple files / tabs (the editor holds one buffer at a time), an interactive
 keybinding editor, a connection test / model listing in the settings dialog,
-cross-session coach-conversation persistence, per-instrument friction overrides,
-and bracket matching are not built yet.
+cross-session coach-conversation persistence, and per-instrument friction
+overrides are not built yet.

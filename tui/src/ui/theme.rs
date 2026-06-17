@@ -103,6 +103,14 @@ impl Theme {
             .bg(self.quarantine_bg)
             .add_modifier(Modifier::BOLD)
     }
+    /// The matched bracket pair under the cursor. Derived from the accent color
+    /// (bold + underlined) so it stands out on any theme without a new field.
+    pub fn bracket_match(&self) -> Style {
+        Style::default()
+            .fg(self.accent)
+            .bg(self.bg)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    }
 }
 
 const fn rgb(r: u8, g: u8, b: u8) -> Color {

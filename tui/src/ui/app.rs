@@ -2974,6 +2974,11 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
     let first = app.editor_scroll.min(total);
     let last_exclusive = (first + app.editor_height).min(total);
     let selection = app.buffer.selection();
+    // Highlight the matched bracket pair only when the editor is focused and no
+    // overlay is up (so it tracks the live caret, not a stale position).
+    let brackets = (focused && !app.has_overlay())
+        .then(|| app.buffer.matching_bracket())
+        .flatten();
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(app.editor_height);
     for i in first..last_exclusive {
         let start = app.buffer.line_char_start(i);
@@ -2984,6 +2989,7 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
             &app.diagnostics,
             app.quarantine.regions(),
             selection,
+            brackets,
             theme,
         ));
     }
@@ -3229,6 +3235,7 @@ fn styled_line(
     diags: &[Diagnostic],
     regions: &[Region],
     selection: Option<(usize, usize)>,
+    brackets: Option<(usize, usize)>,
     theme: &Theme,
 ) -> Line<'static> {
     let chars: Vec<char> = text.chars().collect();
@@ -3265,18 +3272,30 @@ fn styled_line(
             *x = true;
         }
     }
+    let mut brk = vec![false; n];
+    if let Some((a, b)) = brackets {
+        for pos in [a, b] {
+            if pos >= start && pos - start < n {
+                brk[pos - start] = true;
+            }
+        }
+    }
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut i = 0;
     while i < n {
-        let key = (sev[i], quar[i], sel[i]);
+        let key = (sev[i], quar[i], sel[i], brk[i]);
         let mut j = i;
-        while j < n && (sev[j], quar[j], sel[j]) == key {
+        while j < n && (sev[j], quar[j], sel[j], brk[j]) == key {
             j += 1;
         }
         let seg: String = chars[i..j].iter().collect();
-        let (_, q, s) = key;
+        let (_, q, s, br) = key;
+        // Precedence: selection (most explicit) > matched bracket > paste
+        // quarantine > grammar severity.
         let style = if s {
             theme.selected()
+        } else if br {
+            theme.bracket_match()
         } else if q {
             theme.quarantine()
         } else {

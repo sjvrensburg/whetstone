@@ -367,6 +367,72 @@ impl Buffer {
         (target > self.cursor).then(|| self.remove(self.cursor, target))
     }
 
+    // --- bracket matching -------------------------------------------------
+
+    /// If a bracket sits at or just before the cursor, return
+    /// `(bracket_pos, match_pos)` — the char offsets of that bracket and its
+    /// matching partner. Returns `None` when no bracket is adjacent to the
+    /// cursor or it has no match. The char *at* the cursor takes precedence
+    /// over the one before it (matching VS Code's behavior).
+    pub fn matching_bracket(&self) -> Option<(usize, usize)> {
+        let n = self.len_chars();
+        let at = (self.cursor < n).then(|| self.rope.char(self.cursor));
+        let before = (self.cursor > 0).then(|| self.rope.char(self.cursor - 1));
+        let (pos, ch) = if let Some(c) = at.filter(|c| Self::bracket_of(*c).is_some()) {
+            (self.cursor, c)
+        } else if let Some(c) = before.filter(|c| Self::bracket_of(*c).is_some()) {
+            (self.cursor - 1, c)
+        } else {
+            return None;
+        };
+        self.scan_match(pos, ch).map(|m| (pos, m))
+    }
+
+    /// The `(open, close)` pair that `c` belongs to, or `None` if `c` is not a
+    /// bracket.
+    fn bracket_of(c: char) -> Option<(char, char)> {
+        match c {
+            '(' | ')' => Some(('(', ')')),
+            '[' | ']' => Some(('[', ']')),
+            '{' | '}' => Some(('{', '}')),
+            _ => None,
+        }
+    }
+
+    /// Scan outward from the bracket `ch` at `pos` for its depth-balanced
+    /// partner: forward for an opener, backward for a closer.
+    fn scan_match(&self, pos: usize, ch: char) -> Option<usize> {
+        let (open, close) = Self::bracket_of(ch)?;
+        let n = self.len_chars();
+        let mut depth = 1i32;
+        if ch == open {
+            for i in (pos + 1)..n {
+                let c = self.rope.char(i);
+                if c == open {
+                    depth += 1;
+                } else if c == close {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+            }
+        } else {
+            for i in (0..pos).rev() {
+                let c = self.rope.char(i);
+                if c == close {
+                    depth += 1;
+                } else if c == open {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     // --- indentation ------------------------------------------------------
 
     /// The leading whitespace of `line` (spaces/tabs).
@@ -485,6 +551,48 @@ mod tests {
         assert_eq!(b.selection(), Some((0, 3)));
         b.delete_selection();
         assert_eq!(b.text(), "");
+    }
+
+    #[test]
+    fn matching_bracket_finds_partners_both_directions() {
+        let mut b = Buffer::new("a(b[c]d)e");
+        // Cursor on the opening '(' (offset 1) → match its ')' at offset 7.
+        b.set_cursor(1);
+        assert_eq!(b.matching_bracket(), Some((1, 7)));
+        // Cursor on the closing ')' (offset 7) → back to '(' at 1.
+        b.set_cursor(7);
+        assert_eq!(b.matching_bracket(), Some((7, 1)));
+        // Nested: '[' at 3 ↔ ']' at 5.
+        b.set_cursor(3);
+        assert_eq!(b.matching_bracket(), Some((3, 5)));
+    }
+
+    #[test]
+    fn matching_bracket_prefers_char_at_cursor_then_before() {
+        let mut b = Buffer::new("()");
+        // Between the two: char at cursor is ')' (closer) → matches '(' at 0.
+        b.set_cursor(1);
+        assert_eq!(b.matching_bracket(), Some((1, 0)));
+        // Past the end: only the char before (')') is a bracket.
+        b.set_cursor(2);
+        assert_eq!(b.matching_bracket(), Some((1, 0)));
+    }
+
+    #[test]
+    fn matching_bracket_none_when_unmatched_or_absent() {
+        let mut b = Buffer::new("a(b");
+        b.set_cursor(1); // '(' with no closer
+        assert_eq!(b.matching_bracket(), None);
+        b.set_cursor(0); // 'a', not a bracket
+        assert_eq!(b.matching_bracket(), None);
+    }
+
+    #[test]
+    fn matching_bracket_ignores_mismatched_kinds() {
+        // The ']' has no matching '[' to its left; the '(' is a different kind.
+        let mut b = Buffer::new("(]");
+        b.set_cursor(1);
+        assert_eq!(b.matching_bracket(), None);
     }
 
     #[test]
