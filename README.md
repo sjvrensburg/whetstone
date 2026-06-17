@@ -201,3 +201,7 @@ cargo run --features screenshots --bin whetstone-screenshots   # → docs/screen
 The editor is deliberately single-document and single-buffer — it is built to
 keep you focused on writing one piece well, so multiple files / tabs are out of
 scope by design.
+
+## License
+
+Released under the [MIT License](LICENSE).
