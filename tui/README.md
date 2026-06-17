@@ -101,8 +101,19 @@ startup via `WHETSTONE_FRICTION_<INSTRUMENT>` (`PASTE`, `CLAIM`, `TEACHBACK`,
 An institutional floor (when set) still applies to every instrument: an
 override can raise an instrument or lower it, but never below the floor.
 
+## Coach-conversation persistence
+
+The coach chat is mirrored to disk per document, so reopening a file restores
+its coaching thread. History lives under
+`$XDG_CONFIG_HOME/whetstone/coach-history/` (falling back to
+`$HOME/.config/...`), keyed by the document's absolute path, `0600` on Unix
+since the writer's own messages may quote draft prose. Resetting the
+conversation (Coach ▸ Reset conversation) clears the saved copy. New/unsaved buffers keep no
+history (there's no stable key until the file has a path). Only the chat is
+stored — the process journal stays metadata-only and the draft is never written
+here.
+
 ## Not yet implemented
 
-Multiple files / tabs (the editor holds one buffer at a time), an interactive
-keybinding editor, and cross-session coach-conversation persistence are not
-built yet.
+Multiple files / tabs (the editor holds one buffer at a time) and an
+interactive keybinding editor are not built yet.

@@ -82,14 +82,16 @@ You MUST follow these rules:
 
 You are a thinking partner. The writing stays theirs."#;
 
-/// A prior chat turn (client-held; never journaled).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A prior chat turn (client-held; never journaled). Serialized only to mirror
+/// the conversation across sessions ([`crate::coach::history`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ChatTurnRole {
     Writer,
     Coach,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatTurn {
     pub role: ChatTurnRole,
     pub text: String,
