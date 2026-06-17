@@ -6,4 +6,4 @@
 
 pub mod harper;
 
-pub use harper::{Diagnostic, Linter, Severity};
+pub use harper::{Diagnostic, Fix, FixAction, GrammarDialect, GrammarSettings, Linter, Severity};

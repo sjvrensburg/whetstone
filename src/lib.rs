@@ -13,6 +13,8 @@ pub mod editor;
 pub mod grammar;
 pub mod instruments;
 pub mod markdown;
+#[cfg(feature = "screenshots")]
+pub mod screenshot;
 pub mod ui;
 
 use std::path::PathBuf;

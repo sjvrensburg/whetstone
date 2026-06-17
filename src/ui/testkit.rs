@@ -1,0 +1,136 @@
+//! A reusable harness for driving the TUI headlessly.
+//!
+//! Builds an [`App`], feeds it scripted key/paste/mouse events, and renders to a
+//! ratatui [`TestBackend`] — no real terminal. The same render path powers the
+//! string-assertion tests and the in-process PNG screenshots (see
+//! `crate::screenshot`), so what tests see and what screenshots capture can
+//! never drift apart.
+//!
+//! Compiled under `cargo test` and behind the `harness` feature.
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
+
+use super::app::{App, draw};
+
+/// A headless driver around an [`App`] at a fixed terminal size.
+pub struct Harness {
+    pub app: App,
+    width: u16,
+    height: u16,
+    // Kept alive so the App's tokio handle stays valid for the harness lifetime.
+    _rt: tokio::runtime::Runtime,
+}
+
+impl Harness {
+    /// Build a harness over a fresh document at `width`×`height` cells.
+    pub fn new(text: &str, path: &str, width: u16, height: u16) -> Self {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
+        let app = App::new(
+            text.to_string(),
+            std::path::PathBuf::from(path),
+            None,
+            rt.handle().clone(),
+        );
+        Self {
+            app,
+            width,
+            height,
+            _rt: rt,
+        }
+    }
+
+    /// Press a key with no modifiers.
+    pub fn key(&mut self, code: KeyCode) -> &mut Self {
+        self.app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+        self
+    }
+
+    /// Press a key with modifiers.
+    pub fn key_mods(&mut self, code: KeyCode, mods: KeyModifiers) -> &mut Self {
+        self.app.handle_key(KeyEvent::new(code, mods));
+        self
+    }
+
+    /// Press Ctrl + a character (e.g. `ctrl('s')`).
+    pub fn ctrl(&mut self, c: char) -> &mut Self {
+        self.key_mods(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    /// Type a run of characters into the focused field/buffer.
+    pub fn type_str(&mut self, s: &str) -> &mut Self {
+        for c in s.chars() {
+            self.key(KeyCode::Char(c));
+        }
+        self
+    }
+
+    /// Deliver a bracketed paste.
+    pub fn paste(&mut self, text: &str) -> &mut Self {
+        self.app.handle_paste(text);
+        self
+    }
+
+    /// Pump any pending background events (coach replies, connection tests,
+    /// compile output) into the app state.
+    pub fn drain(&mut self) -> &mut Self {
+        self.app.drain_coach_events();
+        self.app.drain_conn_test_events();
+        self.app.drain_compile_events();
+        self
+    }
+
+    /// Render the current state to a ratatui [`Buffer`].
+    pub fn render_to_buffer(&mut self) -> Buffer {
+        let mut term = Terminal::new(TestBackend::new(self.width, self.height)).unwrap();
+        let app = &mut self.app;
+        term.draw(|f| draw(f, app)).unwrap();
+        term.backend().buffer().clone()
+    }
+
+    /// Render the current state to the concatenated cell symbols (the form the
+    /// existing tests assert against).
+    pub fn render_to_string(&mut self) -> String {
+        self.render_to_buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::menu::MenuAction;
+
+    #[test]
+    fn drives_editor_and_renders() {
+        let mut h = Harness::new("# Title\n\nHello world.", "t.qmd", 100, 30);
+        let s = h.render_to_string();
+        assert!(s.contains("Title"));
+        // Typing in the editor lands in the buffer/preview.
+        h.type_str(" more");
+        assert!(h.render_to_string().contains("more"));
+    }
+
+    #[test]
+    fn opens_overlays_via_dispatch() {
+        let mut h = Harness::new("hello", "t.qmd", 100, 30);
+        h.app.dispatch_for_test(MenuAction::GrammarSettings);
+        assert!(h.render_to_string().contains("Grammar (Harper)"));
+    }
+
+    #[test]
+    fn switches_to_the_suggestions_tab() {
+        let mut h = Harness::new("This is a sentance.", "t.qmd", 100, 30);
+        h.app.dispatch_for_test(MenuAction::ShowSuggestions);
+        let s = h.render_to_string();
+        assert!(s.contains("SUGGESTIONS"));
+    }
+}

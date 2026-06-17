@@ -1,13 +1,19 @@
-//! OpenAI-compatible coaching: config, streaming client, and the guard that
-//! every coach/chat response must pass before it reaches the UI.
+//! AI coaching: config, streaming client, the optional LLM judge, and the
+//! deterministic guard that every coach/chat response must pass before the UI.
 //!
-//! Speaks the Chat Completions API (`POST {base_url}/chat/completions`,
-//! `stream:true`, SSE `choices[0].delta.content`) against any endpoint —
-//! Ollama, LM Studio, OpenAI, OpenRouter. No Anthropic-specific code.
+//! Speaks two protocols so the writer is not locked to one vendor: an
+//! OpenAI-compatible Chat Completions endpoint (Ollama, LM Studio, OpenAI,
+//! OpenRouter, …) and Anthropic Messages. The provider is set explicitly or
+//! auto-detected from the base URL (see [`config::Provider`]).
 
 pub mod client;
 pub mod config;
 pub mod history;
+pub mod judge;
+pub mod provider;
 
 pub use client::{CoachClient, parse_sse_chunk};
-pub use config::{CoachConfig, DEFAULT_MODEL, is_env_ref, resolve_env_value};
+pub use config::{
+    CoachConfig, DEFAULT_MODEL, Endpoint, JudgeSettings, Provider, is_env_ref, resolve_env_value,
+};
+pub use judge::{Verdict, screen_with_judge};

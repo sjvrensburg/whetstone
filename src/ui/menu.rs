@@ -26,6 +26,8 @@ pub enum MenuAction {
     Replace,
     GotoLine,
     ThemePicker,
+    GrammarSettings,
+    ShowSuggestions,
     SetFriction(u8),
     CycleInstrument(Instrument),
     ToggleCoach,
@@ -130,12 +132,18 @@ pub fn menus(coach_enabled: bool, friction: &FrictionPolicy, theme_name: &str) -
             items: {
                 let mut items = vec![
                     MenuItem::new("Outline…", "Ctrl+B", MenuAction::Outline),
+                    MenuItem::new(
+                        "Suggestions (Harper)",
+                        "Ctrl+L",
+                        MenuAction::ShowSuggestions,
+                    ),
                     MenuItem::new("Process / journal", "Ctrl+P", MenuAction::Journal),
                     MenuItem::new(
                         format!("Theme: {theme_name}"),
                         "Ctrl+T",
                         MenuAction::ThemePicker,
                     ),
+                    MenuItem::new("Grammar (spelling)…", "", MenuAction::GrammarSettings),
                     MenuItem::new("Friction: Quiet", "", MenuAction::SetFriction(0))
                         .checked(friction_level == 0),
                     MenuItem::new("Friction: Coach", "", MenuAction::SetFriction(1))

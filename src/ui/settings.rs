@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::core::process_event::InstrumentOverrides;
+use crate::grammar::GrammarSettings;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Settings {
@@ -24,6 +25,14 @@ pub struct Settings {
     /// instrument follows the preset.
     #[serde(default, skip_serializing_if = "InstrumentOverrides::is_empty")]
     pub friction_overrides: InstrumentOverrides,
+    /// Grammar (Harper) settings: dialect + disabled lint rules. Default →
+    /// American English, full curated lint set.
+    #[serde(default, skip_serializing_if = "is_default_grammar")]
+    pub grammar: GrammarSettings,
+}
+
+fn is_default_grammar(g: &GrammarSettings) -> bool {
+    *g == GrammarSettings::default()
 }
 
 impl Settings {

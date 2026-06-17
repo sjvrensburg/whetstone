@@ -19,27 +19,54 @@ use ratatui::backend::CrosstermBackend;
 use whetstone_tui::coach::CoachConfig;
 use whetstone_tui::ui::{App, draw};
 
+mod cli;
+use cli::Command;
+
 #[derive(Parser)]
 #[command(
     name = "whetstone-tui",
     version,
-    about = "Whetstone — a friction-first Quarto markdown editor for the terminal"
+    about = "Whetstone — a friction-first Quarto markdown editor for the terminal",
+    // `whetstone-tui file.qmd` opens the TUI; subcommands run headlessly.
+    args_conflicts_with_subcommands = true
 )]
 struct Cli {
-    /// Path to a `.qmd` / `.md` file to open (created if missing).
-    file: PathBuf,
+    /// Path to a `.qmd` / `.md` file to open in the editor (created if missing).
+    file: Option<PathBuf>,
+    #[command(subcommand)]
+    command: Option<Command>,
 }
 
 type Tui = Terminal<CrosstermBackend<io::Stdout>>;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let text = std::fs::read_to_string(&cli.file).unwrap_or_default();
+    let file = match cli.command {
+        // Headless subcommands print JSON and exit — no terminal setup.
+        Some(Command::Open { file }) => file,
+        Some(command) => return cli::run(command),
+        None => match cli.file {
+            Some(file) => file,
+            None => {
+                eprintln!(
+                    "error: provide a file to edit (whetstone-tui FILE) or a subcommand \
+                     (whetstone-tui --help)."
+                );
+                std::process::exit(2);
+            }
+        },
+    };
+    run_tui(file)
+}
+
+/// Launch the interactive editor on `file`.
+fn run_tui(file: PathBuf) -> Result<()> {
+    let text = std::fs::read_to_string(&file).unwrap_or_default();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     let coach_config = CoachConfig::load();
-    let mut app = App::new(text, cli.file.clone(), coach_config, rt.handle().clone());
+    let mut app = App::new(text, file, coach_config, rt.handle().clone());
     app.start_session();
 
     enable_raw_mode()?;
