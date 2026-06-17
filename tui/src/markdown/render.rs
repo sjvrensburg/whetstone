@@ -82,6 +82,84 @@ pub fn frontmatter_claim(src: &str) -> Option<String> {
     None
 }
 
+/// A heading extracted from the document outline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Heading {
+    /// ATX level, `1..=6`.
+    pub level: u8,
+    pub title: String,
+    /// 0-based line index in the source, matching the editor buffer's line
+    /// numbering (newline-split), so jumping to it is a `set_cursor_line_col`.
+    pub line: usize,
+}
+
+/// Extract the ATX-heading outline from `src`, skipping a leading YAML
+/// frontmatter block and fenced code blocks (so a `#` comment in code is not
+/// mistaken for a heading). Setext (`===` / `---` underline) headings are not
+/// included — they collide with the frontmatter/`<hr>` syntax `.qmd` files use.
+pub fn outline(src: &str) -> Vec<Heading> {
+    let mut out = Vec::new();
+    // `Some(marker)` while inside a fenced code block; the marker is the fence
+    // that opened it, so only a matching fence closes it.
+    let mut fence: Option<&str> = None;
+    let mut in_frontmatter = false;
+    for (i, raw) in src.split('\n').enumerate() {
+        let line = raw.strip_suffix('\r').unwrap_or(raw);
+        // A `---` on the very first line opens a frontmatter block.
+        if i == 0 && line.trim() == "---" {
+            in_frontmatter = true;
+            continue;
+        }
+        if in_frontmatter {
+            let t = line.trim();
+            if t == "---" || t == "..." {
+                in_frontmatter = false;
+            }
+            continue;
+        }
+        // Toggle fenced code blocks (``` or ~~~); ignore everything inside one.
+        let ts = line.trim_start();
+        if ts.starts_with("```") || ts.starts_with("~~~") {
+            let marker = if ts.starts_with("```") { "```" } else { "~~~" };
+            match fence {
+                None => fence = Some(marker),
+                Some(open) if ts.starts_with(open) => fence = None,
+                Some(_) => {}
+            }
+            continue;
+        }
+        if fence.is_some() {
+            continue;
+        }
+        if let Some(h) = parse_atx_heading(line, i) {
+            out.push(h);
+        }
+    }
+    out
+}
+
+/// Parse one line as an ATX heading (`# …` through `###### …`). Requires a
+/// space after the hashes per CommonMark, so `#tag` is not a heading.
+fn parse_atx_heading(line: &str, idx: usize) -> Option<Heading> {
+    let t = line.trim_start();
+    let hashes = t.chars().take_while(|&c| c == '#').count();
+    if !(1..=6).contains(&hashes) {
+        return None;
+    }
+    // `#` is ASCII, so the byte offset equals the hash count.
+    let rest = &t[hashes..];
+    if !rest.starts_with([' ', '\t']) {
+        return None;
+    }
+    // Drop any closing run of `#` (ATX closing sequence) and surrounding space.
+    let title = rest.trim().trim_end_matches('#').trim().to_string();
+    Some(Heading {
+        level: hashes as u8,
+        title,
+        line: idx,
+    })
+}
+
 /// Render markdown source to ratatui [`Text`], with inline/display math
 /// converted to Unicode. Best-effort styling: headings, bold/italic,
 /// inline + block code, lists, blockquotes, task-list markers.
@@ -249,6 +327,32 @@ mod tests {
         let t = render_to_text("Intro.\n\n$$\\sum_{i=1}^{n} x_i$$\n\nOutro.", &THEMES[0]);
         let rendered = all_text(&t);
         assert!(rendered.contains('∑'), "got: {rendered}");
+    }
+
+    #[test]
+    fn outline_collects_atx_headings_with_line_numbers() {
+        let src = "---\ntitle: T\n---\n\n# One\n\ntext\n\n## Two\n\n### Three\n";
+        let o = outline(src);
+        assert_eq!(o.len(), 3);
+        assert_eq!((o[0].level, o[0].title.as_str(), o[0].line), (1, "One", 4));
+        assert_eq!((o[1].level, o[1].title.as_str(), o[1].line), (2, "Two", 8));
+        assert_eq!(
+            (o[2].level, o[2].title.as_str(), o[2].line),
+            (3, "Three", 10)
+        );
+    }
+
+    #[test]
+    fn outline_skips_hashes_in_code_and_non_headings() {
+        let src = "# Real\n\n```\n# not a heading\n```\n\n#notspaced\n## Also real\n";
+        let o = outline(src);
+        let titles: Vec<&str> = o.iter().map(|h| h.title.as_str()).collect();
+        assert_eq!(titles, vec!["Real", "Also real"]);
+    }
+
+    #[test]
+    fn outline_strips_closing_hashes() {
+        assert_eq!(outline("## Heading ##\n")[0].title, "Heading");
     }
 
     #[test]

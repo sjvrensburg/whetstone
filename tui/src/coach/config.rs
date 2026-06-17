@@ -85,6 +85,53 @@ impl CoachConfig {
     pub fn endpoint(&self) -> String {
         format!("{}/chat/completions", self.base_url)
     }
+
+    /// A copy with every field's environment-variable reference resolved (see
+    /// [`resolve_env_value`]) and a tidy `base_url` (no trailing slash). The
+    /// raw config keeps the `env:NAME` form for persistence; this is what the
+    /// client actually sends, so a secret is read from the environment at
+    /// request time and never written to `coach.json`.
+    pub fn resolved(&self) -> Self {
+        Self {
+            base_url: resolve_env_value(&self.base_url)
+                .trim()
+                .trim_end_matches('/')
+                .to_string(),
+            api_key: resolve_env_value(&self.api_key),
+            model: resolve_env_value(&self.model),
+        }
+    }
+}
+
+/// Whether `value` is an environment-variable reference (`env:NAME` or
+/// `${NAME}`) rather than a literal value. The dialog uses this to keep such
+/// references readable instead of masking them as a secret.
+pub fn is_env_ref(value: &str) -> bool {
+    env_ref_name(value).is_some()
+}
+
+/// Resolve an `env:NAME` / `${NAME}` reference to the current value of that
+/// environment variable (empty string if unset). Any other string is returned
+/// unchanged, so plain literals keep working exactly as before.
+pub fn resolve_env_value(value: &str) -> String {
+    match env_ref_name(value) {
+        Some(name) => std::env::var(name).unwrap_or_default(),
+        None => value.to_string(),
+    }
+}
+
+/// Extract the variable name from an `env:NAME` or `${NAME}` reference.
+fn env_ref_name(value: &str) -> Option<&str> {
+    let t = value.trim();
+    if let Some(rest) = t.strip_prefix("env:") {
+        let name = rest.trim();
+        return (!name.is_empty()).then_some(name);
+    }
+    if let Some(inner) = t.strip_prefix("${").and_then(|r| r.strip_suffix('}')) {
+        let name = inner.trim();
+        return (!name.is_empty()).then_some(name);
+    }
+    None
 }
 
 /// `…/whetstone/coach.json` under the user config dir.
@@ -104,6 +151,64 @@ mod tests {
             model: "x".into(),
         };
         assert_eq!(c.endpoint(), "http://localhost:11434/v1/chat/completions");
+    }
+
+    #[test]
+    fn plain_values_resolve_to_themselves() {
+        assert_eq!(resolve_env_value("sk-abc123"), "sk-abc123");
+        assert_eq!(
+            resolve_env_value("http://localhost:11434/v1"),
+            "http://localhost:11434/v1"
+        );
+        assert!(!is_env_ref("sk-abc123"));
+    }
+
+    #[test]
+    fn env_references_resolve_against_the_environment() {
+        // A uniquely named var so this can't collide with another test.
+        let var = "WHETSTONE_TEST_KEY_XYZZY";
+        // SAFETY: single-threaded within this test; the var name is unique.
+        unsafe {
+            std::env::set_var(var, "secret-value");
+        }
+        assert!(is_env_ref("env:WHETSTONE_TEST_KEY_XYZZY"));
+        assert!(is_env_ref("${WHETSTONE_TEST_KEY_XYZZY}"));
+        assert_eq!(
+            resolve_env_value("env:WHETSTONE_TEST_KEY_XYZZY"),
+            "secret-value"
+        );
+        assert_eq!(
+            resolve_env_value("${WHETSTONE_TEST_KEY_XYZZY}"),
+            "secret-value"
+        );
+        // An unset var resolves to empty rather than leaking the reference.
+        assert_eq!(resolve_env_value("env:WHETSTONE_DEFINITELY_UNSET_VAR"), "");
+        unsafe {
+            std::env::remove_var(var);
+        }
+    }
+
+    #[test]
+    fn resolved_keeps_raw_form_intact_and_tidies_base_url() {
+        let var = "WHETSTONE_TEST_BASE_XYZZY";
+        // SAFETY: unique var name, set/cleared within this test.
+        unsafe {
+            std::env::set_var(var, "http://example.test/v1/");
+        }
+        let raw = CoachConfig {
+            base_url: "env:WHETSTONE_TEST_BASE_XYZZY".into(),
+            api_key: "env:WHETSTONE_DEFINITELY_UNSET_VAR".into(),
+            model: "llama3.1".into(),
+        };
+        let r = raw.resolved();
+        assert_eq!(r.base_url, "http://example.test/v1"); // trailing slash trimmed
+        assert_eq!(r.api_key, ""); // unset → empty
+        assert_eq!(r.model, "llama3.1");
+        // The raw config is untouched, so it persists as a reference.
+        assert_eq!(raw.base_url, "env:WHETSTONE_TEST_BASE_XYZZY");
+        unsafe {
+            std::env::remove_var(var);
+        }
     }
 
     #[test]

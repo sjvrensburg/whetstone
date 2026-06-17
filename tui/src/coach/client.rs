@@ -52,13 +52,9 @@ impl CoachClient {
         struct Resp {
             data: Vec<Model>,
         }
-        let url = format!("{}/models", self.config.base_url);
-        let resp = self
-            .http
-            .get(url)
-            .bearer_auth(&self.config.api_key)
-            .send()
-            .await?;
+        let cfg = self.config.resolved();
+        let url = format!("{}/models", cfg.base_url);
+        let resp = self.http.get(url).bearer_auth(&cfg.api_key).send().await?;
         let resp = resp.error_for_status()?;
         let parsed: Resp = resp.json().await?;
         let mut ids: Vec<String> = parsed.data.into_iter().map(|m| m.id).collect();
@@ -89,8 +85,9 @@ impl CoachClient {
             #[serde(skip_serializing_if = "Option::is_none")]
             response_format: Option<ResponseFormat>,
         }
+        let cfg = self.config.resolved();
         let body = Req {
-            model: &self.config.model,
+            model: &cfg.model,
             messages,
             stream: true,
             response_format: json_mode.then_some(ResponseFormat {
@@ -100,8 +97,8 @@ impl CoachClient {
 
         let resp = self
             .http
-            .post(self.config.endpoint())
-            .bearer_auth(&self.config.api_key)
+            .post(cfg.endpoint())
+            .bearer_auth(&cfg.api_key)
             .json(&body)
             .send()
             .await?;

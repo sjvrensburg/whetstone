@@ -24,7 +24,7 @@ use ratatui::widgets::{
     Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
 };
 
-use crate::coach::{CoachClient, CoachConfig, DEFAULT_MODEL};
+use crate::coach::{CoachClient, CoachConfig, DEFAULT_MODEL, is_env_ref};
 use crate::core::coaching::{ObservationKind, StructuredCoaching};
 use crate::core::disclosure::{Composition, render_disclosure};
 use crate::core::guard::{screen_chat_reply, screen_coaching_output, screen_injection};
@@ -137,6 +137,13 @@ struct CoachSettings {
 struct ConnTestEvent {
     generation: u64,
     result: Result<Vec<String>, String>,
+}
+
+/// Result of a background `quarto render`.
+struct CompileEvent {
+    ok: bool,
+    /// Combined, trimmed stdout+stderr (or a spawn error).
+    output: String,
 }
 
 /// Which single-/two-field input prompt is open.
@@ -286,8 +293,9 @@ pub struct App {
     conn_tx: mpsc::Sender<ConnTestEvent>,
     conn_rx: mpsc::Receiver<ConnTestEvent>,
     conn_generation: u64,
-    /// Whether the keybindings/help popup is showing.
+    /// Whether the keybindings/help popup is showing, and its scroll offset.
     help_open: bool,
+    help_scroll: usize,
     /// Whether the process/journal view is showing, and its scroll.
     journal_open: bool,
     journal_scroll: usize,
@@ -303,6 +311,27 @@ pub struct App {
     disclosure_open: bool,
     disclosure_text: String,
     disclosure_scroll: usize,
+
+    /// Quarto render: a background subprocess reports back over this channel.
+    compile_tx: mpsc::Sender<CompileEvent>,
+    compile_rx: mpsc::Receiver<CompileEvent>,
+    /// True while a `quarto render` is in flight.
+    compiling: bool,
+    /// Captured output of the last render, shown in a scrollable overlay when
+    /// `compile_open` is set (auto-opened on failure).
+    compile_open: bool,
+    compile_output: String,
+    compile_scroll: usize,
+    compile_rect: Rect,
+
+    /// Document outline overlay: the headings, the highlighted row, and its rect.
+    outline_open: bool,
+    outline_items: Vec<crate::markdown::Heading>,
+    outline_sel: usize,
+    outline_rect: Rect,
+    /// Index of the first outline row drawn (the list scrolls when long), so the
+    /// click handler maps a row to the same heading the renderer drew there.
+    outline_start: usize,
     /// File mtime recorded at load/save, to detect external changes.
     file_mtime: Option<std::time::SystemTime>,
 
@@ -391,6 +420,7 @@ impl App {
         // the AI settings dialog; `client.is_some()` is the single enabled flag.
         let (coach_tx, coach_rx) = mpsc::channel();
         let (conn_tx, conn_rx) = mpsc::channel();
+        let (compile_tx, compile_rx) = mpsc::channel();
 
         Self {
             buffer,
@@ -462,6 +492,7 @@ impl App {
             conn_rx,
             conn_generation: 0,
             help_open: false,
+            help_scroll: 0,
             journal_open: false,
             journal_scroll: 0,
             journal_rect: Rect::default(),
@@ -472,6 +503,18 @@ impl App {
             disclosure_open: false,
             disclosure_text: String::new(),
             disclosure_scroll: 0,
+            compile_tx,
+            compile_rx,
+            compiling: false,
+            compile_open: false,
+            compile_output: String::new(),
+            compile_scroll: 0,
+            compile_rect: Rect::default(),
+            outline_open: false,
+            outline_items: Vec::new(),
+            outline_sel: 0,
+            outline_rect: Rect::default(),
+            outline_start: 0,
             file_mtime,
             preview_cache: None,
             m_typed: 0,
@@ -798,7 +841,10 @@ impl App {
             return;
         }
         if self.help_open {
-            self.help_open = false; // any key dismisses
+            // Arrows/PageUp/Down scroll the cheat-sheet; anything else dismisses.
+            if !scroll_key(&mut self.help_scroll, key.code) {
+                self.help_open = false;
+            }
             return;
         }
         if self.disclosure_open {
@@ -807,6 +853,16 @@ impl App {
                 KeyCode::Down => self.disclosure_scroll = self.disclosure_scroll.saturating_add(1),
                 _ => self.disclosure_open = false,
             }
+            return;
+        }
+        if self.compile_open {
+            if !scroll_key(&mut self.compile_scroll, key.code) {
+                self.compile_open = false;
+            }
+            return;
+        }
+        if self.outline_open {
+            self.handle_outline_key(key);
             return;
         }
         if self.prompt.is_some() {
@@ -843,7 +899,7 @@ impl App {
             return;
         }
         if key.code == KeyCode::F(1) {
-            self.help_open = true;
+            self.open_help();
             return;
         }
         // Global control keys (editor-scoped ones require editor focus).
@@ -863,6 +919,8 @@ impl App {
                 KeyCode::Char('t') => self.open_theme_picker(),
                 KeyCode::Char('e') => self.open_coach_settings(),
                 KeyCode::Char('p') => self.toggle_journal(),
+                KeyCode::Char('b') if editing => self.open_outline(),
+                KeyCode::Char('r') => self.do_compile(),
                 KeyCode::Char('z') if editing && shift => self.redo(),
                 KeyCode::Char('z') if editing => self.undo(),
                 KeyCode::Char('y') if editing => self.redo(),
@@ -921,6 +979,11 @@ impl App {
         self.journal_scroll = 0;
     }
 
+    fn open_help(&mut self) {
+        self.help_open = true;
+        self.help_scroll = 0;
+    }
+
     fn handle_journal_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => self.journal_open = false,
@@ -945,6 +1008,8 @@ impl App {
             || self.confirm_quit
             || self.prompt.is_some()
             || self.disclosure_open
+            || self.compile_open
+            || self.outline_open
     }
 
     // --- menus -------------------------------------------------------------
@@ -1034,6 +1099,8 @@ impl App {
             MenuAction::Open => self.open_prompt(PromptKind::OpenFile),
             MenuAction::Export => self.export_disclosure(),
             MenuAction::PreviewDisclosure => self.open_disclosure_preview(),
+            MenuAction::Compile => self.do_compile(),
+            MenuAction::Outline => self.open_outline(),
             MenuAction::Quit => self.request_quit(),
             MenuAction::AttributeRegion => self.attribute_region(),
             MenuAction::Find => self.open_prompt(PromptKind::Find),
@@ -1055,7 +1122,7 @@ impl App {
             MenuAction::ResetCoach => self.reset_coach(),
             MenuAction::CoachSettings => self.open_coach_settings(),
             MenuAction::Journal => self.toggle_journal(),
-            MenuAction::Help => self.help_open = true,
+            MenuAction::Help => self.open_help(),
         }
     }
 
@@ -1870,6 +1937,133 @@ impl App {
         }
     }
 
+    // --- Quarto render -----------------------------------------------------
+
+    /// Save the document, then run `quarto render <file>` in the background.
+    /// The result is folded in by [`Self::drain_compile_events`]; output is
+    /// captured (the alt-screen is never handed to the child) and shown in a
+    /// scrollable overlay on failure.
+    fn do_compile(&mut self) {
+        if self.path.as_os_str().is_empty() {
+            self.message = "Save the document first (Ctrl+S) before rendering.".into();
+            return;
+        }
+        if self.compiling {
+            self.message = "Quarto is already rendering…".into();
+            return;
+        }
+        // Quarto reads the file from disk, so flush any pending edits first.
+        if self.dirty {
+            self.save();
+            if self.dirty {
+                return; // save failed — `save()` already set the message
+            }
+        }
+        let path = self.path.clone();
+        let tx = self.compile_tx.clone();
+        self.compiling = true;
+        self.message = format!("Rendering {} with Quarto…", self.file_label());
+        // A plain OS thread (no tokio process feature needed): run quarto to
+        // completion, capture both streams, and report back over the channel.
+        std::thread::spawn(move || {
+            let ev = match std::process::Command::new("quarto")
+                .arg("render")
+                .arg(&path)
+                .output()
+            {
+                Ok(out) => {
+                    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+                    let err = String::from_utf8_lossy(&out.stderr);
+                    if !err.trim().is_empty() {
+                        if !text.is_empty() {
+                            text.push('\n');
+                        }
+                        text.push_str(&err);
+                    }
+                    CompileEvent {
+                        ok: out.status.success(),
+                        output: text.trim().to_string(),
+                    }
+                }
+                Err(e) => CompileEvent {
+                    ok: false,
+                    output: format!(
+                        "Could not run `quarto`: {e}\n\nIs Quarto installed and on your PATH? \
+                         See https://quarto.org/docs/get-started/."
+                    ),
+                },
+            };
+            let _ = tx.send(ev);
+        });
+    }
+
+    /// Fold a finished render into the UI: a one-line status on success, or a
+    /// scrollable output overlay on failure.
+    pub fn drain_compile_events(&mut self) {
+        while let Ok(ev) = self.compile_rx.try_recv() {
+            self.compiling = false;
+            self.compile_output = ev.output;
+            self.compile_scroll = 0;
+            if ev.ok {
+                self.compile_open = false;
+                self.message = format!("Quarto rendered {}.", self.file_label());
+            } else {
+                self.compile_open = true; // surface the error
+                self.message = "Quarto render failed — see the output.".into();
+            }
+        }
+    }
+
+    // --- document outline --------------------------------------------------
+
+    /// Open the outline overlay, highlighting the heading the cursor is in.
+    fn open_outline(&mut self) {
+        self.outline_items = crate::markdown::outline(&self.buffer.text());
+        if self.outline_items.is_empty() {
+            self.message = "No headings to outline yet.".into();
+            return;
+        }
+        let (cursor_line, _) = self.buffer.cursor_line_col();
+        // Select the last heading at or before the cursor (else the first).
+        self.outline_sel = self
+            .outline_items
+            .iter()
+            .rposition(|h| h.line <= cursor_line)
+            .unwrap_or(0);
+        self.outline_open = true;
+    }
+
+    fn handle_outline_key(&mut self, key: KeyEvent) {
+        let n = self.outline_items.len();
+        if n == 0 {
+            self.outline_open = false;
+            return;
+        }
+        match key.code {
+            KeyCode::Esc => self.outline_open = false,
+            KeyCode::Up => self.outline_sel = (self.outline_sel + n - 1) % n,
+            KeyCode::Down => self.outline_sel = (self.outline_sel + 1) % n,
+            KeyCode::Home => self.outline_sel = 0,
+            KeyCode::End => self.outline_sel = n - 1,
+            KeyCode::Enter => self.jump_to_outline(self.outline_sel),
+            _ => {}
+        }
+    }
+
+    /// Jump the editor cursor to the start of the selected heading and close.
+    fn jump_to_outline(&mut self, idx: usize) {
+        if let Some(h) = self.outline_items.get(idx) {
+            let (line, title) = (h.line, h.title.clone());
+            self.buffer.clear_selection();
+            self.buffer.set_cursor_line_col(line, 0);
+            self.undo_group = None;
+            self.reveal_cursor();
+            self.message = format!("Jumped to “{title}”");
+        }
+        self.outline_open = false;
+        self.focus = Focus::Editor;
+    }
+
     /// Claim-gate input (before the editor is unlocked).
     fn handle_claim_key(&mut self, key: KeyEvent) {
         match key.code {
@@ -2307,10 +2501,13 @@ impl App {
             return;
         }
 
-        // Help popup: a left-click anywhere dismisses it.
+        // Help popup: wheel scrolls the cheat-sheet, a left-click dismisses it.
         if self.help_open {
-            if matches!(ev.kind, MouseEventKind::Down(MouseButton::Left)) {
-                self.help_open = false;
+            match ev.kind {
+                MouseEventKind::ScrollDown => self.help_scroll = self.help_scroll.saturating_add(1),
+                MouseEventKind::ScrollUp => self.help_scroll = self.help_scroll.saturating_sub(1),
+                MouseEventKind::Down(MouseButton::Left) => self.help_open = false,
+                _ => {}
             }
             return;
         }
@@ -2340,6 +2537,52 @@ impl App {
                     self.disclosure_scroll = self.disclosure_scroll.saturating_sub(1)
                 }
                 MouseEventKind::Down(MouseButton::Left) => self.disclosure_open = false,
+                _ => {}
+            }
+            return;
+        }
+
+        // Quarto output: wheel scrolls, a click dismisses.
+        if self.compile_open {
+            match ev.kind {
+                MouseEventKind::ScrollDown => {
+                    self.compile_scroll = self.compile_scroll.saturating_add(1)
+                }
+                MouseEventKind::ScrollUp => {
+                    self.compile_scroll = self.compile_scroll.saturating_sub(1)
+                }
+                MouseEventKind::Down(MouseButton::Left) => self.compile_open = false,
+                _ => {}
+            }
+            return;
+        }
+
+        // Outline: wheel moves the selection; click a row to jump, outside to close.
+        if self.outline_open {
+            let n = self.outline_items.len();
+            match ev.kind {
+                MouseEventKind::ScrollDown if n > 0 => {
+                    self.outline_sel = (self.outline_sel + 1) % n
+                }
+                MouseEventKind::ScrollUp if n > 0 => {
+                    self.outline_sel = (self.outline_sel + n - 1) % n
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    let rect = self.outline_rect;
+                    if over(rect) && ev.row > rect.y && ev.row + 1 < rect.y + rect.height {
+                        // Map the click to the heading draw_outline put on that row
+                        // (it recorded the first visible index in outline_start).
+                        let list_h = rect.height.saturating_sub(3) as usize;
+                        let row = (ev.row - rect.y - 1) as usize;
+                        let idx = self.outline_start + row;
+                        // Only the list rows are clickable (not the hint line).
+                        if row < list_h && idx < n {
+                            self.jump_to_outline(idx);
+                        }
+                    } else {
+                        self.outline_open = false;
+                    }
+                }
                 _ => {}
             }
             return;
@@ -2680,6 +2923,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if app.disclosure_open {
         draw_disclosure(frame, app, area);
     }
+    if app.outline_open {
+        draw_outline(frame, app, area);
+    }
+    if app.compile_open {
+        draw_compile_output(frame, app, area);
+    }
     if app.prompt.is_some() {
         draw_prompt(frame, app, area);
     }
@@ -2822,12 +3071,26 @@ fn draw_coach_settings(frame: &mut Frame, app: &mut App, area: Rect) {
             Span::styled(value, theme.text()),
         ])
     };
-    let masked: String = "•".repeat(s.api_key.chars().count());
+    // An `env:NAME` reference is shown verbatim (the name isn't a secret and
+    // the writer needs to see it); a literal key is masked.
+    let key_display = if is_env_ref(&s.api_key) {
+        s.api_key.clone()
+    } else {
+        "•".repeat(s.api_key.chars().count())
+    };
     let mut lines = vec![
         field_line(0, "Endpoint", s.base_url.clone()),
-        field_line(1, "API key", masked),
+        field_line(1, "API key", key_display),
         field_line(2, "Model", s.model.clone()),
         Line::raw(""),
+        Line::from(Span::styled(
+            "Tip: enter env:NAME (or ${NAME}) to read a value from an environment",
+            theme.dim(),
+        )),
+        Line::from(Span::styled(
+            "variable — only the name is saved, never the resolved value.",
+            theme.dim(),
+        )),
     ];
 
     // Status line from the last connection test (color-coded by outcome).
@@ -3052,12 +3315,15 @@ fn draw_theme_picker(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme;
-    let rect = centered_rect_abs(62, 24, area);
+    // Size to the screen so the cheat-sheet is never clipped on a short
+    // terminal — it word-wraps to the width and scrolls past the height.
+    let rect = centered_rect_abs(64, area.height.saturating_sub(2).clamp(8, 28), area);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(theme.border(true))
         .style(theme.panel_bg())
         .title(Line::from(Span::styled(" Keybindings ", theme.title(true))));
+    let inner = block.inner(rect);
     let key = Style::default()
         .fg(theme.accent)
         .add_modifier(Modifier::BOLD);
@@ -3080,6 +3346,8 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
         row("Ctrl+D", "Export disclosure (File ▸ Preview to view)"),
         row("Ctrl+K", "State / edit your claim"),
         row("Ctrl+M", "Mark paste under cursor as a quotation"),
+        row("Ctrl+B", "Outline — jump to a heading"),
+        row("Ctrl+R", "Render with Quarto (saves first)"),
         row("Ctrl+L / J", "Focus coach · coach the selection"),
         row("Ctrl+E", "AI settings (endpoint, API key, model)"),
         row("Ctrl+P", "Process / journal view"),
@@ -3098,10 +3366,34 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
             "  Mouse: click / drag to select, double = word, triple = line.",
             theme.dim(),
         )),
-        Line::from(Span::styled("  Esc or any key to close", theme.dim())),
+        Line::from(Span::styled(
+            "  ↑/↓ or wheel to scroll · Esc or any other key to close",
+            theme.dim(),
+        )),
     ];
+    let text = Text::from(lines);
+    let content = wrapped_height(&text, inner.width as usize);
+    let max = content.saturating_sub(inner.height as usize);
+    if app.help_scroll > max {
+        app.help_scroll = max;
+    }
     frame.render_widget(Clear, rect);
-    frame.render_widget(Paragraph::new(lines).block(block), rect);
+    frame.render_widget(
+        Paragraph::new(text)
+            .block(block)
+            .style(theme.text())
+            .wrap(Wrap { trim: false })
+            .scroll((app.help_scroll as u16, 0)),
+        rect,
+    );
+    render_scrollbar(
+        frame,
+        rect,
+        content,
+        app.help_scroll,
+        inner.height as usize,
+        theme,
+    );
 }
 
 /// A centered rect of an absolute size, clamped to `area`.
@@ -3629,6 +3921,31 @@ fn render_scrollbar(
     frame.render_stateful_widget(bar, area, &mut state);
 }
 
+/// Apply a vertical-scroll key (↑/↓ by one, PageUp/Down by a page) to `scroll`,
+/// returning whether the key was a scroll key. Used by the read-only overlays so
+/// a non-scroll key falls through to dismiss them.
+fn scroll_key(scroll: &mut usize, code: KeyCode) -> bool {
+    match code {
+        KeyCode::Up => *scroll = scroll.saturating_sub(1),
+        KeyCode::Down => *scroll = scroll.saturating_add(1),
+        KeyCode::PageUp => *scroll = scroll.saturating_sub(8),
+        KeyCode::PageDown => *scroll = scroll.saturating_add(8),
+        _ => return false,
+    }
+    true
+}
+
+/// First outline row to draw so the selected heading (`sel`) stays visible in a
+/// `list_h`-row window over `count` items. Shared by the renderer and the click
+/// handler so a click lands on the heading actually drawn at that row.
+fn outline_view_start(sel: usize, count: usize, list_h: usize) -> usize {
+    if list_h == 0 || count <= list_h {
+        0
+    } else {
+        sel.saturating_sub(list_h - 1).min(count - list_h)
+    }
+}
+
 /// Estimate how many terminal rows `text` occupies when wrapped to `width`.
 /// Used to clamp preview scrolling. (`Line::width` is unicode display width.)
 fn wrapped_height(text: &Text<'_>, width: usize) -> usize {
@@ -3744,6 +4061,105 @@ fn draw_disclosure(frame: &mut Frame, app: &mut App, area: Rect) {
             .wrap(Wrap { trim: false })
             .scroll((app.disclosure_scroll as u16, 0)),
         rect,
+    );
+}
+
+/// Document-outline overlay: a scrollable, indented list of headings; the
+/// selected row is highlighted and Enter jumps the cursor to it.
+fn draw_outline(frame: &mut Frame, app: &mut App, area: Rect) {
+    let theme = app.theme;
+    let count = app.outline_items.len();
+    let height = (count as u16 + 4).min((area.height * 4 / 5).max(6));
+    let rect = centered_rect_abs(60, height, area);
+    app.outline_rect = rect;
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme.border(true))
+        .style(theme.panel_bg())
+        .title(Line::from(Span::styled(" Outline ", theme.title(true))));
+    let inner = block.inner(rect);
+
+    // Keep the selected row in view (the list scrolls when it's taller than the
+    // popup). Reserve the last inner row for the hint line.
+    let list_h = inner.height.saturating_sub(1) as usize;
+    let start = outline_view_start(app.outline_sel, count, list_h);
+    // Record it so a click maps to the same heading this renders (see handle_mouse).
+    app.outline_start = start;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (i, h) in app
+        .outline_items
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(list_h)
+    {
+        let indent = "  ".repeat((h.level.saturating_sub(1)) as usize);
+        let marker = if i == app.outline_sel { "▸ " } else { "  " };
+        let style = if i == app.outline_sel {
+            theme.selected()
+        } else {
+            theme.text()
+        };
+        lines.push(Line::from(Span::styled(
+            format!("{marker}{indent}{}", h.title),
+            style,
+        )));
+    }
+    lines.push(Line::from(Span::styled(
+        "↑/↓ select · Enter jump · Esc close",
+        theme.dim(),
+    )));
+    frame.render_widget(Clear, rect);
+    frame.render_widget(Paragraph::new(lines).block(block), rect);
+}
+
+/// Scrollable read-only view of the last Quarto render's output (auto-opened
+/// when a render fails).
+fn draw_compile_output(frame: &mut Frame, app: &mut App, area: Rect) {
+    let theme = app.theme;
+    let rect = centered_rect_abs(78, (area.height * 4 / 5).max(8), area);
+    app.compile_rect = rect;
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme.border(true))
+        .style(theme.panel_bg())
+        .title(Line::from(Span::styled(
+            " Quarto render ",
+            theme.title(true),
+        )));
+    let inner = block.inner(rect);
+    let mut lines: Vec<Line<'static>> = app
+        .compile_output
+        .lines()
+        .map(|l| Line::from(Span::styled(l.to_string(), theme.text())))
+        .collect();
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "↑/↓ scroll · Esc close",
+        theme.dim(),
+    )));
+    let text = Text::from(lines);
+    let content = wrapped_height(&text, inner.width as usize);
+    let max = content.saturating_sub(inner.height as usize);
+    if app.compile_scroll > max {
+        app.compile_scroll = max;
+    }
+    frame.render_widget(Clear, rect);
+    frame.render_widget(
+        Paragraph::new(text)
+            .block(block)
+            .style(theme.text())
+            .wrap(Wrap { trim: false })
+            .scroll((app.compile_scroll as u16, 0)),
+        rect,
+    );
+    render_scrollbar(
+        frame,
+        rect,
+        content,
+        app.compile_scroll,
+        inner.height as usize,
+        theme,
     );
 }
 
@@ -4044,6 +4460,93 @@ mod tests {
             });
         }
         assert_eq!(app.buffer.selected_text().as_deref(), Some("Title"));
+    }
+
+    #[test]
+    fn outline_opens_and_jumps_to_heading() {
+        let rt = rt();
+        let mut app = test_app(&rt);
+        app.buffer = Buffer::new("# A\n\ntext\n\n## B\n\nmore");
+        app.buffer.set_cursor(0);
+        app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+        assert!(app.outline_open);
+        assert_eq!(app.outline_items.len(), 2);
+        // Select the second heading and jump to it.
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(!app.outline_open);
+        assert_eq!(app.buffer.cursor_line_col().0, 4); // "## B" is line index 4
+    }
+
+    #[test]
+    fn outline_without_headings_does_not_open() {
+        let rt = rt();
+        let mut app = test_app(&rt);
+        app.buffer = Buffer::new("just prose, no headings");
+        app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+        assert!(!app.outline_open);
+        assert!(app.message.contains("No headings"));
+    }
+
+    #[test]
+    fn help_scrolls_then_dismisses() {
+        let rt = rt();
+        let mut app = test_app(&rt);
+        app.handle_key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        assert!(app.help_open);
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.help_scroll, 1);
+        // Any non-scroll key closes the cheat-sheet.
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert!(!app.help_open);
+    }
+
+    #[test]
+    fn compile_requires_a_saved_path() {
+        let rt = rt();
+        let mut app = App::new(
+            "hi".into(),
+            std::path::PathBuf::new(),
+            None,
+            rt.handle().clone(),
+        );
+        app.do_compile();
+        assert!(!app.compiling);
+        assert!(app.message.contains("Save"));
+    }
+
+    #[test]
+    fn compile_failure_opens_output_overlay() {
+        let rt = rt();
+        let mut app = test_app(&rt);
+        app.compiling = true;
+        app.compile_tx
+            .send(CompileEvent {
+                ok: false,
+                output: "render error: boom".into(),
+            })
+            .unwrap();
+        app.drain_compile_events();
+        assert!(!app.compiling);
+        assert!(app.compile_open);
+        assert_eq!(app.compile_output, "render error: boom");
+    }
+
+    #[test]
+    fn compile_success_reports_without_overlay() {
+        let rt = rt();
+        let mut app = test_app(&rt);
+        app.compiling = true;
+        app.compile_tx
+            .send(CompileEvent {
+                ok: true,
+                output: "Output created: test.html".into(),
+            })
+            .unwrap();
+        app.drain_compile_events();
+        assert!(!app.compiling);
+        assert!(!app.compile_open);
+        assert!(app.message.contains("rendered"));
     }
 
     #[test]
