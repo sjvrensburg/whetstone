@@ -25,8 +25,26 @@ pub struct Harness {
 }
 
 impl Harness {
-    /// Build a harness over a fresh document at `width`×`height` cells.
+    /// Build a harness over a fresh document at `width`×`height` cells. The
+    /// coach is disabled (no endpoint) so tests stay offline and deterministic.
     pub fn new(text: &str, path: &str, width: u16, height: u16) -> Self {
+        Self::build(text, path, width, height, None)
+    }
+
+    /// Like [`Harness::new`], but resolves the coach config from the environment
+    /// (`WHETSTONE_*`), so a configured endpoint produces a live client. Used by
+    /// the screenshot tool to capture real coaching exchanges.
+    pub fn new_with_coach_from_env(text: &str, path: &str, width: u16, height: u16) -> Self {
+        Self::build(text, path, width, height, crate::coach::CoachConfig::load())
+    }
+
+    fn build(
+        text: &str,
+        path: &str,
+        width: u16,
+        height: u16,
+        coach: Option<crate::coach::CoachConfig>,
+    ) -> Self {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -34,7 +52,7 @@ impl Harness {
         let app = App::new(
             text.to_string(),
             std::path::PathBuf::from(path),
-            None,
+            coach,
             rt.handle().clone(),
         );
         Self {

@@ -1239,6 +1239,20 @@ impl App {
         }
     }
 
+    /// Whether a coach request is in flight (harness/screenshots only) — lets a
+    /// headless driver poll until a real reply lands.
+    #[cfg(any(test, feature = "harness"))]
+    pub fn coach_busy_for_test(&self) -> bool {
+        self.coach_busy
+    }
+
+    /// Whether the teach-back checkpoint overlay is currently showing
+    /// (harness/screenshots only).
+    #[cfg(any(test, feature = "harness"))]
+    pub fn teachback_pending_for_test(&self) -> bool {
+        self.teachback_pending
+    }
+
     /// Run a menu/shortcut command from the headless harness/screenshots.
     #[cfg(any(test, feature = "harness"))]
     pub fn dispatch_for_test(&mut self, action: MenuAction) {
