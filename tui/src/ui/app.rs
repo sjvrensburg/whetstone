@@ -28,7 +28,7 @@ use crate::coach::{CoachClient, CoachConfig, DEFAULT_MODEL};
 use crate::core::coaching::{ObservationKind, StructuredCoaching};
 use crate::core::disclosure::{Composition, render_disclosure};
 use crate::core::guard::{screen_chat_reply, screen_coaching_output, screen_injection};
-use crate::core::mirror::{MirrorSnapshot, compute_mirror, format_mirror_summary};
+use crate::core::mirror::{MirrorSnapshot, format_mirror_summary};
 use crate::core::process_event::{
     FrictionPolicy, Location, MetaValue, ProcessEvent, ProcessEventType,
 };
@@ -1639,6 +1639,11 @@ impl App {
         self.redo_stack.clear();
         self.undo_group = None;
         self.coach_turns.clear();
+        // Supersede any in-flight coach request so its reply can't land in the
+        // newly-opened document, and clear the "thinking…" indicator.
+        self.coach_generation += 1;
+        self.coach_busy = false;
+        self.coach_started = None;
         self.editor_scroll = 0;
         self.editor_hscroll = 0;
         // Fresh journal + tallies for the new document.
@@ -1668,6 +1673,9 @@ impl App {
 
     fn do_save_as(&mut self, path: &str) {
         self.path = PathBuf::from(path);
+        // Re-baseline the mtime to the target so the external-change guard in
+        // `save()` doesn't fire against an unrelated file's timestamp.
+        self.file_mtime = file_mtime_of(&self.path);
         self.save();
     }
 
@@ -2502,7 +2510,7 @@ fn draw_journal(frame: &mut Frame, app: &mut App, area: Rect) {
         )));
     let inner = block.inner(rect);
 
-    let snap = compute_mirror(&app.journal);
+    let snap = app.mirror_snapshot();
     let mut lines: Vec<Line<'static>> = vec![
         Line::from(Span::styled(format_mirror_summary(&snap), theme.accent())),
         Line::raw(""),
@@ -3651,7 +3659,10 @@ mod tests {
             app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
         app.handle_paste(&"z".repeat(50));
-        assert_eq!(app.mirror_snapshot(), compute_mirror(&app.journal));
+        assert_eq!(
+            app.mirror_snapshot(),
+            crate::core::mirror::compute_mirror(&app.journal)
+        );
     }
 
     #[test]
