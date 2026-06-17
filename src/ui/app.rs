@@ -2456,7 +2456,7 @@ impl App {
             // Enter / 1 apply the primary fix; 2-9 pick among multiple fixes.
             KeyCode::Enter => self.apply_suggestion(0),
             KeyCode::Char(c @ '1'..='9') => {
-                self.apply_suggestion((c as usize - '1' as usize).max(0));
+                self.apply_suggestion(c as usize - '1' as usize);
             }
             _ => {}
         }
@@ -3281,13 +3281,13 @@ impl App {
                     self.reveal_cursor();
                 }
             }
-            MouseEventKind::Drag(MouseButton::Left) => {
-                if self.focus == Focus::Editor && self.editor_inner.height > 0 {
-                    let (line, col) = self.editor_cell_to_pos(ev.column, ev.row);
-                    self.buffer.begin_selection(); // anchor already set on press
-                    self.buffer.set_cursor_line_col(line, col);
-                    self.reveal_cursor();
-                }
+            MouseEventKind::Drag(MouseButton::Left)
+                if self.focus == Focus::Editor && self.editor_inner.height > 0 =>
+            {
+                let (line, col) = self.editor_cell_to_pos(ev.column, ev.row);
+                self.buffer.begin_selection(); // anchor already set on press
+                self.buffer.set_cursor_line_col(line, col);
+                self.reveal_cursor();
             }
             _ => {}
         }
