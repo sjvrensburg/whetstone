@@ -151,4 +151,17 @@ mod tests {
         let s = h.render_to_string();
         assert!(s.contains("SUGGESTIONS"));
     }
+
+    #[test]
+    fn opens_untitled_buffer_with_no_path() {
+        // `whetstone-tui` with no file opens an unnamed buffer (empty path).
+        // Use non-empty text so the brand-new-doc claim gate doesn't cover the
+        // chrome we're asserting on.
+        let mut h = Harness::new("Some draft text.", "", 100, 30);
+        let s = h.render_to_string();
+        assert!(s.contains("untitled"), "status/title shows untitled: {s}");
+        // Saving an untitled buffer prompts for a name rather than failing.
+        h.app.dispatch_for_test(MenuAction::Save);
+        assert!(h.render_to_string().contains("Save as"));
+    }
 }

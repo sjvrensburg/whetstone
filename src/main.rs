@@ -45,16 +45,10 @@ fn main() -> Result<()> {
         // Headless subcommands print JSON and exit — no terminal setup.
         Some(Command::Open { file }) => file,
         Some(command) => return cli::run(command),
-        None => match cli.file {
-            Some(file) => file,
-            None => {
-                eprintln!(
-                    "error: provide a file to edit (whetstone-tui FILE) or a subcommand \
-                     (whetstone-tui --help)."
-                );
-                std::process::exit(2);
-            }
-        },
+        // No file and no subcommand: open an untitled buffer. The empty path
+        // marks it unnamed — Ctrl+S prompts for a name, and autosave/history
+        // stay off until it is saved.
+        None => cli.file.unwrap_or_default(),
     };
     run_tui(file)
 }

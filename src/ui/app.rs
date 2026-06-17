@@ -1925,7 +1925,17 @@ impl App {
                 self.search_origin = self.buffer.cursor();
             }
             PromptKind::OpenFile | PromptKind::SaveAs => {
-                fields[0] = self.path.display().to_string();
+                // For an untitled buffer there's no path yet — prefill the
+                // working directory (with a trailing separator) so it's clear
+                // where a relative name will land, and the user just appends a
+                // filename or edits the directory.
+                fields[0] = if self.path.as_os_str().is_empty() {
+                    std::env::current_dir()
+                        .map(|d| format!("{}{}", d.display(), std::path::MAIN_SEPARATOR))
+                        .unwrap_or_default()
+                } else {
+                    self.path.display().to_string()
+                };
             }
             PromptKind::GotoLine => {}
         }
@@ -3357,6 +3367,11 @@ impl App {
     }
 
     fn save(&mut self) {
+        // An untitled buffer has no path yet — prompt for one (Save as).
+        if self.path.as_os_str().is_empty() {
+            self.open_prompt(PromptKind::SaveAs);
+            return;
+        }
         // Warn if the file changed on disk since we loaded/saved it.
         if let (Some(known), Some(now)) = (self.file_mtime, file_mtime_of(&self.path))
             && now > known
@@ -3393,6 +3408,9 @@ impl App {
     }
 
     fn file_label(&self) -> String {
+        if self.path.as_os_str().is_empty() {
+            return "untitled".to_string();
+        }
         match self.path.file_name().and_then(|n| n.to_str()) {
             Some(s) => s.to_string(),
             None => self.path.display().to_string(),
@@ -4829,6 +4847,13 @@ fn env_instrument_override(inst: Instrument) -> Option<Option<u8>> {
 /// Write `bytes` to `path` atomically (temp file in the same dir, then rename),
 /// so a crash mid-write can't truncate the document.
 fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    // Create missing parent directories so "Save as notes/draft.qmd" works even
+    // when `notes/` doesn't exist yet.
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
     let tmp = path.with_extension("whetstone-tmp");
     std::fs::write(&tmp, bytes)?;
     std::fs::rename(&tmp, path)
