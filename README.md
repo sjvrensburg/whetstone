@@ -39,8 +39,13 @@ From source, see **Build & run** below.
 
 ```sh
 cargo run -- path/to/file.qmd      # opens (creates if missing)
+cargo run                          # opens a fresh, untitled buffer
 cargo build --release              # ./target/release/whetstone-tui
 ```
+
+Launched with no file, Whetstone opens an empty, untitled buffer; `Ctrl+S`
+prompts for a name (autosave and the per-document coach history stay off until
+it is saved).
 
 The UI is mouse- and keyboard-driven (Fresh/Micro-style: familiar, no modes
 beyond transient menus/dialogs). Press **F1** for the keybinding cheat-sheet or
@@ -134,12 +139,12 @@ The theme and friction level chosen in-app persist to
 `~/.config/whetstone/ui.json`; the env vars override them at startup. The
 friction level drives the paste-quarantine threshold, the claim-to-own floor,
 the teach-back cadence, and — at "Engaged"/"Deep Work" — proactive
-push-cadence coaching that reviews each finished paragraph (ADR-008).
+push-cadence coaching that reviews each finished paragraph.
 
 ### Per-instrument friction overrides
 
 The four dial-able instruments can each be pinned to their own level,
-independent of the global preset (ADR-008). Open the **View** menu and click a
+independent of the global preset. Open the **View** menu and click a
 row to cycle it: *off* (follow the preset) → Quiet → Coach → Engaged → Deep
 Work → *off*. A checked row is currently overridden. This lets you, say, keep
 the global preset at "Coach" but turn the paste quarantine up to "Deep Work",
