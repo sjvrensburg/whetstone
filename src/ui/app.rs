@@ -459,10 +459,23 @@ pub struct App {
     /// status bar never rescans the whole journal — O(1) amortized).
     m_typed: u32,
     m_pasted: u32,
-    m_paste_count: u32,
-    m_resolved: std::collections::BTreeMap<String, bool>,
+    /// Per-region state of every quarantined paste currently in the document,
+    /// keyed by region id. Removed (undone) pastes are dropped from the map, so
+    /// they stop counting toward the mirror — see [`PasteState`].
+    m_pastes: std::collections::BTreeMap<String, PasteState>,
     m_consults: u32,
     m_refused: u32,
+}
+
+/// Outcome of a quarantined paste, tracked per region for the live mirror.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PasteState {
+    /// Quarantined and not yet resolved.
+    Unclaimed,
+    /// Rewritten until owned (or deleted via editing).
+    Claimed,
+    /// Marked as an attributed quotation.
+    Attributed,
 }
 
 impl App {
@@ -654,8 +667,7 @@ impl App {
             preview_cache: None,
             m_typed: 0,
             m_pasted: 0,
-            m_paste_count: 0,
-            m_resolved: std::collections::BTreeMap::new(),
+            m_pastes: std::collections::BTreeMap::new(),
             m_consults: 0,
             m_refused: 0,
         }
@@ -691,15 +703,30 @@ impl App {
         match kind {
             ProcessEventType::TypingBurst => self.m_typed += size.unwrap_or(0),
             ProcessEventType::PasteDetected => self.m_pasted += size.unwrap_or(0),
-            ProcessEventType::PasteQuarantined => self.m_paste_count += 1,
-            ProcessEventType::PasteClaimed => {
+            ProcessEventType::PasteQuarantined => {
                 if let Some(rid) = region_id() {
-                    self.m_resolved.insert(rid, true);
+                    // A re-instated paste (redo, or undo of its deletion) is
+                    // unclaimed again, overwriting any prior resolution.
+                    self.m_pastes.insert(rid, PasteState::Unclaimed);
+                }
+            }
+            ProcessEventType::PasteClaimed => {
+                if let Some(rid) = region_id()
+                    && let Some(st) = self.m_pastes.get_mut(&rid)
+                {
+                    *st = PasteState::Claimed;
                 }
             }
             ProcessEventType::PasteAttributed => {
+                if let Some(rid) = region_id()
+                    && let Some(st) = self.m_pastes.get_mut(&rid)
+                {
+                    *st = PasteState::Attributed;
+                }
+            }
+            ProcessEventType::PasteRemoved => {
                 if let Some(rid) = region_id() {
-                    self.m_resolved.insert(rid, false);
+                    self.m_pastes.remove(&rid);
                 }
             }
             ProcessEventType::CoachConsult => {
@@ -723,8 +750,10 @@ impl App {
 
     /// Build the current process-mirror snapshot from the running tallies.
     fn mirror_snapshot(&self) -> MirrorSnapshot {
-        let claimed = self.m_resolved.values().filter(|c| **c).count() as u32;
-        let attributed = self.m_resolved.values().filter(|c| !**c).count() as u32;
+        let count =
+            |want: PasteState| self.m_pastes.values().filter(|s| **s == want).count() as u32;
+        let claimed = count(PasteState::Claimed);
+        let attributed = count(PasteState::Attributed);
         let total = self.m_typed + self.m_pasted;
         MirrorSnapshot {
             composition: Composition {
@@ -732,11 +761,8 @@ impl App {
                 pasted_chars: self.m_pasted,
                 pastes_claimed: claimed,
                 pastes_attributed: attributed,
-                pastes_unclaimed: self
-                    .m_paste_count
-                    .saturating_sub(claimed)
-                    .saturating_sub(attributed),
-                paste_count: self.m_paste_count,
+                pastes_unclaimed: count(PasteState::Unclaimed),
+                paste_count: self.m_pastes.len() as u32,
                 typed_ratio: if total == 0 {
                     1.0
                 } else {
@@ -812,6 +838,27 @@ impl App {
     }
 
     fn restore(&mut self, s: Snapshot) {
+        // Reconcile the quarantine marks with the document before swapping
+        // regions, so the mirror/disclosure reflect what's actually present. A
+        // paste undone out of the document is recorded as removed (rather than
+        // stranded as a permanently "unclaimed" mark); one brought back (redo,
+        // or undoing its deletion) is re-quarantined as unclaimed.
+        use std::collections::HashSet;
+        let current: HashSet<String> = self
+            .quarantine
+            .regions()
+            .iter()
+            .map(|r| r.id.clone())
+            .collect();
+        let target_ids: HashSet<String> = s.regions.iter().map(|r| r.id.clone()).collect();
+        let removed: Vec<String> = current.difference(&target_ids).cloned().collect();
+        let reinstated: Vec<Region> = s
+            .regions
+            .iter()
+            .filter(|r| !current.contains(&r.id))
+            .cloned()
+            .collect();
+
         self.buffer = Buffer::new(&s.text);
         self.buffer.set_cursor(s.cursor);
         self.quarantine.restore_regions(s.regions);
@@ -821,6 +868,26 @@ impl App {
         self.lint_dirty = true;
         self.last_edit = Some(Instant::now());
         self.reveal_cursor();
+
+        for id in removed {
+            self.log_event(
+                ProcessEventType::PasteRemoved,
+                None,
+                None,
+                vec![("regionId", MetaValue::Str(id))],
+            );
+        }
+        for r in reinstated {
+            self.log_event(
+                ProcessEventType::PasteQuarantined,
+                Some((r.to - r.from) as u32),
+                Some(Location {
+                    from: r.from as u32,
+                    to: r.to as u32,
+                }),
+                vec![("regionId", MetaValue::Str(r.id))],
+            );
+        }
     }
 
     fn undo(&mut self) {
@@ -2180,8 +2247,7 @@ impl App {
         self.event_seq = 0;
         self.m_typed = 0;
         self.m_pasted = 0;
-        self.m_paste_count = 0;
-        self.m_resolved.clear();
+        self.m_pastes.clear();
         self.m_consults = 0;
         self.m_refused = 0;
         let pc0 = instruments::paragraph_count(&text);
@@ -3612,6 +3678,13 @@ fn draw_coach_settings(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Marker (2) + label padded to 9 + space = 12-cell gutter before the value.
     let gutter = 12u16;
+    // The dialog is a fixed 76 cols wide (clamped to the terminal); the value
+    // column is what's left after the borders and the gutter. Used to window
+    // long values so they scroll rather than clip at the box edge.
+    let value_w = 76u16
+        .min(area.width)
+        .saturating_sub(2)
+        .saturating_sub(gutter);
     // Mask a literal API key; show an `env:NAME` reference verbatim (the name
     // isn't a secret and the writer needs to see it).
     let mask_key = |k: &str| {
@@ -3631,9 +3704,10 @@ fn draw_coach_settings(frame: &mut Frame, app: &mut App, area: Rect) {
         let focused = s.field == idx;
         let marker = if focused { "▸ " } else { "  " };
         let label_style = if focused { theme.accent() } else { theme.dim() };
+        let (vis, _) = scroll_field_tail(&value, value_w);
         lines.push(Line::from(vec![
             Span::styled(format!("{marker}{label:<9} "), label_style),
-            Span::styled(value, theme.text()),
+            Span::styled(vis, theme.text()),
         ]));
     };
 
@@ -3748,13 +3822,13 @@ fn draw_coach_settings(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     }
 
-    lines.push(Line::raw(""));
-    lines.push(Line::from(Span::styled(
-        "Tab/↑↓ field · ←/→ provider/toggle · Ctrl+T test · Ctrl+N/P model · Enter save · Esc",
-        theme.dim(),
-    )));
+    // The key hint is a pinned footer (rendered on the last inner row, outside
+    // the scroll region) so it stays visible no matter how the body scrolls.
+    let hint =
+        "Tab/↑↓ field · ←/→ provider/toggle · Ctrl+T test · Ctrl+N/P model · Enter save · Esc";
 
-    let height = (lines.len() as u16) + 2; // borders
+    // borders (2) + the body lines + a pinned 1-row footer.
+    let height = (lines.len() as u16) + 3;
     let rect = centered_rect_abs(76, height, area);
     app.coach_settings_rect = rect;
 
@@ -3767,42 +3841,90 @@ fn draw_coach_settings(frame: &mut Frame, app: &mut App, area: Rect) {
             theme.title(true),
         )));
     let inner = block.inner(rect);
+    // Reserve the last inner row for the pinned hint footer; the body scrolls
+    // within what's left.
+    let body_h = inner.height.saturating_sub(1) as usize;
 
-    // Record where the model list landed so clicks can hit it.
-    app.coach_models_start = models_start;
-    app.coach_models_rect = if models_shown > 0 {
+    // When the content is taller than the terminal, scroll so the focused
+    // field stays in view (rather than clipping the lower fields off the bottom
+    // on a short terminal). Bottom-align the focus once it falls past the first
+    // screenful; clamp so we never scroll past the end.
+    let content = lines.len();
+    let max_scroll = content.saturating_sub(body_h);
+    let focus_line = field_line_idx[s.field];
+    let scroll = if focus_line < body_h {
+        0
+    } else {
+        (focus_line + 1 - body_h).min(max_scroll)
+    };
+    // On-screen row of a content line, or None when scrolled out of view.
+    let visible_row = |line: usize| -> Option<u16> {
+        if line >= scroll && line < scroll + body_h {
+            Some(inner.y + (line - scroll) as u16)
+        } else {
+            None
+        }
+    };
+
+    // Record where the (visible portion of the) model list landed so clicks can
+    // hit it, accounting for the scroll offset.
+    let vis_models_start = models_top.max(scroll);
+    let vis_models_end = (models_top + models_shown).min(scroll + body_h);
+    app.coach_models_rect = if models_shown > 0 && vis_models_end > vis_models_start {
+        app.coach_models_start = models_start + (vis_models_start - models_top);
         Rect {
             x: inner.x,
-            y: inner.y + models_top as u16,
+            y: inner.y + (vis_models_start - scroll) as u16,
             width: inner.width,
-            height: models_shown as u16,
+            height: (vis_models_end - vis_models_start) as u16,
         }
     } else {
         Rect::default()
     };
-    // Record each field's absolute row so clicks and the caret can find them.
+    // Record each field's on-screen row so clicks and the caret can find them;
+    // a field scrolled out of view gets a sentinel that no click row matches.
     for (idx, line_idx) in field_line_idx.iter().enumerate() {
-        app.coach_field_rows[idx] = inner.y + *line_idx as u16;
+        app.coach_field_rows[idx] = visible_row(*line_idx).unwrap_or(u16::MAX);
     }
 
     frame.render_widget(Clear, rect);
-    frame.render_widget(Paragraph::new(lines).block(block), rect);
+    frame.render_widget(block, rect);
+    // Scrollable body (everything except the pinned footer row).
+    let body = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: body_h as u16,
+    };
+    frame.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), body);
+    // Pinned hint footer on the last inner row.
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(hint, theme.dim()))),
+        Rect {
+            x: inner.x,
+            y: inner.bottom().saturating_sub(1),
+            width: inner.width,
+            height: 1,
+        },
+    );
 
-    // Caret at the end of a text field's value; for provider/toggle fields it
-    // sits at the value start (they're cycled, not typed).
-    let val_len = match s.field {
-        F_BASE_URL => s.base_url.chars().count(),
-        F_API_KEY => s.api_key.chars().count(),
-        F_MODEL => s.model.chars().count(),
-        F_JUDGE_BASE_URL => s.judge_base_url.chars().count(),
-        F_JUDGE_API_KEY => s.judge_api_key.chars().count(),
-        F_JUDGE_MODEL => s.judge_model.chars().count(),
-        _ => 0,
-    } as u16;
-    let cx = (inner.x + gutter + val_len).min(inner.right().saturating_sub(1));
-    // Clamp into the (possibly screen-clipped) dialog so the caret never lands
-    // outside it on a short terminal where the lower fields are cut off.
-    let cy = app.coach_field_rows[s.field].min(inner.bottom().saturating_sub(1));
+    // Caret at the end of a text field's value (windowed to the value column);
+    // provider/toggle fields aren't typed, so the caret sits at the value start.
+    let typed_value = match s.field {
+        F_BASE_URL => Some(s.base_url.as_str()),
+        F_API_KEY => Some(s.api_key.as_str()),
+        F_MODEL => Some(s.model.as_str()),
+        F_JUDGE_BASE_URL => Some(s.judge_base_url.as_str()),
+        F_JUDGE_API_KEY => Some(s.judge_api_key.as_str()),
+        F_JUDGE_MODEL => Some(s.judge_model.as_str()),
+        _ => None,
+    };
+    let caret_col = typed_value
+        .map(|v| scroll_field_tail(v, value_w).1)
+        .unwrap_or(0);
+    let cx = (inner.x + gutter + caret_col).min(inner.right().saturating_sub(1));
+    // The focused field is always within the scroll window by construction.
+    let cy = visible_row(focus_line).unwrap_or_else(|| inner.bottom().saturating_sub(1));
     frame.set_cursor_position((cx, cy));
 }
 
@@ -4142,6 +4264,24 @@ fn centered_rect_abs(width: u16, height: u16, area: Rect) -> Rect {
     }
 }
 
+/// Window a single-line input field whose caret sits at the end, so the tail
+/// stays on screen once the value is wider than `width` cells. Returns the
+/// slice to render and the caret column within the field. Measured in chars to
+/// match the rest of the input/caret math; `width` is the cells available for
+/// the value (after any prefix/gutter). Without this, a long value renders off
+/// the box edge under a stationary caret — typed text becomes invisible.
+fn scroll_field_tail(value: &str, width: u16) -> (String, u16) {
+    let w = width.max(1) as usize;
+    let chars: Vec<char> = value.chars().collect();
+    if chars.len() < w {
+        (chars.iter().collect(), chars.len() as u16)
+    } else {
+        // Reserve the trailing cell for the caret; show the last `w - 1` chars.
+        let start = chars.len() + 1 - w;
+        (chars[start..].iter().collect(), (w - 1) as u16)
+    }
+}
+
 fn draw_claim_gate(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme;
     let pop = centered_rect_abs(76, 10, area);
@@ -4156,6 +4296,8 @@ fn draw_claim_gate(frame: &mut Frame, app: &mut App, area: Rect) {
         .style(theme.panel_bg())
         .title(Line::from(Span::styled(title, theme.title(true))));
     let inner = block.inner(pop);
+    let (claim_vis, claim_caret) =
+        scroll_field_tail(&app.claim_input, inner.width.saturating_sub(2));
     let lines = vec![
         Line::from(Span::styled(
             "State what you intend to argue in this piece.",
@@ -4168,7 +4310,7 @@ fn draw_claim_gate(frame: &mut Frame, app: &mut App, area: Rect) {
         Line::raw(""),
         Line::from(vec![
             Span::styled("▶ ", theme.accent()),
-            Span::styled(app.claim_input.clone(), theme.text()),
+            Span::styled(claim_vis, theme.text()),
         ]),
         Line::raw(""),
         Line::from(Span::styled(
@@ -4178,7 +4320,7 @@ fn draw_claim_gate(frame: &mut Frame, app: &mut App, area: Rect) {
     ];
     frame.render_widget(Clear, pop);
     frame.render_widget(Paragraph::new(lines).block(block), pop);
-    let cx = inner.x + 2 + app.claim_input.chars().count() as u16;
+    let cx = inner.x + 2 + claim_caret;
     frame.set_cursor_position((cx.min(inner.right().saturating_sub(1)), inner.y + 3));
 }
 
@@ -4194,6 +4336,7 @@ fn draw_teachback(frame: &mut Frame, app: &mut App, area: Rect) {
             theme.title(true),
         )));
     let inner = block.inner(pop);
+    let (tb_vis, tb_caret) = scroll_field_tail(&app.teachback_input, inner.width.saturating_sub(2));
     let lines = vec![
         Line::from(Span::styled(
             "In a sentence or two, what is your argument so far?",
@@ -4206,14 +4349,14 @@ fn draw_teachback(frame: &mut Frame, app: &mut App, area: Rect) {
         Line::raw(""),
         Line::from(vec![
             Span::styled("▶ ", theme.accent()),
-            Span::styled(app.teachback_input.clone(), theme.text()),
+            Span::styled(tb_vis, theme.text()),
         ]),
         Line::raw(""),
         Line::from(Span::styled("Enter to record · Esc to skip", theme.dim())),
     ];
     frame.render_widget(Clear, pop);
     frame.render_widget(Paragraph::new(lines).block(block), pop);
-    let cx = inner.x + 2 + app.teachback_input.chars().count() as u16;
+    let cx = inner.x + 2 + tb_caret;
     frame.set_cursor_position((cx.min(inner.right().saturating_sub(1)), inner.y + 3));
 }
 
@@ -4580,12 +4723,12 @@ fn draw_coach_input(frame: &mut Frame, app: &mut App, area: Rect) {
             Style::default().fg(theme.dim).bg(theme.bg),
         ),
     };
-    let content = if enabled {
-        app.coach_input.clone()
+    let prefix_w = prefix.chars().count() as u16;
+    let (content, caret) = if enabled {
+        scroll_field_tail(&app.coach_input, area.width.saturating_sub(prefix_w))
     } else {
-        String::new()
+        (String::new(), 0)
     };
-    let content_chars = content.chars().count();
     let line = Line::from(vec![
         Span::styled(prefix, pstyle),
         Span::styled(content, theme.text()),
@@ -4594,7 +4737,7 @@ fn draw_coach_input(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(para, area);
 
     if focused && !app.has_overlay() {
-        let cx = area.x + prefix.chars().count() as u16 + content_chars as u16;
+        let cx = area.x + prefix_w + caret;
         let cx = cx.min(area.right().saturating_sub(1));
         frame.set_cursor_position((cx, area.y));
     }
@@ -4855,22 +4998,27 @@ fn draw_prompt(frame: &mut Frame, app: &mut App, area: Rect) {
         .title(Line::from(Span::styled(p.kind.title(), theme.title(true))));
     let inner = block.inner(rect);
     let gutter = 9u16;
+    let value_w = inner.width.saturating_sub(gutter);
     let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut active_caret = 0u16;
     for (i, label) in labels.iter().enumerate() {
         let focused = p.active == i;
         let marker = if focused { "▸ " } else { "  " };
         let lstyle = if focused { theme.accent() } else { theme.dim() };
+        let (vis, caret) = scroll_field_tail(&p.fields[i], value_w);
+        if focused {
+            active_caret = caret;
+        }
         lines.push(Line::from(vec![
             Span::styled(format!("{marker}{label:<6} "), lstyle),
-            Span::styled(p.fields[i].clone(), theme.text()),
+            Span::styled(vis, theme.text()),
         ]));
     }
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(p.kind.hint(), theme.dim())));
     frame.render_widget(Clear, rect);
     frame.render_widget(Paragraph::new(lines).block(block), rect);
-    let val_len = p.fields[p.active].chars().count() as u16;
-    let cx = (inner.x + gutter + val_len).min(inner.right().saturating_sub(1));
+    let cx = (inner.x + gutter + active_caret).min(inner.right().saturating_sub(1));
     frame.set_cursor_position((cx, inner.y + p.active as u16));
 }
 
@@ -5280,6 +5428,31 @@ mod tests {
             app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
         app.handle_paste(&"z".repeat(50));
+        assert_eq!(
+            app.mirror_snapshot(),
+            crate::core::mirror::compute_mirror(&app.journal)
+        );
+    }
+
+    #[test]
+    fn undoing_a_paste_clears_its_unclaimed_mark() {
+        let rt = rt();
+        let mut app = test_app(&rt);
+        // A paste above the quarantine threshold leaves one unclaimed mark.
+        app.handle_paste(&"z".repeat(50));
+        let comp = app.mirror_snapshot().composition;
+        assert_eq!(comp.paste_count, 1);
+        assert_eq!(comp.pastes_unclaimed, 1);
+        // Undoing the paste removes it from the document, so it must not linger
+        // as a permanent, unresolvable "unclaimed paste".
+        app.undo();
+        let comp = app.mirror_snapshot().composition;
+        assert_eq!(comp.paste_count, 0, "undone paste must not be counted");
+        assert_eq!(
+            comp.pastes_unclaimed, 0,
+            "undone paste must not strand an unclaimed mark"
+        );
+        // The append-only journal must still recompute to the same mirror.
         assert_eq!(
             app.mirror_snapshot(),
             crate::core::mirror::compute_mirror(&app.journal)

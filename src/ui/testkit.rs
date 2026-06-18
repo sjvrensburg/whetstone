@@ -171,6 +171,37 @@ mod tests {
     }
 
     #[test]
+    fn coach_settings_hint_stays_visible_on_a_short_terminal() {
+        // The dialog is taller than this terminal; the key-hint footer must
+        // stay pinned/visible rather than being clipped off the bottom.
+        let mut h = Harness::new("draft", "t.qmd", 100, 14);
+        h.app.dispatch_for_test(MenuAction::CoachSettings);
+        let s = h.render_to_string();
+        assert!(
+            s.contains("Ctrl+T test"),
+            "the save/test hint must remain visible on a short terminal: {s}"
+        );
+    }
+
+    #[test]
+    fn overlay_input_scrolls_to_keep_the_tail_visible() {
+        // A value wider than the input box must scroll so the most recent
+        // characters (where the caret is) stay on screen — regression for
+        // single-line fields clipping at the box edge with no horizontal scroll.
+        let mut h = Harness::new("", "", 100, 30);
+        // Long claim ending in a marker; the head will scroll off, the tail must
+        // remain visible.
+        let long = format!("{}END_MARKER", "filler word ".repeat(12));
+        assert!(long.chars().count() > 90, "input must exceed the box width");
+        h.type_str(&long);
+        let s = h.render_to_string();
+        assert!(
+            s.contains("END_MARKER"),
+            "the tail of a long claim input must stay visible: {s}"
+        );
+    }
+
+    #[test]
     fn opens_untitled_buffer_with_no_path() {
         // `whetstone-tui` with no file opens an unnamed buffer (empty path).
         // Use non-empty text so the brand-new-doc claim gate doesn't cover the

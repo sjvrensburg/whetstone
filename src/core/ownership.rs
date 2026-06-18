@@ -10,7 +10,7 @@
 //! around an untouched paste and the current text's n-gram profile dilutes
 //! below threshold while every word of the original survives verbatim.
 
-use crate::core::ngram::{extract_ngrams, ngram_overlap};
+use crate::core::ngram::{extract_ngrams, ngram_overlap, word_count};
 
 /// N-gram size for the survival check. Trigrams (n=3) match the V1 guard
 /// heuristic: bigrams are too noisy, 4-grams miss structural similarity.
@@ -26,15 +26,31 @@ pub const CLAIM_SURVIVAL_THRESHOLD: f64 = 0.5;
 /// treat it as claimable.
 pub const MIN_WORDS_FOR_OVERLAP: usize = 3;
 
-/// Fraction of the original paste's trigrams that survive in `current_text`.
-/// `1.0` = the original is fully present; `0.0` = nothing of it survives.
+/// How much of the original paste survives in `current_text`. `1.0` = the
+/// original is fully present; `0.0` = nothing of it survives.
+///
+/// Combines two views and takes the **larger** (most conservative — the one
+/// least likely to grant "owned"):
+/// - trigram survival: catches genuine rewriting (word *adjacency* is gone);
+/// - unigram survival: catches adjacency attacks that leave the paste readable
+///   — interleaving filler words between the original's words, or reordering
+///   them — which zero the trigram score while the writer changed nothing.
+///
+/// A real rewrite lowers both; an evasion lowers only the trigram view, so the
+/// max stays high and the gate is not fooled.
 pub fn survival_ratio(current_text: &str, original_text: &str) -> f64 {
-    let original_ngrams = extract_ngrams(original_text, CLAIM_NGRAM_SIZE);
-    if original_ngrams.is_empty() {
+    let original_trigrams = extract_ngrams(original_text, CLAIM_NGRAM_SIZE);
+    if original_trigrams.is_empty() {
         return 0.0;
     }
-    let current_ngrams = extract_ngrams(current_text, CLAIM_NGRAM_SIZE);
-    ngram_overlap(&original_ngrams, &current_ngrams)
+    let current_trigrams = extract_ngrams(current_text, CLAIM_NGRAM_SIZE);
+    let trigram_survival = ngram_overlap(&original_trigrams, &current_trigrams);
+
+    let unigram_survival = ngram_overlap(
+        &extract_ngrams(original_text, 1),
+        &extract_ngrams(current_text, 1),
+    );
+    trigram_survival.max(unigram_survival)
 }
 
 /// Whether the region is claimed-to-own: little of the original survives in
@@ -51,11 +67,7 @@ pub fn is_claimed_to_own_thresholded(
     original_text: &str,
     threshold: f64,
 ) -> bool {
-    let original_words = original_text
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .count();
-    if original_words < MIN_WORDS_FOR_OVERLAP {
+    if word_count(original_text) < MIN_WORDS_FOR_OVERLAP {
         return true;
     }
     survival_ratio(current_text, original_text) < threshold
@@ -104,6 +116,66 @@ mod tests {
     fn tiny_originals_are_auto_claimed() {
         // < MIN_WORDS_FOR_OVERLAP words → can't measure → claimable.
         assert!(is_claimed_to_own("anything", "hi there"));
+    }
+
+    #[test]
+    fn interleaving_filler_words_does_not_claim() {
+        // Inserting a filler word between every original word zeroes the
+        // trigrams while the paste is read verbatim. The unigram view keeps
+        // survival high, so the gate must NOT grant ownership — even at the
+        // strictest friction floor.
+        let interleaved = PASTE.split_whitespace().collect::<Vec<_>>().join(" and ");
+        assert!(
+            !is_claimed_to_own_thresholded(&interleaved, PASTE, 0.9),
+            "interleaving filler words must not fake ownership"
+        );
+    }
+
+    #[test]
+    fn reordering_original_words_does_not_claim() {
+        // The original's words, reversed: adjacency gone, words all present.
+        let reversed = PASTE.split_whitespace().rev().collect::<Vec<_>>().join(" ");
+        assert!(!is_claimed_to_own(&reversed, PASTE));
+    }
+
+    #[test]
+    fn homoglyph_substitution_does_not_claim() {
+        // Disguise the paste by swapping Latin letters for identical-looking
+        // Cyrillic ones. After confusable folding it measures as the original,
+        // so ownership is not granted (even at the strictest floor).
+        let disguised: String = PASTE
+            .chars()
+            .map(|c| match c {
+                'o' => 'о', // Cyrillic U+043E
+                'e' => 'е', // Cyrillic U+0435
+                'a' => 'а', // Cyrillic U+0430
+                'c' => 'с', // Cyrillic U+0441
+                'p' => 'р', // Cyrillic U+0440
+                other => other,
+            })
+            .collect();
+        assert_ne!(disguised, PASTE, "the disguise must change the bytes");
+        assert!(
+            !is_claimed_to_own_thresholded(&disguised, PASTE, 0.9),
+            "homoglyph substitution must not fake ownership"
+        );
+    }
+
+    #[test]
+    fn non_ascii_paste_is_measured_not_auto_claimed() {
+        // An all-Cyrillic paste must tokenize into real words rather than read
+        // as wordless (the old ASCII-only split auto-claimed it). Verbatim
+        // survival → NOT claimed; a genuine rewrite → claimed.
+        let original = "Москва столица России и крупнейший город страны сегодня";
+        assert!(
+            !is_claimed_to_own(original, original),
+            "a verbatim non-ASCII paste survives → not claimed"
+        );
+        let rewritten = "совершенно другой текст про погоду весной в горах";
+        assert!(
+            is_claimed_to_own(rewritten, original),
+            "a genuine non-ASCII rewrite → claimed"
+        );
     }
 
     #[test]

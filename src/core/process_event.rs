@@ -25,6 +25,9 @@ pub enum ProcessEventType {
     PasteQuarantined,
     PasteClaimed,
     PasteAttributed,
+    /// A quarantined paste was removed from the document (e.g. by undo), so it
+    /// no longer counts toward the composition — distinct from being claimed.
+    PasteRemoved,
     RegionRevised,
     CoachConsult,
     /// Instrument D (teach-back checkpoint).

@@ -39,8 +39,10 @@ pub struct Composition {
 pub fn compute_composition(events: &[ProcessEvent]) -> Composition {
     let mut typed_chars = 0u32;
     let mut pasted_chars = 0u32;
-    let mut paste_count = 0u32;
-    let mut resolved: BTreeMap<String, bool> = BTreeMap::new(); // true = claimed
+    // `quarantined` is the set of pastes currently present in the document;
+    // `resolved` maps each to its outcome (true = claimed, false = attributed).
+    // A paste removed via undo is dropped from both, so it stops counting.
+    let mut resolved: BTreeMap<String, bool> = BTreeMap::new();
     let mut quarantined: HashSet<String> = HashSet::new();
 
     for e in events {
@@ -55,8 +57,10 @@ pub fn compute_composition(events: &[ProcessEvent]) -> Composition {
                 pasted_chars += e.size.unwrap_or(0);
             }
             ProcessEventType::PasteQuarantined => {
-                paste_count += 1;
                 if let Some(id) = region_id {
+                    // A re-instated paste (redo, or undo of its deletion) starts
+                    // unclaimed again — clear any stale resolution.
+                    resolved.remove(&id);
                     quarantined.insert(id);
                 }
             }
@@ -70,15 +74,24 @@ pub fn compute_composition(events: &[ProcessEvent]) -> Composition {
                     resolved.insert(id, false);
                 }
             }
+            ProcessEventType::PasteRemoved => {
+                if let Some(id) = region_id {
+                    quarantined.remove(&id);
+                    resolved.remove(&id);
+                }
+            }
             _ => {}
         }
     }
-    // `quarantined` is tracked for parity with the composer; resolved drives counts.
-    let _ = &quarantined;
 
+    let paste_count = quarantined.len() as u32;
     let mut pastes_claimed = 0u32;
     let mut pastes_attributed = 0u32;
-    for &claimed in resolved.values() {
+    for (id, &claimed) in &resolved {
+        // A resolution for a paste no longer present doesn't count.
+        if !quarantined.contains(id) {
+            continue;
+        }
         if claimed {
             pastes_claimed += 1;
         } else {
@@ -363,6 +376,65 @@ mod tests {
         assert_eq!(c.pastes_claimed, 1);
         assert_eq!(c.pastes_unclaimed, 0);
         assert!((c.typed_ratio - 0.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn removed_paste_stops_counting() {
+        // A quarantined paste that is later removed (e.g. undone) must drop out
+        // of the composition entirely — not linger as an unclaimed mark.
+        let events = vec![
+            ev(
+                ProcessEventType::PasteQuarantined,
+                "2026-06-16T10:00:00Z",
+                Some(120),
+                vec![("regionId", MetaValue::Str("r1".into()))],
+            ),
+            ev(
+                ProcessEventType::PasteRemoved,
+                "2026-06-16T10:00:05Z",
+                None,
+                vec![("regionId", MetaValue::Str("r1".into()))],
+            ),
+        ];
+        let c = compute_composition(&events);
+        assert_eq!(c.paste_count, 0, "removed paste must not be counted");
+        assert_eq!(c.pastes_unclaimed, 0, "removed paste is not unclaimed");
+    }
+
+    #[test]
+    fn reinstated_paste_is_unclaimed_again() {
+        // Quarantine → claim → remove → re-quarantine (redo / undo-of-deletion):
+        // the paste is present and unclaimed again, with the stale claim cleared.
+        let events = vec![
+            ev(
+                ProcessEventType::PasteQuarantined,
+                "t0",
+                Some(120),
+                vec![("regionId", MetaValue::Str("r1".into()))],
+            ),
+            ev(
+                ProcessEventType::PasteClaimed,
+                "t1",
+                None,
+                vec![("regionId", MetaValue::Str("r1".into()))],
+            ),
+            ev(
+                ProcessEventType::PasteRemoved,
+                "t2",
+                None,
+                vec![("regionId", MetaValue::Str("r1".into()))],
+            ),
+            ev(
+                ProcessEventType::PasteQuarantined,
+                "t3",
+                Some(120),
+                vec![("regionId", MetaValue::Str("r1".into()))],
+            ),
+        ];
+        let c = compute_composition(&events);
+        assert_eq!(c.paste_count, 1);
+        assert_eq!(c.pastes_claimed, 0, "the stale claim must be cleared");
+        assert_eq!(c.pastes_unclaimed, 1);
     }
 
     #[test]
