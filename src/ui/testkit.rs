@@ -153,6 +153,24 @@ mod tests {
     }
 
     #[test]
+    fn claim_gate_shows_typed_input() {
+        // An empty doc opens gated on the claim prompt. What the writer types
+        // must be visible — regression for the popup being collapsed to 3 rows,
+        // which clipped the input line (and the caret) off entirely.
+        let mut h = Harness::new("", "", 100, 30);
+        h.type_str("friction keeps the ideas mine");
+        let s = h.render_to_string();
+        assert!(
+            s.contains("State what you intend to argue"),
+            "claim prompt is shown: {s}"
+        );
+        assert!(
+            s.contains("friction keeps the ideas mine"),
+            "typed claim is rendered inside the gate: {s}"
+        );
+    }
+
+    #[test]
     fn opens_untitled_buffer_with_no_path() {
         // `whetstone-tui` with no file opens an unnamed buffer (empty path).
         // Use non-empty text so the brand-new-doc claim gate doesn't cover the

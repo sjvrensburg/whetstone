@@ -4144,7 +4144,7 @@ fn centered_rect_abs(width: u16, height: u16, area: Rect) -> Rect {
 
 fn draw_claim_gate(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme;
-    let pop = centered_rect(76, 10, area);
+    let pop = centered_rect_abs(76, 10, area);
     let title = if app.claim.is_some() {
         " Edit your claim "
     } else {
@@ -4184,7 +4184,7 @@ fn draw_claim_gate(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_teachback(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme;
-    let pop = centered_rect(76, 10, area);
+    let pop = centered_rect_abs(76, 10, area);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(theme.border(true))
@@ -4215,25 +4215,6 @@ fn draw_teachback(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(Paragraph::new(lines).block(block), pop);
     let cx = inner.x + 2 + app.teachback_input.chars().count() as u16;
     frame.set_cursor_position((cx.min(inner.right().saturating_sub(1)), inner.y + 3));
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let popup = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(area)[1];
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(popup)[1]
 }
 
 fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
