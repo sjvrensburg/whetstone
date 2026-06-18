@@ -5,19 +5,84 @@
 
 use std::collections::HashMap;
 
-/// Extract word-level n-grams from `text`. Words are produced by lowercasing
-/// then splitting on non-alphanumeric characters; each n-gram is counted so
-/// overlap can be computed with multiplicity. Returns `gram -> count`.
+use unicode_normalization::UnicodeNormalization;
+use unicode_segmentation::UnicodeSegmentation;
+
+/// Fold the common cross-script homoglyphs (Cyrillic/Greek letters that render
+/// identically to a Latin letter) onto their Latin look-alike. Without this, a
+/// paste disguised by swapping a Latin `o` for a Cyrillic `о` tokenizes into
+/// different words and the ownership metric reads it as freshly rewritten.
+///
+/// This is a curated fold of the realistic attack (mostly-Latin text with a
+/// few non-Latin look-alikes spliced in), not a full Unicode TR39 skeleton.
+/// Folding only ever merges glyphs, so it can only *raise* measured survival
+/// (the conservative direction — it never lets disguised text look more owned).
+fn fold_confusable(c: char) -> char {
+    match c {
+        // Cyrillic → Latin look-alikes (lowercase; uppercase is handled by the
+        // prior lowercasing pass).
+        'а' => 'a',
+        'е' | 'ё' | 'є' => 'e',
+        'о' => 'o',
+        'р' => 'p',
+        'с' => 'c',
+        'х' => 'x',
+        'у' => 'y',
+        'к' => 'k',
+        'м' => 'm',
+        'н' => 'h',
+        'т' => 't',
+        'в' => 'b',
+        'і' | 'ї' => 'i',
+        'ј' => 'j',
+        'ѕ' => 's',
+        'д' => 'a',
+        'г' => 'r',
+        // Greek → Latin look-alikes.
+        'ο' => 'o',
+        'α' => 'a',
+        'ν' => 'v',
+        'ρ' => 'p',
+        'τ' => 't',
+        'υ' => 'u',
+        'ι' => 'i',
+        'κ' => 'k',
+        'ε' => 'e',
+        'χ' => 'x',
+        'β' => 'b',
+        'η' => 'n',
+        'μ' => 'u',
+        'γ' => 'y',
+        'σ' => 'o',
+        _ => c,
+    }
+}
+
+/// Canonicalize `text` into comparable word tokens: NFKC-normalize, lowercase,
+/// fold homoglyphs, then split on Unicode word boundaries. Unicode-aware
+/// segmentation means non-ASCII scripts produce real tokens instead of one
+/// undifferentiated blob — the old ASCII-only split treated any non-ASCII
+/// paste as wordless, which made the ownership gate fail open on it.
+pub fn canonical_words(text: &str) -> Vec<String> {
+    let normalized: String = text.nfkc().collect::<String>().to_lowercase();
+    let folded: String = normalized.chars().map(fold_confusable).collect();
+    folded.unicode_words().map(|w| w.to_string()).collect()
+}
+
+/// Number of canonical word tokens in `text` (see [`canonical_words`]).
+pub fn word_count(text: &str) -> usize {
+    canonical_words(text).len()
+}
+
+/// Extract word-level n-grams from `text`. Words are produced by
+/// [`canonical_words`]; each n-gram is counted so overlap can be computed with
+/// multiplicity. Returns `gram -> count`.
 pub fn extract_ngrams(text: &str, n: usize) -> HashMap<String, u32> {
     let mut ngrams = HashMap::new();
     if n == 0 {
         return ngrams;
     }
-    let lower = text.to_lowercase();
-    let words: Vec<&str> = lower
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .collect();
+    let words = canonical_words(text);
     if words.len() < n {
         return ngrams;
     }

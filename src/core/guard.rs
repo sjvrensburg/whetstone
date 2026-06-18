@@ -195,12 +195,27 @@ pub fn check_ngram_overlap(coaching: &StructuredCoaching, selection_text: &str) 
     Ok(())
 }
 
+/// Reject any observation field that contains a forbidden proof-of-personhood
+/// label. The structured coach reply is user-facing (rendered to the coach
+/// pane), so it must clear the same guard as the chat path and the disclosure
+/// — no artifact may imply "verified human" (CLAUDE.md / ADR-009).
+pub fn check_forbidden_labels(coaching: &StructuredCoaching) -> CheckResult {
+    for (i, obs) in coaching.observations.iter().enumerate() {
+        let at = format!("observations[{i}]");
+        for (value, field_name) in [(&obs.reflection, "reflection"), (&obs.question, "question")] {
+            assert_no_forbidden_labels(value, &format!("{at}.{field_name}"))?;
+        }
+    }
+    Ok(())
+}
+
 /// All deterministic output checks, first failure wins.
 pub fn run_deterministic_checks(
     coaching: &StructuredCoaching,
     selection_text: &str,
 ) -> CheckResult {
     check_span_lengths(coaching)?;
+    check_forbidden_labels(coaching)?;
     check_rewrite_patterns(coaching)?;
     check_ngram_overlap(coaching, selection_text)?;
     Ok(())
@@ -334,6 +349,18 @@ mod tests {
         };
         let err = check_rewrite_patterns(&c).unwrap_err();
         assert!(err.contains("rewrite pattern"));
+    }
+
+    #[test]
+    fn forbidden_label_in_structured_reflection_rejected() {
+        // The structured coach reply is user-facing, so the proof-of-personhood
+        // guard must run on it just as it does on the chat path.
+        let c = StructuredCoaching {
+            observations: vec![obs("This reads as verified human writing.", "agree?")],
+        };
+        assert!(check_forbidden_labels(&c).is_err());
+        // And it must be caught through the full deterministic path too.
+        assert!(run_deterministic_checks(&c, "some unrelated selection text").is_err());
     }
 
     #[test]
