@@ -51,8 +51,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   them). Each write is now stamped with the buffer's edit-version and the drain
   only clears `dirty` when no edits occurred since dispatch.
 - **Editor freeze on large docs**: the status-bar word count is now cached
-  against `edit_version` instead of recomputed every frame (it NFKC-normalizes
-  the whole buffer — 842ms/draw on a 100k-word thesis).
+  against `edit_version` and recomputed only once typing pauses (300ms, the same
+  debounce as the linter) instead of every frame — and, since `edit_version`
+  bumps per keystroke, instead of every character typed. It NFKC-normalizes the
+  whole buffer (842ms/draw on a 100k-word thesis).
 - **Stored XSS in HTML export**: the rendered body is now sanitized with
   `ammonia` (pulldown-cmark emits raw `<script>`/`onerror`/`javascript:`
   verbatim; the export is meant to be shared).
@@ -75,6 +77,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   excerpted into the error.
 - **SIGPIPE panics**: piped output (`lint | head`) no longer panics with a broken
   pipe; SIGPIPE is reset to the OS default at startup for clean pipeline exits.
+  The editor restores the ignored disposition before it starts, so a coach
+  request on a closed keep-alive socket surfaces as an error instead of killing
+  the process mid-sentence and leaving the terminal raw.
 - **Uncapped paste freeze**: a multi-MB paste is now capped (256 KB) with a
   status message instead of locking the editor for seconds on the synchronous
   insert + re-lint + word-count recompute.
@@ -88,10 +93,37 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   so it isn't persisted back into the file or skewing word/char counts.
 - **Forbidden-label bypass**: the guard now normalizes zero-width characters,
   soft hyphens, and joiner punctuation before matching, so `verified\u{200b}human`
-  and `verified-human` can't slip past the substring check.
+  and `verified-human` can't slip past the substring check. Matching is
+  whole-word (plural tolerated) and sentence punctuation stays a boundary, so
+  ordinary prose — "applied by AI. Scores were normalised", "an AI-scored
+  rubric" — doesn't block the writer's own export.
 - **Save-As overwrite**: saving to a path that already exists now requires a
   second confirmation of the same path, preventing a typo from destroying an
   unrelated file.
+- **Unreadable document overwritten**: a file that exists but fails to read
+  (non-UTF-8, permission denied) opens as an empty buffer, and one keystroke was
+  enough for autosave to write that emptiness over the original. Every write to
+  such a document is now refused, with `Save as…` as the escape hatch.
+- **Export clobbering**: HTML/text export to an existing file now takes a second
+  confirmation (like Save-As), so `Ctrl+Shift+E` can't silently replace a
+  `quarto render` output; exporting onto the open document is refused outright.
+- **`coach --journal` eating the target file**: an unparseable journal was
+  silently discarded and rewritten with a single event, so a mistyped
+  `--journal essay.qmd` destroyed the draft. It is now an error; an empty file
+  is still a valid empty journal.
+- **Out-of-order saves**: background writes to the same path are now serialized
+  and sequence-checked, so an autosave overtaken by a Ctrl+S can no longer
+  rename its older snapshot over the newer one.
+- **Save dropping file permissions**: the temp file used for the atomic rename
+  is created 0600, which silently made every saved document owner-only. The
+  document's existing permissions are now carried across.
+- **False "file changed on disk"**: a save that landed while the writer kept
+  typing left the recorded mtime stale, so the next autosave reported the
+  editor's own write as an external edit and paused. The mtime is re-baselined
+  whenever a save lands; only clearing `dirty` waits for the edit-version match.
+- **Vanishing grammar underlines**: the visible-line diagnostic lookup assumed
+  the list was sorted by end offset (it is sorted by start), so a long span
+  sitting behind shorter ones lost its underline on every line but the first.
 - **Disclosure honesty**: the scoping note now states the record is not
   tamper-evident (anyone with the file can edit entries).
 - **Connection-test secret scrubbing**: the settings dialog's test-connection

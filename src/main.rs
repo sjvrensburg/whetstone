@@ -44,8 +44,9 @@ fn main() -> Result<()> {
     // `whetstone-tui lint f.qmd | head`) raises EPIPE, which anyhow surfaces as
     // a noisy "Broken pipe" error with exit 101. Restoring the OS default means
     // a piped consumer that exits early terminates us cleanly and silently —
-    // the conventional Unix pipeline behavior. The TUI path is unaffected: it
-    // never writes stdout outside of raw-mode teardown.
+    // the conventional Unix pipeline behavior. It is set before `parse` so
+    // `--help | head` behaves too; `run_tui` puts it back to ignored for the
+    // interactive path, which must never be killed by a socket write.
     reset_sigpipe_to_default();
     let cli = Cli::parse();
     let file = match cli.command {
@@ -62,6 +63,13 @@ fn main() -> Result<()> {
 
 /// Launch the interactive editor on `file`.
 fn run_tui(file: PathBuf) -> Result<()> {
+    // Undo the SIG_DFL reset above: that disposition is process-wide, so it
+    // applies to every socket too, and a coach request on a pooled connection
+    // the server just closed would kill the editor mid-sentence — leaving the
+    // terminal in raw mode, since neither the teardown in `run` nor the panic
+    // hook would run. Ignoring SIGPIPE turns that back into the EPIPE the HTTP
+    // client reports as an ordinary error.
+    ignore_sigpipe();
     // A *missing* file is the intended trigger for "open an empty buffer", but
     // a readable file that fails to decode as UTF-8 or hits a permission error
     // must not be silently blanked — the user would see an empty editor with no
@@ -168,18 +176,34 @@ fn copy_to_clipboard(text: &str) {
 /// cleanly instead of panicking with a broken-pipe error. No-op on non-Unix.
 #[cfg(unix)]
 fn reset_sigpipe_to_default() {
+    const SIG_DFL: usize = 0;
+    set_sigpipe(SIG_DFL);
+}
+
+/// Restore Rust's startup disposition (SIGPIPE ignored) so a write to a closed
+/// socket surfaces as EPIPE instead of killing the process. No-op on non-Unix.
+#[cfg(unix)]
+fn ignore_sigpipe() {
+    const SIG_IGN: usize = 1;
+    set_sigpipe(SIG_IGN);
+}
+
+#[cfg(unix)]
+fn set_sigpipe(handler: usize) {
     unsafe extern "C" {
         fn signal(signum: i32, handler: usize) -> usize;
     }
     const SIGPIPE: i32 = 13;
-    const SIG_DFL: usize = 0;
-    // SAFETY: `signal` with SIG_DFL is the documented-default disposition and
+    // SAFETY: `signal` with SIG_DFL / SIG_IGN is a documented disposition and
     // has no UB; we ignore the previous handler (we never want to restore it).
-    // This runs once at startup before any threads exist, so it is race-free.
+    // Both calls run at startup before any threads exist, so they are race-free.
     unsafe {
-        signal(SIGPIPE, SIG_DFL);
+        signal(SIGPIPE, handler);
     }
 }
 
 #[cfg(not(unix))]
 fn reset_sigpipe_to_default() {}
+
+#[cfg(not(unix))]
+fn ignore_sigpipe() {}

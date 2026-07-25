@@ -885,14 +885,27 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
         .then(|| app.buffer.matching_bracket())
         .flatten();
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(app.editor_height);
+    // How far back a diagnostic can start and still cover a later line — one
+    // pass over the whole list, versus one per visible line (see
+    // `diagnostics_overlapping`).
+    let max_diag_span = app
+        .diagnostics
+        .iter()
+        .map(|d| d.end.saturating_sub(d.start))
+        .max()
+        .unwrap_or(0);
     for i in first..last_exclusive {
         let start = app.buffer.line_char_start(i);
         let text = app.buffer.line_text(i);
         // Diagnostics are sorted by `start` (harper.rs contract), so binary-
         // search to the subset that could overlap this line instead of scanning
         // the whole vector per visible line — O(log n + k) per line vs O(n).
-        let line_diags =
-            diagnostics_overlapping(&app.diagnostics, start, start + text.chars().count());
+        let line_diags = diagnostics_overlapping(
+            &app.diagnostics,
+            max_diag_span,
+            start,
+            start + text.chars().count(),
+        );
         lines.push(styled_line(
             &text,
             start,
@@ -1280,7 +1293,21 @@ fn draw_status(frame: &mut Frame, app: &mut App, area: Rect) {
 /// char range `[from, to)`. Binary-searches for the first diag that starts at
 /// or after `from`, then walks backward and forward to include earlier diags
 /// whose end extends into the range. O(log n + k) where k is the overlap count.
-fn diagnostics_overlapping(diags: &[Diagnostic], from: usize, to: usize) -> &[Diagnostic] {
+///
+/// `max_span` is the longest `end - start` in `diags`. It is needed because the
+/// list is sorted by `start`, *not* by `end`: a long diagnostic can sit behind
+/// several short ones, so the backward walk can only stop once even a
+/// maximum-length span starting there could no longer reach `from`. Stopping at
+/// the first non-reaching predecessor (as a plain `end > from` test does) drops
+/// the long span and its underline vanishes on every line but its first. The
+/// returned slice is contiguous, so it may include non-overlapping diags in
+/// between — `styled_line` intersects each span with the line anyway.
+fn diagnostics_overlapping(
+    diags: &[Diagnostic],
+    max_span: usize,
+    from: usize,
+    to: usize,
+) -> &[Diagnostic] {
     if diags.is_empty() || to <= from {
         return &[];
     }
@@ -1288,7 +1315,7 @@ fn diagnostics_overlapping(diags: &[Diagnostic], from: usize, to: usize) -> &[Di
     let lower = diags.partition_point(|d| d.start < from);
     // Walk backward to catch diags that start before `from` but end inside it.
     let mut lo = lower;
-    while lo > 0 && diags[lo - 1].end > from {
+    while lo > 0 && diags[lo - 1].start + max_span > from {
         lo -= 1;
     }
     // Walk forward from `lower`; diags with start < to overlap (sorted, so we
@@ -1657,6 +1684,25 @@ mod tests {
         }
     }
 
+    /// The longest span in the list, as `draw_editor` computes it per draw.
+    fn max_span(diags: &[Diagnostic]) -> usize {
+        diags
+            .iter()
+            .map(|d| d.end.saturating_sub(d.start))
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// The overlapping subset, filtered — the returned slice is contiguous, so
+    /// it may carry non-overlapping neighbours that `styled_line` ignores.
+    fn overlapping(diags: &[Diagnostic], from: usize, to: usize) -> Vec<usize> {
+        diagnostics_overlapping(diags, max_span(diags), from, to)
+            .iter()
+            .filter(|d| d.start < to && d.end > from)
+            .map(|d| d.start)
+            .collect()
+    }
+
     #[test]
     fn diagnostics_overlapping_returns_only_the_subset() {
         // Sorted by start (the harper contract).
@@ -1668,10 +1714,7 @@ mod tests {
             diag(200, 205),
         ];
         // Line covering chars [15, 25): overlaps diag(10,20), diag(20,30).
-        let got = diagnostics_overlapping(&diags, 15, 25);
-        assert_eq!(got.len(), 2);
-        assert_eq!(got[0].start, 10);
-        assert_eq!(got[1].start, 20);
+        assert_eq!(overlapping(&diags, 15, 25), vec![10, 20]);
     }
 
     #[test]
@@ -1679,25 +1722,33 @@ mod tests {
         // A diag starting before `from` but ending inside the range must be
         // included (the backward walk).
         let diags = vec![diag(5, 15), diag(50, 60)];
-        let got = diagnostics_overlapping(&diags, 10, 20);
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].start, 5);
+        assert_eq!(overlapping(&diags, 10, 20), vec![5]);
+    }
+
+    #[test]
+    fn diagnostics_overlapping_catches_a_long_span_behind_short_ones() {
+        // Regression: the list is sorted by `start`, not by `end`, so a long
+        // diagnostic can sit behind short ones that stop well short of the
+        // line. Breaking at the first predecessor that doesn't reach `from`
+        // dropped the long span, and its underline vanished on every line but
+        // the first.
+        let diags = vec![diag(0, 400), diag(10, 20), diag(30, 40)];
+        assert_eq!(overlapping(&diags, 100, 140), vec![0]);
     }
 
     #[test]
     fn diagnostics_overlapping_handles_empty_and_no_overlap() {
-        assert!(diagnostics_overlapping(&[], 0, 10).is_empty());
+        assert!(diagnostics_overlapping(&[], 0, 0, 10).is_empty());
         let diags = vec![diag(100, 200)];
-        assert!(diagnostics_overlapping(&diags, 0, 50).is_empty());
+        assert!(overlapping(&diags, 0, 50).is_empty());
         // Zero-width range.
         let diags = vec![diag(5, 10)];
-        assert!(diagnostics_overlapping(&diags, 7, 7).is_empty());
+        assert!(diagnostics_overlapping(&diags, max_span(&diags), 7, 7).is_empty());
     }
 
     #[test]
     fn diagnostics_overlapping_returns_all_when_all_overlap() {
         let diags = vec![diag(0, 5), diag(5, 10), diag(10, 15)];
-        let got = diagnostics_overlapping(&diags, 0, 15);
-        assert_eq!(got.len(), 3);
+        assert_eq!(overlapping(&diags, 0, 15), vec![0, 5, 10]);
     }
 }

@@ -14,7 +14,7 @@ pub use render::draw;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
@@ -456,6 +456,14 @@ pub struct App {
     /// confirm the SAME path a second time to overwrite, so a typo'd Save-As
     /// can't silently destroy an unrelated file.
     save_as_confirm_overwrite: Option<PathBuf>,
+    /// A pending export target (HTML/text) that already exists on disk — same
+    /// two-step confirmation as Save-As, so an export can't silently replace a
+    /// `quarto render` output sitting at the same path.
+    export_confirm_overwrite: Option<PathBuf>,
+    /// Set when the document could not be read at open (non-UTF-8, permission
+    /// denied). The buffer is empty but the file is not, so every write to
+    /// `self.path` is refused until the user saves elsewhere.
+    load_failed: bool,
     /// Active input prompt (find/replace/goto/open/save-as) + its rect.
     prompt: Option<Prompt>,
     prompt_rect: Rect,
@@ -482,6 +490,14 @@ pub struct App {
     /// `IoDoneGuard`) ensures an event always arrives so the count can't get
     /// stuck nonzero and permanently suppress autosave.
     io_save_in_flight: u32,
+    /// Orders background writes to the same path. `atomic_write` ends in a
+    /// rename, which is unordered between threads: without this, an autosave
+    /// dispatched before a Ctrl+S but finishing after it would rename its older
+    /// snapshot over the newer one and silently roll the document back. The
+    /// gate is held across the write and records the last sequence number that
+    /// landed per path, so an overtaken write drops its stale bytes instead.
+    io_write_gate: Arc<Mutex<std::collections::HashMap<PathBuf, u64>>>,
+    io_write_seq: u64,
     /// True while a `quarto render` is in flight.
     compiling: bool,
     /// Captured output of the last render, shown in a scrollable overlay when
@@ -708,6 +724,8 @@ impl App {
             journal_rect: Rect::default(),
             confirm_quit: false,
             save_as_confirm_overwrite: None,
+            export_confirm_overwrite: None,
+            load_failed: false,
             prompt: None,
             prompt_rect: Rect::default(),
             search_origin: 0,
@@ -719,6 +737,8 @@ impl App {
             io_tx,
             io_rx,
             io_save_in_flight: 0,
+            io_write_gate: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            io_write_seq: 0,
             compiling: false,
             compile_open: false,
             compile_output: String::new(),
@@ -1050,23 +1070,53 @@ impl App {
     /// the "state your claim" modal — so the failure looks like a fresh empty
     /// document and the error (in the status bar) is easily missed. This clears
     /// the gate and sets a prominent message so the failure is unmissable.
+    ///
+    /// It also blocks every write to that path: the buffer is *empty* while the
+    /// file on disk is not, so a save (or a 3s-idle autosave after one stray
+    /// keystroke) would replace the user's document with nothing. `Save as…` to
+    /// a different path is the escape hatch.
     pub fn set_open_error(&mut self, message: String) {
         self.gated = false;
+        self.load_failed = true;
         self.message = message;
+    }
+
+    /// True when the buffer does not represent what is on disk because the file
+    /// could not be read — see [`Self::set_open_error`]. Callers must not write
+    /// to `self.path` while this holds.
+    fn write_blocked_by_load_failure(&mut self) -> bool {
+        if !self.load_failed {
+            return false;
+        }
+        self.message = format!(
+            "{} could not be read — not overwriting it. Use Save as… for a new file.",
+            self.file_label()
+        );
+        true
     }
 
     /// The document's word count, cached against `edit_version` so the status
     /// bar doesn't re-tokenize the whole buffer on every draw (the run loop
-    /// draws ~10×/s; word_count NFKC-normalizes the full text). Recomputes only
-    /// when the buffer has changed since the last call. Uses `prose_word_count`
-    /// (Markdown noise stripped) so the number tracks a word processor more
-    /// closely than the raw ownership-metric tokenization.
+    /// draws ~10×/s; word_count NFKC-normalizes the full text). Uses
+    /// `prose_word_count` (Markdown noise stripped) so the number tracks a word
+    /// processor more closely than the raw ownership-metric tokenization.
+    ///
+    /// `edit_version` bumps on every keystroke, so the cache alone would miss
+    /// on every character typed — several full-document passes on the UI thread
+    /// per keypress, which is exactly the lag the cache exists to prevent. So
+    /// while the writer is mid-burst the last count is shown as-is and the
+    /// recompute waits for a pause, on the same 300 ms debounce as `maybe_lint`.
     pub fn word_count(&mut self) -> usize {
         let version = self.edit_version;
-        if let Some((v, count)) = self.word_count_cache
-            && v == version
-        {
-            return count;
+        if let Some((v, count)) = self.word_count_cache {
+            if v == version {
+                return count;
+            }
+            if let Some(last) = self.last_edit
+                && last.elapsed() < Duration::from_millis(300)
+            {
+                return count;
+            }
         }
         let count = crate::core::ngram::prose_word_count(&self.buffer.text());
         self.word_count_cache = Some((version, count));
@@ -2378,6 +2428,9 @@ impl App {
         self.path = path;
         self.file_mtime = file_mtime_of(&self.path);
         self.dirty = false;
+        // The new document read cleanly, so writes to it are allowed again.
+        self.load_failed = false;
+        self.export_confirm_overwrite = None;
         self.diagnostics = self.linter.lint(&text);
         self.quarantine = Quarantine::new();
         self.quarantine.set_thresholds(
@@ -2447,6 +2500,10 @@ impl App {
         // Re-baseline the mtime to the target so the external-change guard in
         // `save()` doesn't fire against an unrelated file's timestamp.
         self.file_mtime = file_mtime_of(&self.path);
+        // Save-As is the escape hatch from a failed load: the new path is not
+        // the document we couldn't read, so writing it is safe again.
+        self.load_failed = false;
+        self.export_confirm_overwrite = None;
         self.save();
     }
 
@@ -3257,6 +3314,9 @@ impl App {
         // large export doesn't freeze the UI for ~100ms.
         let src = self.buffer.text();
         let out = self.path.with_extension("html");
+        if !self.export_overwrite_allowed(&out) {
+            return;
+        }
         let path = out.display().to_string();
         self.message = "Exporting HTML…".to_string();
         self.spawn_render_and_write(
@@ -3274,6 +3334,9 @@ impl App {
         let src = self.buffer.text();
         let theme = self.theme;
         let out = self.path.with_extension("txt");
+        if !self.export_overwrite_allowed(&out) {
+            return;
+        }
         let path = out.display().to_string();
         self.message = "Exporting text…".to_string();
         self.spawn_render_and_write(
@@ -3282,6 +3345,38 @@ impl App {
             format!("Text → {path}"),
             "Text export failed".to_string(),
         );
+    }
+
+    /// Gate an export that would replace an existing file. The export path is
+    /// derived from the document name, so it collides with exactly the files a
+    /// writer cares about: `quarto render` writes the same `<doc>.html`, and a
+    /// `.txt` document exports onto *itself*. Same two-step confirmation as
+    /// Save-As — repeat the export to overwrite — except onto the open
+    /// document, which is refused outright (the rendered text is not the
+    /// source, so writing it back would destroy the draft).
+    fn export_overwrite_allowed(&mut self, out: &Path) -> bool {
+        if out == self.path {
+            self.export_confirm_overwrite = None;
+            self.message = format!(
+                "Export would overwrite the document itself ({}) — save it under another name first.",
+                self.file_label()
+            );
+            return false;
+        }
+        if self.export_confirm_overwrite.as_deref() == Some(out) {
+            self.export_confirm_overwrite = None;
+            return true;
+        }
+        if out.exists() {
+            self.export_confirm_overwrite = Some(out.to_path_buf());
+            self.message = format!(
+                "{} already exists — export again to overwrite it.",
+                out.display()
+            );
+            return false;
+        }
+        self.export_confirm_overwrite = None;
+        true
     }
 
     /// Mouse: wheel scrolls whichever pane the pointer is over; left-click in
@@ -3694,6 +3789,10 @@ impl App {
         if is_save {
             self.io_save_in_flight = self.io_save_in_flight.saturating_add(1);
         }
+        // Dispatch order, enforced on the worker side by `io_write_gate`.
+        self.io_write_seq += 1;
+        let seq = self.io_write_seq;
+        let gate = self.io_write_gate.clone();
         let tx = self.io_tx.clone();
         std::thread::spawn(move || {
             // Arm a drop-guard with a failure event so a panic before the
@@ -3709,8 +3808,11 @@ impl App {
                     message: format!("{failure_prefix}: worker aborted"),
                 }),
             };
-            let (ok, message) = match atomic_write(&path, &bytes) {
-                Ok(()) => (true, success_msg),
+            let (ok, message) = match ordered_atomic_write(&gate, seq, &path, &bytes) {
+                // A superseded write reports success: the newer snapshot it
+                // stepped aside for is already on disk, so the document is
+                // saved — just not from these bytes.
+                Ok(_) => (true, success_msg),
                 Err(e) => (false, format!("{failure_prefix}: {e}")),
             };
             // Stage the real event; the guard sends it on drop (even on panic
@@ -3789,9 +3891,16 @@ impl App {
                 self.io_save_in_flight = self.io_save_in_flight.saturating_sub(1);
             }
             if ev.ok {
-                if ev.is_save && current_doc && ev.edit_version == self.edit_version {
-                    self.dirty = false;
+                if ev.is_save && current_doc {
+                    // Re-baseline the mtime whenever a save lands, even if the
+                    // buffer moved on: the write bumped the file's timestamp, so
+                    // leaving the old one makes the *next* autosave mistake our
+                    // own save for an external edit and pause with "File changed
+                    // on disk". Only clearing `dirty` needs the version check.
                     self.file_mtime = file_mtime_of(&self.path);
+                    if ev.edit_version == self.edit_version {
+                        self.dirty = false;
+                    }
                 }
                 // A save's message only matters for the current document (a
                 // stale save to an old path shouldn't clobber a newer status).
@@ -3828,6 +3937,11 @@ impl App {
             self.open_prompt(PromptKind::SaveAs);
             return;
         }
+        // The file failed to load, so the buffer isn't its content: writing
+        // would replace the document with an empty (or partial) one.
+        if self.write_blocked_by_load_failure() {
+            return;
+        }
         // Warn if the file changed on disk since we loaded/saved it.
         if let (Some(known), Some(now)) = (self.file_mtime, file_mtime_of(&self.path))
             && now > known
@@ -3853,8 +3967,20 @@ impl App {
     /// whose child process reads the file. The user-facing save is async; this
     /// is the escape hatch for a hard ordering dependency.
     fn save_now(&mut self) {
-        match atomic_write(&self.path, self.buffer.text().as_bytes()) {
-            Ok(()) => {
+        if self.write_blocked_by_load_failure() {
+            return;
+        }
+        // Ordered like the async saves so this write can't be overtaken by (or
+        // overtake) one already in flight.
+        self.io_write_seq += 1;
+        let result = ordered_atomic_write(
+            &self.io_write_gate,
+            self.io_write_seq,
+            &self.path,
+            self.buffer.text().as_bytes(),
+        );
+        match result {
+            Ok(_) => {
                 self.dirty = false;
                 self.file_mtime = file_mtime_of(&self.path);
             }
@@ -3866,6 +3992,11 @@ impl App {
     /// loop). No-op for an unnamed buffer. The write runs off-thread like `save`.
     pub fn maybe_autosave(&mut self) {
         if !self.dirty || self.path.as_os_str().is_empty() {
+            return;
+        }
+        // Never autosave over a document we failed to read (see
+        // `set_open_error`): the buffer is empty, the file is not.
+        if self.load_failed {
             return;
         }
         // Same external-change guard as `save()`: if another process rewrote the
@@ -4073,8 +4204,18 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         }
         _ => Path::new("."),
     };
+    // The temp file is created 0600 and `persist` renames it *over* the target,
+    // so the temp file's mode becomes the document's mode. Carry the existing
+    // permissions across, or a 0644 draft silently turns owner-only on the first
+    // save — invisible to the writer, but not to a collaborator, a group-shared
+    // submission directory, or a web server. Best-effort: a filesystem that
+    // rejects the chmod shouldn't fail the save.
+    let existing_perms = std::fs::metadata(path).ok().map(|m| m.permissions());
     let mut tmp = NamedTempFile::new_in(parent)?;
     tmp.write_all(bytes)?;
+    if let Some(perms) = existing_perms {
+        let _ = tmp.as_file().set_permissions(perms);
+    }
     tmp.as_file().sync_all()?; // durability before the rename
     tmp.persist(path).map_err(|e| e.error)?;
     // fsync the parent directory so the rename (a directory-entry update) is
@@ -4086,6 +4227,35 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     // crash case (process killed mid-write).
     let _ = fsync_dir(parent);
     Ok(())
+}
+
+/// [`atomic_write`], serialized against other writes to the same `path`.
+///
+/// `atomic_write` ends in a rename, and renames from two threads land in
+/// whatever order the OS schedules them — so an autosave dispatched before a
+/// Ctrl+S but finishing after it would put the *older* snapshot on disk while
+/// the editor happily reports "Saved". Holding `gate` across the write makes
+/// the writes sequential, and the recorded per-path sequence number lets an
+/// overtaken write drop its stale bytes.
+///
+/// Returns `Ok(true)` if the bytes were written, `Ok(false)` if a newer write
+/// to the same path had already landed (the caller's snapshot is superseded,
+/// which is a success from the document's point of view).
+fn ordered_atomic_write(
+    gate: &Mutex<std::collections::HashMap<PathBuf, u64>>,
+    seq: u64,
+    path: &Path,
+    bytes: &[u8],
+) -> std::io::Result<bool> {
+    // A poisoned gate means some other writer panicked mid-write; the map is
+    // still a valid record of what landed, so keep saving rather than refuse.
+    let mut landed = gate.lock().unwrap_or_else(|e| e.into_inner());
+    if landed.get(path).is_some_and(|&s| s > seq) {
+        return Ok(false);
+    }
+    atomic_write(path, bytes)?;
+    landed.insert(path.to_path_buf(), seq);
+    Ok(true)
 }
 
 /// Best-effort directory fsync for crash-safe atomic renames (Unix only).
@@ -4142,8 +4312,9 @@ mod tests {
     #[test]
     fn status_bar_shows_live_word_count() {
         // test_app() seeds "# Title\n\nHello world." → 3 words (title, hello,
-        // world). The status bar must show a live word-count segment, and it
-        // must grow as the writer types.
+        // world). The status bar must show a live word-count segment that grows
+        // as the writer types — once they pause, since the recompute is
+        // debounced like the linter rather than run per keystroke.
         let rt = rt();
         let mut app = test_app(&rt);
         let s = render(&mut app);
@@ -4151,6 +4322,10 @@ mod tests {
         for c in " more words".chars() {
             app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
+        // Mid-burst the last count stands (no full-document pass per character).
+        let s = render(&mut app);
+        assert!(s.contains("3w"), "word count recomputed mid-burst: {s}");
+        app.last_edit = Some(Instant::now() - Duration::from_millis(400));
         let s = render(&mut app);
         assert!(s.contains("5w"), "word count did not update: {s}");
     }
@@ -4176,6 +4351,12 @@ mod tests {
             app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
         assert_ne!(app.edit_version, v0);
+        // Still mid-burst: the previous count is served as-is, so a fast typist
+        // never pays for a full-document pass per character.
+        assert_eq!(app.word_count(), n0);
+        assert_eq!(app.word_count_cache, Some((v0, n0)));
+        // Once typing pauses (same 300ms debounce as the linter) it recomputes.
+        app.last_edit = Some(Instant::now() - Duration::from_millis(400));
         let n1 = app.word_count();
         assert_eq!(app.word_count_cache, Some((app.edit_version, n1)));
         assert_eq!(n1, n0 + 1, "word count should have grown by one");
@@ -4558,6 +4739,158 @@ mod tests {
             final_content.starts_with("payload-"),
             "final content corrupted: {final_content}"
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ordered_write_drops_a_superseded_snapshot() {
+        // Two saves in flight finish in whatever order the OS schedules their
+        // renames. The older snapshot must step aside rather than roll the
+        // document back to the state before the user's last sentence.
+        let gate = Mutex::new(std::collections::HashMap::new());
+        let path = std::env::temp_dir().join("whetstone_ordered_write_test.txt");
+        let _ = std::fs::remove_file(&path);
+        assert!(ordered_atomic_write(&gate, 2, &path, b"newer").unwrap());
+        assert!(
+            !ordered_atomic_write(&gate, 1, &path, b"older").unwrap(),
+            "an overtaken write should report itself superseded"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "newer");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_preserves_the_documents_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        // The temp file is created 0600 and renamed over the target, so without
+        // carrying the mode across, every save quietly makes the document
+        // owner-only — invisible until a collaborator can't read it.
+        let path = std::env::temp_dir().join("whetstone_atomic_perms_test.txt");
+        std::fs::write(&path, "before").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        atomic_write(&path, b"after").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "save changed the document's mode");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_failed_open_blocks_writes_to_that_document() {
+        // A file that exists but can't be decoded opens as an EMPTY buffer, so
+        // a save — or a 3s-idle autosave after one stray keystroke — would
+        // replace the document with nothing.
+        let rt = rt();
+        let path = std::env::temp_dir().join("whetstone_failed_open_test.qmd");
+        std::fs::write(&path, "the original document").unwrap();
+        let mut app = App::new(String::new(), path.clone(), None, rt.handle().clone());
+        app.set_open_error(format!("Could not read {}", path.display()));
+        app.dirty = true;
+        app.last_edit = Some(Instant::now() - Duration::from_secs(5));
+
+        app.maybe_autosave();
+        app.save();
+        assert_eq!(app.io_save_in_flight, 0, "a write was dispatched anyway");
+        app.save_now();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "the original document"
+        );
+        assert!(
+            app.message.contains("could not be read"),
+            "no explanation shown: {}",
+            app.message
+        );
+
+        // Save-As is the escape hatch: a different path is safe to write.
+        let other = std::env::temp_dir().join("whetstone_failed_open_copy.qmd");
+        let _ = std::fs::remove_file(&other);
+        app.do_save_as(other.to_str().unwrap());
+        assert!(!app.load_failed);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&other);
+    }
+
+    #[test]
+    fn export_confirms_before_replacing_an_existing_file() {
+        // `quarto render` writes the same <doc>.html, so a stray Ctrl+Shift+E
+        // must not silently replace a full render with the minimal export.
+        let rt = rt();
+        let doc = std::env::temp_dir().join("whetstone_export_overwrite_test.qmd");
+        let html = doc.with_extension("html");
+        std::fs::write(&html, "<html>quarto output</html>").unwrap();
+        let mut app = App::new("# Hi".to_string(), doc.clone(), None, rt.handle().clone());
+
+        app.export_html();
+        assert!(
+            app.message.contains("already exists"),
+            "no overwrite prompt: {}",
+            app.message
+        );
+        assert_eq!(
+            std::fs::read_to_string(&html).unwrap(),
+            "<html>quarto output</html>",
+            "export overwrote the render without asking"
+        );
+
+        // Repeating the same export confirms it.
+        app.export_html();
+        for _ in 0..200 {
+            app.drain_io_events();
+            if app.message.starts_with("HTML →") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            std::fs::read_to_string(&html).unwrap().contains("Hi"),
+            "confirmed export didn't land: {}",
+            app.message
+        );
+        let _ = std::fs::remove_file(&html);
+    }
+
+    #[test]
+    fn export_refuses_to_overwrite_the_document_itself() {
+        // A .txt document exports onto its own path — writing the rendered text
+        // back would destroy the source.
+        let rt = rt();
+        let doc = std::env::temp_dir().join("whetstone_export_self_test.txt");
+        let mut app = App::new("# Hi".to_string(), doc, None, rt.handle().clone());
+        app.export_text();
+        assert!(
+            app.message.contains("overwrite the document itself"),
+            "self-overwrite not refused: {}",
+            app.message
+        );
+    }
+
+    #[test]
+    fn a_save_landing_after_more_typing_still_rebaselines_the_mtime() {
+        // The write bumped the file's mtime; leaving the load-time value makes
+        // the next autosave mistake our own save for an external edit.
+        let rt = rt();
+        let path = std::env::temp_dir().join("whetstone_mtime_rebaseline_test.qmd");
+        std::fs::write(&path, "x").unwrap();
+        let mut app = App::new("x".to_string(), path.clone(), None, rt.handle().clone());
+        app.dirty = true;
+        app.file_mtime = Some(std::time::SystemTime::UNIX_EPOCH);
+        app.io_tx
+            .send(IoEvent {
+                path: path.clone(),
+                ok: true,
+                is_save: true,
+                // The user kept typing while the write was in flight.
+                edit_version: app.edit_version + 7,
+                message: "Saved".to_string(),
+            })
+            .unwrap();
+        app.drain_io_events();
+        assert!(
+            app.file_mtime.unwrap() > std::time::SystemTime::UNIX_EPOCH,
+            "mtime not re-baselined after the save landed"
+        );
+        assert!(app.dirty, "later edits must stay unsaved");
         let _ = std::fs::remove_file(&path);
     }
 

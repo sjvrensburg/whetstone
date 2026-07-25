@@ -304,7 +304,21 @@ fn append_coach_consult(
     let mut events: Vec<ProcessEvent> = if path.exists() {
         let data = std::fs::read_to_string(path)
             .with_context(|| format!("reading journal {}", path.display()))?;
-        serde_json::from_str(&data).unwrap_or_default()
+        // An empty file is a legitimate "no events yet" journal (`touch`), but
+        // anything that fails to parse must be an error: this function rewrites
+        // `path` wholesale, so defaulting to an empty list would replace the
+        // file — a mistyped `--journal essay.qmd` would eat the draft, and a
+        // truncated journal would lose every event recorded before the crash.
+        if data.trim().is_empty() {
+            Vec::new()
+        } else {
+            serde_json::from_str(&data).with_context(|| {
+                format!(
+                    "journal {} must be a JSON array of process events",
+                    path.display()
+                )
+            })?
+        }
     } else {
         Vec::new()
     };
@@ -504,6 +518,42 @@ mod tests {
         assert_eq!(events[0].id, "e0");
         assert_eq!(events[1].id, "e1");
         assert_eq!(events[2].id, "e2");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn append_coach_consult_refuses_to_rewrite_an_unparseable_journal() {
+        // `--journal` is rewritten wholesale, so a file that isn't a journal —
+        // a mistyped `--journal essay.qmd`, or a journal truncated by a crash —
+        // must be an error, not an empty starting point that eats the file.
+        let dir = std::env::temp_dir();
+        let path = dir.join("whetstone_cli_journal_not_json.qmd");
+        std::fs::write(&path, "---\ntitle: My essay\n---\n\nThe draft.\n").unwrap();
+
+        let cfg = CoachConfig {
+            provider: None,
+            base_url: "http://localhost".into(),
+            api_key: String::new(),
+            model: "test-model".into(),
+            judge: whetstone_tui::coach::JudgeSettings::default(),
+        };
+        let client = CoachClient::new(cfg);
+        let endpoint = client.coach_endpoint();
+
+        assert!(append_coach_consult(&path, false, &endpoint, false).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "---\ntitle: My essay\n---\n\nThe draft.\n",
+            "the file was rewritten"
+        );
+
+        // An empty file is still a legitimate "no events yet" journal.
+        std::fs::write(&path, "").unwrap();
+        append_coach_consult(&path, false, &endpoint, false).unwrap();
+        let events: Vec<ProcessEvent> =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(events.len(), 1);
 
         let _ = std::fs::remove_file(&path);
     }
