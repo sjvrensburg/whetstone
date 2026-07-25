@@ -3143,40 +3143,35 @@ impl App {
     /// wrapped in a minimal styled template. A blocked export (forbidden-label
     /// guard) surfaces the reason in the status bar rather than writing the file.
     fn export_html(&mut self) {
+        // Rendering (pulldown-cmark + ammonia) runs on the worker thread so a
+        // large export doesn't freeze the UI for ~100ms.
+        let src = self.buffer.text();
         let out = self.path.with_extension("html");
-        match render_to_html(&self.buffer.text()) {
-            Ok(html) => {
-                let path = out.display().to_string();
-                self.spawn_write(
-                    out,
-                    html.into_bytes(),
-                    false,
-                    format!("HTML → {path}"),
-                    "HTML write failed".to_string(),
-                );
-            }
-            Err(e) => self.message = format!("HTML blocked: {e}"),
-        }
+        let path = out.display().to_string();
+        self.message = format!("Exporting HTML…");
+        self.spawn_render_and_write(
+            out,
+            move || render_to_html(&src).map(|s| s.into_bytes()),
+            format!("HTML → {path}"),
+            "HTML export failed".to_string(),
+        );
     }
 
     /// Export the rendered (preview-pane) text as a `.txt` file next to the
     /// source. The cheapest export: no Markdown, no HTML, just the readable
     /// text as it renders in-app.
     fn export_text(&mut self) {
+        let src = self.buffer.text();
+        let theme = self.theme;
         let out = self.path.with_extension("txt");
-        match render_to_plain(&self.buffer.text(), self.theme) {
-            Ok(text) => {
-                let path = out.display().to_string();
-                self.spawn_write(
-                    out,
-                    text.into_bytes(),
-                    false,
-                    format!("Text → {path}"),
-                    "Text write failed".to_string(),
-                );
-            }
-            Err(e) => self.message = format!("Text blocked: {e}"),
-        }
+        let path = out.display().to_string();
+        self.message = format!("Exporting text…");
+        self.spawn_render_and_write(
+            out,
+            move || render_to_plain(&src, theme).map(|s| s.into_bytes()),
+            format!("Text → {path}"),
+            "Text export failed".to_string(),
+        );
     }
 
     /// Mouse: wheel scrolls whichever pane the pointer is over; left-click in
@@ -3605,6 +3600,39 @@ impl App {
         });
     }
 
+    /// Like `spawn_write`, but the bytes are produced by `render` on the worker
+    /// thread — used for HTML/text export, where rendering (pulldown-cmark +
+    /// ammonia) can take ~100ms on a large document and must not freeze the UI.
+    /// A render error (e.g. the forbidden-label guard) is reported as a failure
+    /// message, exactly as a write error would be.
+    fn spawn_render_and_write<F>(
+        &mut self,
+        path: PathBuf,
+        render: F,
+        success_msg: String,
+        failure_prefix: String,
+    ) where
+        F: FnOnce() -> Result<Vec<u8>, String> + Send + 'static,
+    {
+        let edit_version = self.edit_version; // unused for state, kept for a uniform IoEvent
+        let tx = self.io_tx.clone();
+        std::thread::spawn(move || {
+            let (ok, message) = match render().and_then(|bytes| {
+                atomic_write(&path, &bytes).map_err(|e| format!("{failure_prefix}: {e}"))
+            }) {
+                Ok(()) => (true, success_msg),
+                Err(msg) => (false, msg),
+            };
+            let _ = tx.send(IoEvent {
+                path,
+                ok,
+                is_save: false,
+                edit_version,
+                message,
+            });
+        });
+    }
+
     /// Fold finished background writes into the UI: refresh `file_mtime` and the
     /// status bar, and clear `dirty` for successful saves. Called from the run
     /// loop.
@@ -3627,10 +3655,15 @@ impl App {
                     self.dirty = false;
                     self.file_mtime = file_mtime_of(&self.path);
                 }
-                if current_doc {
+                // A save's message only matters for the current document (a
+                // stale save to an old path shouldn't clobber a newer status).
+                // An export writes to a different path by design (.html/.txt),
+                // so its result is always shown — otherwise the user pressing
+                // Ctrl+Shift+E would get no feedback that the export worked.
+                if current_doc || !ev.is_save {
                     self.message = ev.message;
                 }
-            } else if current_doc {
+            } else if current_doc || !ev.is_save {
                 self.message = ev.message;
             }
         }
@@ -4236,6 +4269,45 @@ mod tests {
             "stale write somehow contained the newer edits"
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn export_success_message_is_shown_even_though_path_differs() {
+        // Regression: drain_io_events only applied a message when
+        // ev.path == self.path, but an export writes to <name>.html while
+        // self.path is <name>.qmd — so the success message was dropped and the
+        // user got no feedback that the export worked. Exports are not saves,
+        // so their result must always surface.
+        let dir = std::env::temp_dir();
+        let qmd = dir.join("whetstone_export_feedback_test.qmd");
+        let html = dir.join("whetstone_export_feedback_test.html");
+        let _ = std::fs::remove_file(&qmd);
+        let _ = std::fs::remove_file(&html);
+        let rt = rt();
+        let mut app = App::new(
+            "# Title\n\nBody.\n".to_string(),
+            qmd.clone(),
+            None,
+            rt.handle().clone(),
+        );
+        app.export_html();
+        // The export writes to a path != self.path; drain the result and confirm
+        // the success message is shown (not silently dropped).
+        for _ in 0..200 {
+            app.drain_io_events();
+            if app.message.starts_with("HTML") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            app.message.starts_with("HTML →"),
+            "export success message dropped: {:?}",
+            app.message
+        );
+        assert!(html.exists(), "export file was not written");
+        let _ = std::fs::remove_file(&qmd);
+        let _ = std::fs::remove_file(&html);
     }
 
     #[test]

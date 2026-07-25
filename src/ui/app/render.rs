@@ -726,6 +726,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
         row("Ctrl+M", "Mark paste under cursor as a quotation"),
         row("Ctrl+B", "Outline — jump to a heading"),
         row("Ctrl+R", "Render with Quarto (saves first)"),
+        row("Ctrl+Shift+E / X", "Export HTML · export text (no Quarto needed)"),
         row("Ctrl+L / J", "Focus coach · coach the selection"),
         row("Ctrl+E", "AI settings (endpoint, API key, model)"),
         row("Ctrl+P", "Process / journal view"),
