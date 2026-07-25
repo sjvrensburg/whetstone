@@ -1496,20 +1496,25 @@ impl App {
     }
 
     fn handle_theme_picker_key(&mut self, key: KeyEvent) {
-        if self.theme_picker.is_none() {
+        // Read the values we need up front so there are no mid-match unwraps;
+        // a panic here would drop the user into a raw shell.
+        let Some((sel, original)) = self.theme_picker.as_ref().map(|p| (p.sel, p.original)) else {
             return;
-        }
+        };
         let count = theme::THEMES.len();
-        let sel = self.theme_picker.as_ref().unwrap().sel;
         match key.code {
             KeyCode::Up => {
                 let next = (sel + count - 1) % count;
-                self.theme_picker.as_mut().unwrap().sel = next;
+                if let Some(p) = self.theme_picker.as_mut() {
+                    p.sel = next;
+                }
                 self.apply_theme(next);
             }
             KeyCode::Down => {
                 let next = (sel + 1) % count;
-                self.theme_picker.as_mut().unwrap().sel = next;
+                if let Some(p) = self.theme_picker.as_mut() {
+                    p.sel = next;
+                }
                 self.apply_theme(next);
             }
             KeyCode::Enter => {
@@ -1518,7 +1523,6 @@ impl App {
                 self.persist_settings();
             }
             KeyCode::Esc => {
-                let original = self.theme_picker.as_ref().unwrap().original;
                 self.theme = original;
                 self.preview_cache = None;
                 self.theme_picker = None;
@@ -1949,10 +1953,13 @@ impl App {
         self.maybe_trigger_teachback(&after);
     }
 
-    /// Insert `s`, replacing the active selection if there is one.
+    /// Insert `s`, replacing the active selection if there is one. Falls back to
+    /// a plain insert if a selection was present a moment ago but the buffer's
+    /// invariant has since drifted (e.g. a paste-remap edge case) rather than
+    /// panicking — a TUI crash drops the user into a raw shell.
     fn insert_or_replace(&mut self, s: &str) -> Change {
-        if self.buffer.selection().is_some() {
-            self.buffer.replace_selection(s).expect("selection present")
+        if let Some(change) = self.buffer.replace_selection(s) {
+            change
         } else {
             self.buffer.type_str(s)
         }
@@ -3265,18 +3272,21 @@ impl App {
 
         // Theme picker: wheel changes the live preview; click a row to apply,
         // click outside to cancel.
-        if self.theme_picker.is_some() {
+        if let Some((sel, original)) = self.theme_picker.as_ref().map(|p| (p.sel, p.original)) {
             let count = theme::THEMES.len();
-            let sel = self.theme_picker.as_ref().unwrap().sel;
             match ev.kind {
                 MouseEventKind::ScrollDown => {
                     let n = (sel + 1) % count;
-                    self.theme_picker.as_mut().unwrap().sel = n;
+                    if let Some(p) = self.theme_picker.as_mut() {
+                        p.sel = n;
+                    }
                     self.apply_theme(n);
                 }
                 MouseEventKind::ScrollUp => {
                     let n = (sel + count - 1) % count;
-                    self.theme_picker.as_mut().unwrap().sel = n;
+                    if let Some(p) = self.theme_picker.as_mut() {
+                        p.sel = n;
+                    }
                     self.apply_theme(n);
                 }
                 MouseEventKind::Down(MouseButton::Left) => {
@@ -3290,7 +3300,6 @@ impl App {
                             self.persist_settings();
                         }
                     } else if !over(rect) {
-                        let original = self.theme_picker.as_ref().unwrap().original;
                         self.theme = original;
                         self.preview_cache = None;
                         self.theme_picker = None;
@@ -3333,24 +3342,35 @@ impl App {
         // Grammar settings overlay: wheel scrolls, a click toggles a rule row
         // (or selects the dialect row), a click outside cancels.
         if self.grammar_settings.is_some() {
-            let count = self.grammar_settings.as_ref().unwrap().rules.len() + 1;
+            let count = match self.grammar_settings.as_ref() {
+                Some(g) => g.rules.len() + 1,
+                None => return,
+            };
             match ev.kind {
                 MouseEventKind::ScrollDown => {
-                    let g = self.grammar_settings.as_mut().unwrap();
-                    g.sel = (g.sel + 1) % count;
+                    if let Some(g) = self.grammar_settings.as_mut() {
+                        g.sel = (g.sel + 1) % count;
+                    }
                 }
                 MouseEventKind::ScrollUp => {
-                    let g = self.grammar_settings.as_mut().unwrap();
-                    g.sel = (g.sel + count - 1) % count;
+                    if let Some(g) = self.grammar_settings.as_mut() {
+                        g.sel = (g.sel + count - 1) % count;
+                    }
                 }
                 MouseEventKind::Down(MouseButton::Left) => {
-                    let rect = self.grammar_settings.as_ref().unwrap().rect;
-                    let rows = self.grammar_settings.as_ref().unwrap().rows_rect;
+                    let (rect, rows) = match self.grammar_settings.as_ref() {
+                        Some(g) => (g.rect, g.rows_rect),
+                        None => return,
+                    };
                     if rows.height > 0 && over(rows) {
-                        let idx = self.grammar_settings.as_ref().unwrap().row_start
-                            + (ev.row - rows.y) as usize;
-                        let g = self.grammar_settings.as_mut().unwrap();
-                        if let Some((rule, _)) = g.rules.get(idx) {
+                        let row_start = match self.grammar_settings.as_ref() {
+                            Some(g) => g.row_start,
+                            None => return,
+                        };
+                        let idx = row_start + (ev.row - rows.y) as usize;
+                        if let Some(g) = self.grammar_settings.as_mut()
+                            && let Some((rule, _)) = g.rules.get(idx)
+                        {
                             let rule = rule.clone();
                             g.sel = idx + 1;
                             if !g.disabled.remove(&rule) {
@@ -4669,10 +4689,13 @@ fn draw_preview(frame: &mut Frame, app: &mut App, area: Rect) {
         let content = wrapped_height(&text, width as usize);
         app.preview_cache = Some((app.edit_version, width, theme.name, text, content));
     }
-    let (text, content) = {
-        let (_, _, _, t, c) = app.preview_cache.as_ref().unwrap();
-        (t.clone(), *c)
+    // `preview_cache` was just populated above when `stale`, so it is `Some`
+    // here — but guard anyway so a future refactor that skips the refresh can't
+    // panic the TUI.
+    let Some((_, _, _, text, content)) = app.preview_cache.as_ref() else {
+        return;
     };
+    let (text, content) = (text.clone(), *content);
     let max = content.saturating_sub(app.preview_height);
     if app.preview_scroll > max {
         app.preview_scroll = max;
