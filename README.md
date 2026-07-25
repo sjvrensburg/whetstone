@@ -18,6 +18,12 @@ editor itself never phones home.
 Prebuilt binaries for macOS (Intel + Apple Silicon), Linux (x86_64 + aarch64),
 and Windows (x86_64) ship with every release.
 
+**cargo** (any platform with a Rust toolchain):
+
+```sh
+cargo install whetstone-tui
+```
+
 **Homebrew** (macOS / Linux):
 
 ```sh
@@ -262,9 +268,19 @@ cargo run --features screenshots --example screenshots   # → docs/screenshots/
 
 ## Not yet implemented
 
-The editor is deliberately single-document and single-buffer — it is built to
-keep you focused on writing one piece well, so multiple files / tabs are out of
-scope by design.
+By design, Whetstone focuses on writing one piece well. The following are
+deliberately out of scope (single-document / single-buffer) or not yet built:
+
+- **Multiple files / tabs** — the editor is single-document by design, to keep
+  you focused on one piece.
+- **PDF export** — HTML and plain-text export ship now (see Export above); PDF
+  via a headless browser or system toolchain is a planned follow-up.
+- **Keybinding customization** — shortcuts are fixed; there is no keymap config
+  file yet.
+- **Project-wide search** — find/replace is in-document only.
+
+If you need any of these today, the headless subcommands let you script around
+the gaps (e.g. `export` to HTML, then a separate tool for PDF).
 
 ## License
 
