@@ -12,5 +12,13 @@ installers = ["shell", "powershell", "homebrew"]
 # Publish a Homebrew formula to this tap repo on release
 tap = "sjvrensburg/homebrew-tap"
 publish-jobs = ["homebrew"]
+# Emit checksums (.sha256) alongside each release artifact. NOTE: the value is
+# the string "sha256", not a boolean — `checksum = true` is a parse error that
+# breaks the whole release pipeline.
+checksum = "sha256"
+# The man page (docs/man/whetstone-tui.1) ships in the repo and is documented
+# in the README for manual install. cargo-dist 0.32 has no manpage installer
+# (it was added in a later version), so there is no key here for it — bumping
+# cargo-dist and adding a `manpages` installer is a follow-up.
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]

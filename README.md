@@ -3,10 +3,15 @@
 **Website:** https://sjvrensburg.github.io/whetstone/ (source under [`docs/`](docs/))
 
 A friction-first Quarto/Markdown editor for the terminal, written in Rust. It
-keeps the writing *yours*: pastes are quarantined and
-must be rewritten ("claim-to-own") or attributed, the optional AI coach can only
-ask questions (never ghostwrite), and an append-only journal lets you export an
-honest "how this was written" disclosure.
+keeps the writing *yours*: pastes are quarantined and must be rewritten
+("claim-to-own") or attributed, the optional AI coach can only ask questions
+(structured coaching can't ghostwrite by design; free-text chat replies are
+length-capped and screened, with a small residual risk), and an append-only
+journal lets you export an honest "how this was written" disclosure.
+
+**Privacy:** Whetstone makes **zero outbound network calls** unless you
+configure a coach endpoint. Grammar checking runs locally (via Harper); the
+editor itself never phones home.
 
 ## Install
 
@@ -33,6 +38,13 @@ irm https://github.com/sjvrensburg/whetstone/releases/latest/download/whetstone-
 ```
 
 Or grab an archive from the [latest release](https://github.com/sjvrensburg/whetstone/releases/latest).
+
+**From git** (any platform with a Rust 1.85+ toolchain; no crates.io publish needed):
+
+```sh
+cargo install --git https://github.com/sjvrensburg/whetstone whetstone-tui
+```
+
 From source, see **Build & run** below.
 
 ## Build & run
@@ -51,6 +63,22 @@ The UI is mouse- and keyboard-driven (Fresh/Micro-style: familiar, no modes
 beyond transient menus/dialogs). Press **F1** for the keybinding cheat-sheet or
 **F10** for the menu bar.
 
+## Shell completions
+
+Generated bash/zsh/fish/PowerShell completions ship under
+[`docs/completions/`](docs/completions/). Install them per shell:
+
+```sh
+# bash
+sudo cp docs/completions/whetstone-tui.bash /etc/bash_completion.d/
+# zsh
+cp docs/completions/_whetstone-tui "$(brew --prefix)/share/zsh/site-functions/"
+# fish
+cp docs/completions/whetstone-tui.fish ~/.config/fish/completions/
+```
+
+To regenerate after a subcommand change: `cargo run --example gen_completions`.
+
 ## Keybindings
 
 | Key | Action |
@@ -64,6 +92,7 @@ beyond transient menus/dialogs). Press **F1** for the keybinding cheat-sheet or
 | `Ctrl+M` | Mark the pasted region under the cursor as a quotation |
 | `Ctrl+B` | Outline — list headings and jump to one |
 | `Ctrl+R` | Render the document with Quarto (saves first) |
+| `Ctrl+Shift+E` / `Ctrl+Shift+X` | Export the document as HTML / plain text (no Quarto needed) |
 | `Ctrl+L` | Move focus to the bottom-right pane (Coach or Suggestions tab); `Tab` switches the tab; `Ctrl+J` coaches the current selection |
 | `Ctrl+E` | AI settings (provider, endpoint, API key, model, + optional judge) |
 | `Ctrl+P` | Process / journal view |
@@ -76,6 +105,16 @@ Mouse: click to place the cursor, click-drag to select, double-click a word,
 triple-click a line, wheel to scroll, and click menu titles / dialog rows.
 Typing coalesces into single undo steps. When the caret sits on (or just after)
 a `()`, `[]`, or `{}` bracket, it and its matching partner are highlighted.
+
+## Accessibility
+
+Every action has a keyboard shortcut — there are no mouse-only flows. Two
+non-color cues are layered on top of the theme colors so colorblind users can
+distinguish states without relying on hue: quarantined pastes are underlined
+(not just amber), and grammar issues use underline for errors/warnings versus
+dim for style suggestions. Screen-reader users can drive every check headlessly
+via the subcommands (`lint`, `coach`, `guard`, `ownership`, `disclosure`,
+`export`, `words`) — see **Headless / agentic use** below.
 
 ## AI coach (optional)
 
@@ -125,8 +164,10 @@ Environment variables still work and override the saved file at startup:
 
 Every coach reply is screened before it is shown (length cap, rewrite/dictation
 patterns, n-gram overlap with the draft, and the forbidden-label guard) — and,
-if the judge is enabled, by the LLM judge on top of that; the draft and your
-message are injection-screened before egress.
+if the judge is enabled, by the LLM judge on top of that. The draft and your
+message (plus each prior chat turn on replay) pass a best-effort injection
+screen before egress — defense-in-depth on top of the untrusted-channel wrapping
+and the reply guard, not a guarantee against a determined bypass.
 
 ## Preferences
 
@@ -191,6 +232,16 @@ fails (or Quarto isn't installed), the captured output opens in a scrollable
 overlay so you can read the error. Requires [Quarto](https://quarto.org) on your
 `PATH`.
 
+## Export (HTML / plain text)
+
+For when you want a readable artifact without installing Quarto, press
+**Ctrl+Shift+E** (**File ▸ Export HTML**) for a standalone HTML document or
+**Ctrl+Shift+X** (**File ▸ Export text**) for the rendered preview as plain
+text. Both write next to the source (`<name>.html` / `<name>.txt`), use the same
+markdown parser as the preview pane, and pass the forbidden-label guard so an
+export can't carry proof-of-personhood language. The headless `export`
+subcommand does the same for scripts and CI.
+
 ## Grammar & suggestions (Harper)
 
 Grammar/spell checking is local (via `harper-core`, no external calls). Issues
@@ -215,10 +266,15 @@ bare file path still opens the editor.
 
 ```sh
 whetstone-tui lint file.qmd                       # Harper diagnostics + fixes
+whetstone-tui lint file.qmd --strict              # exit non-zero if issues found (CI)
 whetstone-tui coach file.qmd --message "…"        # one guarded (+ judged) coach turn
+whetstone-tui coach file.qmd --message "…" --journal events.json   # also journal the consult
 whetstone-tui guard --reply "…" --draft file.qmd  # screen an arbitrary reply
 whetstone-tui ownership --original a.txt --current b.txt   # claim-to-own survival
 whetstone-tui disclosure --journal events.json --doc-id essay.qmd
+whetstone-tui export file.qmd --format html       # standalone HTML (no Quarto)
+whetstone-tui export file.qmd --format text       # rendered plain text
+whetstone-tui words file.qmd                      # word/char/line counts (JSON)
 ```
 
 ## Screenshots
@@ -232,9 +288,19 @@ cargo run --features screenshots --example screenshots   # → docs/screenshots/
 
 ## Not yet implemented
 
-The editor is deliberately single-document and single-buffer — it is built to
-keep you focused on writing one piece well, so multiple files / tabs are out of
-scope by design.
+By design, Whetstone focuses on writing one piece well. The following are
+deliberately out of scope (single-document / single-buffer) or not yet built:
+
+- **Multiple files / tabs** — the editor is single-document by design, to keep
+  you focused on one piece.
+- **PDF export** — HTML and plain-text export ship now (see Export above); PDF
+  via a headless browser or system toolchain is a planned follow-up.
+- **Keybinding customization** — shortcuts are fixed; there is no keymap config
+  file yet.
+- **Project-wide search** — find/replace is in-document only.
+
+If you need any of these today, the headless subcommands let you script around
+the gaps (e.g. `export` to HTML, then a separate tool for PDF).
 
 ## License
 

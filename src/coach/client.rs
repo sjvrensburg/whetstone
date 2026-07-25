@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use futures::StreamExt;
 use serde::Deserialize;
 
@@ -74,7 +74,7 @@ impl CoachClient {
                 .header("anthropic-version", ANTHROPIC_VERSION),
         };
         let resp = req.send().await?;
-        let resp = resp.error_for_status()?;
+        let resp = ensure_ok(resp).await?;
         let parsed: Resp = resp.json().await?;
         let mut ids: Vec<String> = parsed.data.into_iter().map(|m| m.id).collect();
         ids.sort();
@@ -97,7 +97,7 @@ impl CoachClient {
         let resp = build_request(&self.http, endpoint, messages, json_mode)
             .send()
             .await?;
-        let resp = resp.error_for_status()?;
+        let resp = ensure_ok(resp).await?;
 
         let mut stream = resp.bytes_stream();
         let mut bytes: Vec<u8> = Vec::new();
@@ -129,6 +129,63 @@ impl CoachClient {
         }
         Ok(full)
     }
+}
+
+/// Turn a non-2xx response into an informative error by reading (and capping)
+/// the body, instead of reqwest's opaque "HTTP status client error (4xx…)".
+///
+/// Local servers and proxies routinely answer with a body that names the real
+/// problem — Ollama's `{"error":"model 'x' not found"}`, an nginx 502 HTML page,
+/// a Cloudflare challenge. Surfacing a short excerpt turns "click again with no
+/// new information" into a fixable error. The body is capped so a multi-MB HTML
+/// error page can't overwhelm the status line.
+async fn ensure_ok(resp: reqwest::Response) -> Result<reqwest::Response> {
+    if resp.status().is_success() {
+        return Ok(resp);
+    }
+    let status = resp.status();
+    // Bound the body excerpt: enough to name the problem, not enough to drown
+    // the status bar. Most real error payloads (JSON, one-line reason) fit well
+    // inside this; a giant HTML page is truncated.
+    const BODY_CAP: usize = 240;
+    let text = resp.text().await.unwrap_or_default();
+    let detail = extract_error_message(&text);
+    let excerpt = detail.chars().take(BODY_CAP).collect::<String>();
+    let suffix = if detail.chars().count() > BODY_CAP {
+        "…"
+    } else {
+        ""
+    };
+    // reqwest's status text (e.g. "404 Not Found") plus the body excerpt.
+    Err(anyhow!("HTTP {status}: {excerpt}{suffix}"))
+}
+
+/// Pull the human-readable reason out of a known error-body shape, falling back
+/// to the trimmed raw body. Handles OpenAI-style `{"error":{"message":…}}`,
+/// Ollama-style `{"error":"…"}`, and bare-text reasons.
+fn extract_error_message(body: &str) -> String {
+    #[derive(Deserialize)]
+    struct OpenAiErr {
+        message: String,
+    }
+    #[derive(Deserialize)]
+    struct OpenAiShape {
+        error: OpenAiErr,
+    }
+    #[derive(Deserialize)]
+    struct OllamaShape {
+        error: String,
+    }
+    let trimmed = body.trim();
+    if trimmed.starts_with('{') {
+        if let Ok(s) = serde_json::from_str::<OpenAiShape>(trimmed) {
+            return s.error.message;
+        }
+        if let Ok(s) = serde_json::from_str::<OllamaShape>(trimmed) {
+            return s.error;
+        }
+    }
+    trimmed.replace(['\n', '\r'], " ").trim().to_string()
 }
 
 /// Move all complete lines (through the last `\n`) from the raw byte buffer
@@ -405,5 +462,103 @@ mod tests {
         let mut buf = String::from("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n");
         let out = parse_sse_chunk(&mut buf, Provider::OpenAi);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn extract_openai_error_message() {
+        let body = r#"{"error":{"message":"model not found","type":"api_error"}}"#;
+        assert_eq!(extract_error_message(body), "model not found");
+    }
+
+    #[test]
+    fn extract_ollama_error_message() {
+        let body = r#"{"error":"model 'llama3.1' not found, try pulling it first"}"#;
+        assert_eq!(
+            extract_error_message(body),
+            "model 'llama3.1' not found, try pulling it first"
+        );
+    }
+
+    #[test]
+    fn extract_html_error_body_falls_back_to_trimmed_text() {
+        let body = "<html><body>502 Bad Gateway</body></html>";
+        assert_eq!(
+            extract_error_message(body),
+            "<html><body>502 Bad Gateway</body></html>"
+        );
+    }
+
+    #[test]
+    fn extract_collapses_multiline_html_to_single_line() {
+        let body = "<html>\n  <body>\n    404 Not Found\n  </body>\n</html>";
+        assert!(!extract_error_message(body).contains('\n'));
+        assert!(extract_error_message(body).contains("404 Not Found"));
+    }
+
+    #[tokio::test]
+    async fn ensure_ok_passes_through_success() {
+        // A 200 response is returned unchanged.
+        let url = mock_server(200, "application/json", "{\"data\":[{\"id\":\"x\"}]}").await;
+        let resp = reqwest::get(&url).await.unwrap();
+        let ok = ensure_ok(resp).await.unwrap();
+        assert!(ok.status().is_success());
+    }
+
+    #[tokio::test]
+    async fn ensure_ok_surfaces_body_on_error() {
+        // A 404 with an Ollama-style JSON body produces an error naming the model.
+        let url = mock_server(404, "application/json", r#"{"error":"model not found"}"#).await;
+        let resp = reqwest::get(&url).await.unwrap();
+        let err = ensure_ok(resp).await.unwrap_err().to_string();
+        assert!(err.contains("404"), "err = {err}");
+        assert!(err.contains("model not found"), "err = {err}");
+    }
+
+    #[tokio::test]
+    async fn ensure_ok_caps_a_giant_body() {
+        // A multi-KB HTML error page is truncated so it can't drown the status bar.
+        let giant = "<html>".to_string() + &"x".repeat(8 * 1024) + "</html>";
+        let url = mock_server(502, "text/html", &giant).await;
+        let resp = reqwest::get(&url).await.unwrap();
+        let err = ensure_ok(resp).await.unwrap_err().to_string();
+        assert!(err.ends_with('…'), "err should be truncated: {err:?}");
+        // The visible portion is well under the giant body size.
+        assert!(err.len() < giant.len() / 4, "err = {err}");
+    }
+
+    /// Spawn a one-shot loopback HTTP server returning `status`/`body`, and
+    /// return its URL. The server serves a single request then exits.
+    async fn mock_server(status: u16, content_type: &str, body: &str) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let body = body.to_string();
+        let ct = content_type.to_string();
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                // Read the request before answering: closing a socket that
+                // still has unread inbound data resets the connection on
+                // Windows, so the client never sees the response it is waiting
+                // for (WSAECONNABORTED).
+                let mut seen = Vec::new();
+                let mut buf = [0u8; 1024];
+                while let Ok(n) = stream.read(&mut buf).await {
+                    if n == 0 {
+                        break;
+                    }
+                    seen.extend_from_slice(&buf[..n]);
+                    if seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let resp = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: {ct}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        format!("http://{addr}/")
     }
 }

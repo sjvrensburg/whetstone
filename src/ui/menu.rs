@@ -17,6 +17,10 @@ pub enum MenuAction {
     SaveAs,
     Open,
     Export,
+    /// Export the draft as a standalone HTML document (no Quarto needed).
+    ExportHtml,
+    /// Export the draft as plain text (the rendered preview, flattened).
+    ExportText,
     PreviewDisclosure,
     Compile,
     Outline,
@@ -109,6 +113,8 @@ pub fn menus(coach_enabled: bool, friction: &FrictionPolicy, theme_name: &str) -
                 MenuItem::new("Save as…", "", MenuAction::SaveAs),
                 MenuItem::new("Edit claim", "Ctrl+K", MenuAction::EditClaim),
                 MenuItem::new("Export disclosure", "Ctrl+D", MenuAction::Export),
+                MenuItem::new("Export HTML", "Ctrl+Shift+E", MenuAction::ExportHtml),
+                MenuItem::new("Export text", "Ctrl+Shift+X", MenuAction::ExportText),
                 MenuItem::new("Preview disclosure", "", MenuAction::PreviewDisclosure),
                 MenuItem::new("Render (Quarto)", "Ctrl+R", MenuAction::Compile),
                 MenuItem::new("Quit", "Ctrl+Q", MenuAction::Quit),

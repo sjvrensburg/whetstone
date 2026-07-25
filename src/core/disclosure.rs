@@ -14,7 +14,7 @@ use crate::core::labels::assert_no_forbidden_labels;
 use crate::core::process_event::{ProcessEvent, ProcessEventType, meta_bool, meta_string};
 
 /// The honest scoping note — friction, not proof (ADR-009).
-pub const SCOPING_NOTE: &str = "This is a record of how the piece was written in Whetstone — evidence of process, not proof of authorship. The record is local and self-reported.";
+pub const SCOPING_NOTE: &str = "This is a record of how the piece was written in Whetstone — evidence of process, not proof of authorship. The record is local and self-reported, and is not tamper-evident: anyone with the file can edit or delete entries.";
 
 /// Composition breakdown derivable from the metadata-only event stream.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -255,6 +255,31 @@ pub fn render_disclosure(doc_id: &str, events: &[ProcessEvent]) -> Result<Disclo
         }
     }
 
+    // Auditable fail-opens: a judge configured but unreachable, or a prior chat
+    // turn screened out of the replayed history. These do not change the
+    // coaching totals above (which count consults), but they are surfaced so a
+    // reader can see the guard was not always at full strength.
+    let judge_down = events
+        .iter()
+        .filter(|e| e.kind == ProcessEventType::JudgeUnavailable)
+        .count() as u32;
+    if judge_down > 0 {
+        lines.push(format!(
+            "- {judge_down} response(s) were shown with the LLM judge unavailable \
+             (deterministic guard only).",
+        ));
+    }
+    let history_screened = events
+        .iter()
+        .filter(|e| e.kind == ProcessEventType::HistoryScreened)
+        .count() as u32;
+    if history_screened > 0 {
+        lines.push(format!(
+            "- {history_screened} consult(s) dropped a prior chat turn flagged by the \
+             injection screen before sending.",
+        ));
+    }
+
     lines.push(String::new());
     lines.push("## Composition".to_string());
     lines.push(String::new());
@@ -483,5 +508,50 @@ mod tests {
     fn location_field_is_available() {
         // Guards against accidental removal of the Location type from the API.
         let _loc = Location { from: 0, to: 5 };
+    }
+
+    #[test]
+    fn judge_unavailable_and_history_screened_surface_in_disclosure() {
+        // An auditable fail-open should be visible in the rendered disclosure,
+        // not just a transient status-bar message.
+        let events = vec![
+            ev(
+                ProcessEventType::SessionStart,
+                "2026-06-16T10:00:00Z",
+                None,
+                vec![],
+            ),
+            ev(
+                ProcessEventType::CoachConsult,
+                "2026-06-16T10:01:00Z",
+                Some(40),
+                vec![
+                    ("refused", MetaValue::Bool(false)),
+                    ("provider", MetaValue::Str("openai".into())),
+                    ("model", MetaValue::Str("gpt-4o-mini".into())),
+                ],
+            ),
+            ev(
+                ProcessEventType::JudgeUnavailable,
+                "2026-06-16T10:01:05Z",
+                None,
+                vec![("model", MetaValue::Str("gpt-4o-mini".into()))],
+            ),
+            ev(
+                ProcessEventType::HistoryScreened,
+                "2026-06-16T10:02:00Z",
+                Some(1),
+                vec![],
+            ),
+        ];
+        let doc = render_disclosure("doc.qmd", &events).unwrap();
+        assert!(
+            doc.markdown
+                .contains("1 response(s) were shown with the LLM judge unavailable")
+        );
+        assert!(
+            doc.markdown
+                .contains("1 consult(s) dropped a prior chat turn flagged by the injection screen")
+        );
     }
 }

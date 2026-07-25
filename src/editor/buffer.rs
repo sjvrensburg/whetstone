@@ -380,10 +380,9 @@ impl Buffer {
         let before = (self.cursor > 0).then(|| self.rope.char(self.cursor - 1));
         let (pos, ch) = if let Some(c) = at.filter(|c| Self::bracket_of(*c).is_some()) {
             (self.cursor, c)
-        } else if let Some(c) = before.filter(|c| Self::bracket_of(*c).is_some()) {
-            (self.cursor - 1, c)
         } else {
-            return None;
+            let c = before.filter(|c| Self::bracket_of(*c).is_some())?;
+            (self.cursor - 1, c)
         };
         self.scan_match(pos, ch).map(|m| (pos, m))
     }

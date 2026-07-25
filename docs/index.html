@@ -42,7 +42,7 @@
         <div>
           <h1 class="display-xl hero__title">The friction you'll <span class="text-accent">love to hate</span>.</h1>
           <p class="body-lg hero__sub">Finally, the AI coach and Markdown editor the 90s deserves. A terminal writing surface that keeps the words yours.</p>
-          <p class="body-md hero__claim text-muted">Pastes are quarantined until you rewrite or attribute them. The optional coach can only ask questions, never write your sentences. When you are done, export an honest record of how the piece came together. It adds friction, not proof: it never claims to verify who wrote anything.</p>
+          <p class="body-md hero__claim text-muted">Pastes are quarantined until you rewrite or attribute them. The optional coach can only ask questions — structured coaching can't ghostwrite by design, and free-text chat replies are length-capped and screened (a small residual risk). When you are done, export an honest record of how the piece came together. It adds friction, not proof: it never claims to verify who wrote anything.</p>
           <div class="hero__actions">
             <a class="btn btn--primary btn--lg" href="https://github.com/sjvrensburg/whetstone">View on GitHub</a>
             <a class="btn btn--secondary btn--lg" href="#friction">How it works</a>
@@ -50,7 +50,7 @@
           <div class="statline">
             <div class="stat">
               <div class="stat__num">0</div>
-              <div class="stat__label">cloud calls for grammar. Checking runs on your machine.</div>
+              <div class="stat__label">outbound network calls unless you configure a coach endpoint. Grammar runs locally; the editor makes none.</div>
             </div>
             <div class="stat">
               <div class="stat__num">2</div>
@@ -122,7 +122,7 @@
                    alt="The coach pane replying to the writer with a question about the draft." />
             </div>
             <h3 class="title-md feature__title">A coach that only asks</h3>
-            <p class="feature__text">The optional coach reads your draft and replies with questions. A deterministic guard screens every reply, so it can sharpen your thinking but never hand you sentences.</p>
+            <p class="feature__text">The optional coach reads your draft and replies with questions. Structured coaching can't carry prose by schema; free-text chat replies pass a length cap and a deterministic guard, so a small residual risk is all that's left.</p>
           </article>
         </div>
       </div>
@@ -164,7 +164,7 @@
         <div class="split">
           <div>
             <h2 class="display-md">It can only ask questions</h2>
-            <p class="body-lg text-muted" style="margin-top: var(--space-md);">The coach is optional and off until you point it at an endpoint. When it is on, it is question-only by construction, not by polite request.</p>
+            <p class="body-lg text-muted" style="margin-top: var(--space-md);">The coach is optional and off until you point it at an endpoint. Structured coaching is question-only by construction — the schema can't carry prose. Free-text chat replies lean on a length cap plus deterministic screening, with a small residual risk the cap keeps bounded.</p>
             <div class="split__points">
               <div class="point">
                 <svg class="icon point__icon" viewBox="0 0 24 24" stroke-width="2" aria-hidden="true">
@@ -296,6 +296,7 @@ whetstone-tui coach essay.qmd <span class="a">--message</span> "Where is my argu
 whetstone-tui coach essay.qmd <span class="a">--message</span> "…"             <span class="c"># one guarded coaching turn</span>
 whetstone-tui guard <span class="a">--reply</span> "…" <span class="a">--draft</span> essay.qmd        <span class="c"># screen an arbitrary reply</span>
 whetstone-tui ownership <span class="a">--original</span> a.txt <span class="a">--current</span> b.txt  <span class="c"># claim-to-own survival</span>
+whetstone-tui export essay.qmd <span class="a">--format</span> html             <span class="c"># standalone HTML (no Quarto)</span>
 whetstone-tui disclosure <span class="a">--journal</span> events.json <span class="a">--doc-id</span> essay.qmd</pre>
         </div>
       </div>

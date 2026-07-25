@@ -6,3 +6,9 @@
 .DS_Store
 *.log
 .claude/settings.local.json
+
+# Export smoke-test output (sample.qmd → sample.html/.txt/.disclosure.md).
+# Scoped to sample.* so docs/*.html is still tracked.
+/sample.html
+/sample.txt
+/sample.disclosure.md

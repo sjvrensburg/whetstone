@@ -1,7 +1,11 @@
 [package]
 name = "whetstone-tui"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
+# Edition 2024 stabilized in Rust 1.85. Declaring the MSRV gives Cargo a clean
+# "package requires rustc 1.85" message instead of an edition parse error for a
+# user/packager on an older toolchain, and lets nixpkgs/AUR/Homebrew read it.
+rust-version = "1.85"
 description = "Whetstone — a friction-first Quarto markdown editor for the terminal"
 license = "MIT"
 repository = "https://github.com/sjvrensburg/whetstone"
@@ -38,6 +42,8 @@ futures = "0.3"
 # Screenshots (optional) — render the TUI to a PNG in-process, no external tools.
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 ab_glyph = { version = "0.2", optional = true }
+ammonia = "4.1.4"
+tempfile = "3.27.0"
 
 [features]
 # Reusable headless-driving harness (also compiled under `cargo test`).
@@ -53,6 +59,7 @@ path = "examples/screenshots.rs"
 required-features = ["screenshots"]
 
 [dev-dependencies]
+clap_complete = "4.6.7"
 pretty_assertions = "1"
 
 # The profile that 'dist' will build with

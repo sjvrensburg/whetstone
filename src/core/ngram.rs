@@ -69,9 +69,54 @@ pub fn canonical_words(text: &str) -> Vec<String> {
     folded.unicode_words().map(|w| w.to_string()).collect()
 }
 
-/// Number of canonical word tokens in `text` (see [`canonical_words`]).
+/// Number of canonical word tokens in `text` (see [`canonical_words`]). Counts
+/// the iterator directly rather than going through `canonical_words`, so it
+/// doesn't allocate a `String` per word — relevant for the status-bar word
+/// count, which runs (cached) on every buffer change.
 pub fn word_count(text: &str) -> usize {
-    canonical_words(text).len()
+    let normalized: String = text.nfkc().collect::<String>().to_lowercase();
+    let folded: String = normalized.chars().map(fold_confusable).collect();
+    folded.unicode_words().count()
+}
+
+/// A word count for the status bar that tracks what a word processor would
+/// show more closely than [`word_count`], by first stripping the Markdown noise
+/// that inflates the raw count: fenced code blocks, inline code, link/image
+/// URLs, and bare URLs. Markdown structural punctuation (`#`, `*`, `-`, `>`)
+/// is left to the Unicode word segmenter, which already excludes it.
+///
+/// This is intentionally separate from [`word_count`] (used by the ownership
+/// n-gram metric, which needs the raw tokenization). The status-bar number is
+/// for the writer's orientation against word limits; it is documented as an
+/// estimate, not a billing-critical count — a student should still verify
+/// against their target word processor for an exact limit.
+pub fn prose_word_count(text: &str) -> usize {
+    let stripped = strip_markdown_noise(text);
+    let normalized: String = stripped.nfkc().collect::<String>().to_lowercase();
+    let folded: String = normalized.chars().map(fold_confusable).collect();
+    folded.unicode_words().count()
+}
+
+/// Strip the Markdown constructs that most inflate a raw word count. Best-effort
+/// line-based passes (not a full Markdown parse) — good enough for a count, and
+/// cheap enough to run on every buffer change.
+fn strip_markdown_noise(text: &str) -> String {
+    use regex::Regex;
+    static FENCED: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"(?s)```.*?```").unwrap());
+    static INLINE_CODE: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"`[^`\n]*`").unwrap());
+    // A Markdown link/image: keep the label text, drop the URL in parens.
+    static LINK_URL: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"!?\[([^\]]*)\]\([^)]*\)").unwrap());
+    // A bare URL (http/https/doi): counts as one word in Word, many here.
+    static BARE_URL: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"(?i)\b(?:https?://|doi:|www\.)[^\s)]+").unwrap());
+    // First drop fenced blocks (so their contents don't leak), then the rest.
+    let s = FENCED.replace_all(text, "").into_owned();
+    let s = INLINE_CODE.replace_all(&s, "").into_owned();
+    let s = LINK_URL.replace_all(&s, "$1").into_owned();
+    BARE_URL.replace_all(&s, "").into_owned()
 }
 
 /// Extract word-level n-grams from `text`. Words are produced by
@@ -165,5 +210,33 @@ mod tests {
         let a = extract_ngrams("red green blue", 3);
         let b = extract_ngrams("one two three", 3);
         assert_eq!(ngram_overlap(&a, &b), 0.0);
+    }
+
+    #[test]
+    fn prose_word_count_strips_markdown_noise() {
+        // Code fences don't count: the fenced version has fewer words than the
+        // raw counter would give (Text + rust/fn/main + More vs Text + More).
+        let fenced = prose_word_count("Text.\n\n```rust\nfn main() {}\n```\n\nMore.\n");
+        assert_eq!(fenced, 2, "code fence contents leaked into the count");
+
+        // Inline code doesn't count.
+        let with_code = prose_word_count("Run `cargo build` now.");
+        assert_eq!(with_code, 2, "inline code leaked: Run + now");
+
+        // A bare URL doesn't inflate (a word processor counts it as ~1; the
+        // raw counter split https://doi.org/10.1234/abc into 4 tokens).
+        let url = prose_word_count("See https://doi.org/10.1234/abc for more.");
+        assert_eq!(url, 3, "bare URL inflated the count: See + for + more");
+
+        // A Markdown link: the URL is dropped, the label is kept.
+        let link = prose_word_count("See [this site](http://example.com).");
+        assert_eq!(link, 3, "link URL leaked: See + this + site");
+
+        // Normal prose counts as expected.
+        assert_eq!(prose_word_count("one two three"), 3);
+        // Hyphenated compounds segment on the hyphen (well + known + idea);
+        // word processors vary on this, and the count is documented as an
+        // estimate.
+        assert_eq!(prose_word_count("well-known idea"), 3);
     }
 }

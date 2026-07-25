@@ -1,4 +1,5 @@
-//! Pure domain logic ported from the web composer (`composer/src/core/`).
+//! Pure domain logic (originally ported from a web composer that has since
+//! been removed; the TUI is the whole product now).
 //!
 //! No I/O, no editor, no UI — just strings, numbers, and plain data
 //! structures. These are the load-bearing pieces of Whetstone's value and

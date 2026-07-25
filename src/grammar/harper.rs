@@ -263,4 +263,148 @@ mod tests {
         assert!(!rules.is_empty());
         assert!(rules.windows(2).all(|w| w[0].0 <= w[1].0));
     }
+
+    #[test]
+    fn empty_input_yields_no_diagnostics() {
+        let mut linter = Linter::new();
+        assert!(linter.lint("").is_empty());
+        assert!(linter.lint("   \n\n  ").is_empty());
+    }
+
+    #[test]
+    fn diagnostics_are_sorted_by_start() {
+        let mut linter = Linter::new();
+        let diags = linter.lint("This is a sentance with an eror and a misteak.");
+        // The lint() contract is sorted-by-start; this guards a future change
+        // that returns them in Harper's internal order.
+        assert!(
+            diags.windows(2).all(|w| w[0].start <= w[1].start),
+            "diagnostics not sorted by start"
+        );
+    }
+
+    #[test]
+    fn spans_are_char_offsets_not_bytes_under_multibyte_text() {
+        // The module doc claims Harper spans are char offsets matching the
+        // ropey buffer. A multibyte char before the misspelling would expose a
+        // byte/char mismatch: the span's end would overshoot char count. This
+        // is the regression that would break underlining in the editor.
+        let mut linter = Linter::new();
+        // "é" is two bytes, one char; "sentance" follows it.
+        let src = "café sentance";
+        let char_count = src.chars().count();
+        let diags = linter.lint(src);
+        assert!(
+            diags.iter().all(|d| d.end <= char_count),
+            "span end exceeds char count"
+        );
+        // And the flagged span should actually cover "sentance", not land in
+        // the middle of it (which a byte offset would).
+        let sentance_start = src
+            .find("sentance")
+            .map(|b| src[..b].chars().count())
+            .unwrap();
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.start <= sentance_start && d.end >= sentance_start + 8),
+            "no diagnostic spans 'sentance' at char offset {sentance_start}"
+        );
+    }
+
+    #[test]
+    fn disabled_rule_suppresses_its_diagnostics() {
+        // Disabling a rule by its key must turn its diagnostics off — the
+        // grammar-settings UI relies on this round-trip.
+        let mut linter_default = Linter::new();
+        let src = "This is a sentance.";
+        let before = linter_default.lint(src).len();
+
+        // Find the rule that flagged the misspelling and disable it.
+        let spelling_rule = linter_default
+            .available_rules()
+            .into_iter()
+            .find(|(k, _)| k.to_lowercase().contains("spelling"))
+            .map(|(k, _)| k);
+        if let Some(key) = spelling_rule {
+            let mut linter = Linter::with_settings(&GrammarSettings {
+                dialect: GrammarDialect::American,
+                disabled_rules: vec![key.clone()],
+            });
+            let after = linter.lint(src).len();
+            assert!(
+                after < before,
+                "disabling {key} did not reduce diagnostics ({after} vs {before})"
+            );
+        }
+        // If Harper renamed the rule, this test is a no-op rather than flaky.
+    }
+
+    #[test]
+    fn dialect_parse_accepts_aliases() {
+        // The WHETSTONE_DIALECT env var and settings UI accept these aliases.
+        assert_eq!(
+            GrammarDialect::parse("american"),
+            Some(GrammarDialect::American)
+        );
+        assert_eq!(GrammarDialect::parse("us"), Some(GrammarDialect::American));
+        assert_eq!(
+            GrammarDialect::parse("en-gb"),
+            Some(GrammarDialect::British)
+        );
+        assert_eq!(GrammarDialect::parse("uk"), Some(GrammarDialect::British));
+        assert_eq!(GrammarDialect::parse("ca"), Some(GrammarDialect::Canadian));
+        assert_eq!(
+            GrammarDialect::parse("au"),
+            Some(GrammarDialect::Australian)
+        );
+        assert_eq!(GrammarDialect::parse("in"), Some(GrammarDialect::Indian));
+        // Unknown strings yield None (the caller falls back to a default).
+        assert_eq!(GrammarDialect::parse("klingon"), None);
+        assert_eq!(GrammarDialect::parse(""), None);
+    }
+
+    #[test]
+    fn dialect_labels_are_human_readable() {
+        // The friction/instrument menu shows these labels.
+        assert_eq!(GrammarDialect::American.label(), "American");
+        assert_eq!(GrammarDialect::British.label(), "British");
+        assert_eq!(GrammarDialect::Canadian.label(), "Canadian");
+        assert_eq!(GrammarDialect::Australian.label(), "Australian");
+        assert_eq!(GrammarDialect::Indian.label(), "Indian");
+    }
+
+    #[test]
+    fn severity_maps_harper_kinds() {
+        // Spelling/Grammar are Error (red, underlined), Punctuation is Warning,
+        // everything else is Style. This drives the editor underline color and
+        // the suggestions-pane grouping.
+        use harper_core::linting::LintKind;
+        assert_eq!(severity_of(LintKind::Spelling), Severity::Error);
+        assert_eq!(severity_of(LintKind::Grammar), Severity::Error);
+        assert_eq!(severity_of(LintKind::Punctuation), Severity::Warning);
+        assert_eq!(severity_of(LintKind::Style), Severity::Style);
+        assert_eq!(severity_of(LintKind::WordChoice), Severity::Style);
+    }
+
+    #[test]
+    fn fix_of_maps_each_suggestion_variant() {
+        // The suggestions pane applies these via FixAction; each Harper variant
+        // must produce a labeled, actionable Fix.
+        let chars: Vec<char> = "fixed".chars().collect();
+
+        let replace = fix_of(&Suggestion::ReplaceWith(chars.clone()));
+        assert_eq!(replace.label, "fixed");
+        assert!(matches!(replace.action, FixAction::Replace(ref s) if s == "fixed"));
+
+        let insert = fix_of(&Suggestion::InsertAfter(chars));
+        assert_eq!(insert.label, "insert “fixed”");
+        assert!(matches!(insert.action, FixAction::InsertAfter(ref s) if s == "fixed"));
+
+        // Suggestion::Remove maps to the span-deletion action with a fallback
+        // label (Harper offers no text).
+        let remove = fix_of(&Suggestion::Remove);
+        assert_eq!(remove.label, "(remove)");
+        assert!(matches!(remove.action, FixAction::Remove));
+    }
 }
