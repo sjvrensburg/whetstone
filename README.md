@@ -82,6 +82,16 @@ triple-click a line, wheel to scroll, and click menu titles / dialog rows.
 Typing coalesces into single undo steps. When the caret sits on (or just after)
 a `()`, `[]`, or `{}` bracket, it and its matching partner are highlighted.
 
+## Accessibility
+
+Every action has a keyboard shortcut — there are no mouse-only flows. Two
+non-color cues are layered on top of the theme colors so colorblind users can
+distinguish states without relying on hue: quarantined pastes are underlined
+(not just amber), and grammar issues use underline for errors/warnings versus
+dim for style suggestions. Screen-reader users can drive every check headlessly
+via the subcommands (`lint`, `coach`, `guard`, `ownership`, `disclosure`) — see
+**Headless / agentic use** below.
+
 ## AI coach (optional)
 
 The coach speaks two protocols so you are **not locked to one vendor**:

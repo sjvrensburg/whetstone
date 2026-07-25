@@ -4925,7 +4925,13 @@ fn styled_line(
         } else if br {
             theme.bracket_match()
         } else if q {
-            theme.quarantine()
+            // Quarantine is signalled by color alone in the theme; add an
+            // underline so a colorblind user (esp. deuteranopia against the
+            // amber-on-dark default) can tell a quarantined region apart from a
+            // selection. Layered on top of theme.quarantine() (which keeps its
+            // own BOLD) rather than changing the theme, so existing palettes are
+            // unaffected apart from the added non-color cue.
+            theme.quarantine().add_modifier(Modifier::UNDERLINED)
         } else {
             severity_style(sev[i], theme)
         };
@@ -4939,6 +4945,10 @@ fn styled_line(
     }
 }
 
+/// The style for one grammar severity. Error and Warning both underline (a real
+/// problem), differing by color; Style (a suggestion) is dimmed instead, so the
+/// underline itself encodes "this needs fixing" rather than only the color — a
+/// second non-color cue for colorblind users beyond the status-bar count.
 fn severity_style(sev: Option<Severity>, theme: &Theme) -> Style {
     match sev {
         Some(Severity::Error) => Style::default()
@@ -4947,9 +4957,7 @@ fn severity_style(sev: Option<Severity>, theme: &Theme) -> Style {
         Some(Severity::Warning) => Style::default()
             .fg(theme.warning)
             .add_modifier(Modifier::UNDERLINED),
-        Some(Severity::Style) => Style::default()
-            .fg(theme.hint)
-            .add_modifier(Modifier::UNDERLINED),
+        Some(Severity::Style) => Style::default().fg(theme.hint).add_modifier(Modifier::DIM),
         None => Style::default().fg(theme.fg),
     }
 }
