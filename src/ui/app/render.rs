@@ -912,10 +912,15 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
     for i in first..last_exclusive {
         let start = app.buffer.line_char_start(i);
         let text = app.buffer.line_text(i);
+        // Diagnostics are sorted by `start` (harper.rs contract), so binary-
+        // search to the subset that could overlap this line instead of scanning
+        // the whole vector per visible line — O(log n + k) per line vs O(n).
+        let line_diags =
+            diagnostics_overlapping(&app.diagnostics, start, start + text.chars().count());
         lines.push(styled_line(
             &text,
             start,
-            &app.diagnostics,
+            line_diags,
             app.quarantine.regions(),
             selection,
             brackets,
@@ -1289,6 +1294,30 @@ fn draw_status(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(Paragraph::new(status).style(theme.status()), area);
 }
 
+/// The subset of `diags` (sorted by `start`) whose `[start, end)` overlaps the
+/// char range `[from, to)`. Binary-searches for the first diag that starts at
+/// or after `from`, then walks backward and forward to include earlier diags
+/// whose end extends into the range. O(log n + k) where k is the overlap count.
+fn diagnostics_overlapping(diags: &[Diagnostic], from: usize, to: usize) -> &[Diagnostic] {
+    if diags.is_empty() || to <= from {
+        return &[];
+    }
+    // First diag with start >= from (lower bound on `start`).
+    let lower = diags.partition_point(|d| d.start < from);
+    // Walk backward to catch diags that start before `from` but end inside it.
+    let mut lo = lower;
+    while lo > 0 && diags[lo - 1].end > from {
+        lo -= 1;
+    }
+    // Walk forward from `lower`; diags with start < to overlap (sorted, so we
+    // can stop at the first diag starting at or after `to`).
+    let mut hi = lower;
+    while hi < diags.len() && diags[hi].start < to {
+        hi += 1;
+    }
+    &diags[lo..hi]
+}
+
 /// Build a styled [`Line`] for one source line, underlining any diagnostics
 /// that overlap it. `start` is the line's char offset in the document.
 fn styled_line(
@@ -1629,4 +1658,64 @@ fn draw_compile_output(frame: &mut Frame, app: &mut App, area: Rect) {
         inner.height as usize,
         theme,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::grammar::{Diagnostic, Severity};
+
+    fn diag(start: usize, end: usize) -> Diagnostic {
+        Diagnostic {
+            start,
+            end,
+            message: String::new(),
+            severity: Severity::Error,
+            suggestions: vec![],
+        }
+    }
+
+    #[test]
+    fn diagnostics_overlapping_returns_only_the_subset() {
+        // Sorted by start (the harper contract).
+        let diags = vec![
+            diag(0, 5),
+            diag(10, 20),
+            diag(20, 30),
+            diag(100, 110),
+            diag(200, 205),
+        ];
+        // Line covering chars [15, 25): overlaps diag(10,20), diag(20,30).
+        let got = diagnostics_overlapping(&diags, 15, 25);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].start, 10);
+        assert_eq!(got[1].start, 20);
+    }
+
+    #[test]
+    fn diagnostics_overlapping_catches_diag_starting_before_the_line() {
+        // A diag starting before `from` but ending inside the range must be
+        // included (the backward walk).
+        let diags = vec![diag(5, 15), diag(50, 60)];
+        let got = diagnostics_overlapping(&diags, 10, 20);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].start, 5);
+    }
+
+    #[test]
+    fn diagnostics_overlapping_handles_empty_and_no_overlap() {
+        assert!(diagnostics_overlapping(&[], 0, 10).is_empty());
+        let diags = vec![diag(100, 200)];
+        assert!(diagnostics_overlapping(&diags, 0, 50).is_empty());
+        // Zero-width range.
+        let diags = vec![diag(5, 10)];
+        assert!(diagnostics_overlapping(&diags, 7, 7).is_empty());
+    }
+
+    #[test]
+    fn diagnostics_overlapping_returns_all_when_all_overlap() {
+        let diags = vec![diag(0, 5), diag(5, 10), diag(10, 15)];
+        let got = diagnostics_overlapping(&diags, 0, 15);
+        assert_eq!(got.len(), 3);
+    }
 }
