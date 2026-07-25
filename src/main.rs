@@ -55,12 +55,30 @@ fn main() -> Result<()> {
 
 /// Launch the interactive editor on `file`.
 fn run_tui(file: PathBuf) -> Result<()> {
-    let text = std::fs::read_to_string(&file).unwrap_or_default();
+    // A *missing* file is the intended trigger for "open an empty buffer", but
+    // a readable file that fails to decode as UTF-8 or hits a permission error
+    // must not be silently blanked — the user would see an empty editor with no
+    // clue why. Surface those as an initial status-bar message instead.
+    let (text, read_error) = if file.as_os_str().is_empty() {
+        (String::new(), None)
+    } else {
+        match std::fs::read_to_string(&file) {
+            Ok(t) => (t, None),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), None),
+            Err(e) => (
+                String::new(),
+                Some(format!("Could not read {}: {e}", file.display())),
+            ),
+        }
+    };
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     let coach_config = CoachConfig::load();
     let mut app = App::new(text, file, coach_config, rt.handle().clone());
+    if let Some(msg) = read_error {
+        app.message = msg;
+    }
     app.start_session();
 
     enable_raw_mode()?;
@@ -103,6 +121,7 @@ fn run(terminal: &mut Tui, app: &mut App) -> Result<()> {
         app.drain_coach_events();
         app.drain_conn_test_events();
         app.drain_compile_events();
+        app.drain_io_events();
         terminal.draw(|f| draw(f, app))?;
         if !event::poll(Duration::from_millis(100))? {
             continue;

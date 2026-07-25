@@ -332,8 +332,8 @@ mod tests {
     #[test]
     fn export_html_writes_a_standalone_document() {
         let dir = std::env::temp_dir();
-        let src = dir.join("whetstone_cli_export_src.md");
-        let out = dir.join("whetstone_cli_export_out.html");
+        let src = dir.join("whetstone_cli_export_html_src.md");
+        let out = dir.join("whetstone_cli_export_html_out.html");
         std::fs::write(&src, "# Hello\n\nA paragraph.\n").unwrap();
         let v = export(&src, ExportFormat::Html, Some(&out)).unwrap();
         assert_eq!(v["format"], json!("html"));
@@ -348,8 +348,8 @@ mod tests {
     #[test]
     fn export_text_writes_plain_rendered_text() {
         let dir = std::env::temp_dir();
-        let src = dir.join("whetstone_cli_export_src.md");
-        let out = dir.join("whetstone_cli_export_out.txt");
+        let src = dir.join("whetstone_cli_export_text_src.md");
+        let out = dir.join("whetstone_cli_export_text_out.txt");
         std::fs::write(&src, "# Hello\n\nA paragraph.\n").unwrap();
         let v = export(&src, ExportFormat::Text, Some(&out)).unwrap();
         assert_eq!(v["format"], json!("txt"));

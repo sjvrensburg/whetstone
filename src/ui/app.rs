@@ -244,6 +244,16 @@ struct CompileEvent {
     output: String,
 }
 
+/// Result of a background file write (save, autosave, or export). The path is
+/// echoed back so the drain can refresh `file_mtime` and the status bar can name
+/// the file written. `is_save` marks writes that clear `dirty` on success.
+struct IoEvent {
+    path: PathBuf,
+    ok: bool,
+    is_save: bool,
+    message: String,
+}
+
 /// Which single-/two-field input prompt is open.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PromptKind {
@@ -433,6 +443,11 @@ pub struct App {
     /// Quarto render: a background subprocess reports back over this channel.
     compile_tx: mpsc::Sender<CompileEvent>,
     compile_rx: mpsc::Receiver<CompileEvent>,
+    /// File writes (save/autosave/export): each runs on a worker thread so a
+    /// slow disk or network mount (NFS/SMB, common in academia) can't freeze
+    /// the editor. Results drain back here.
+    io_tx: mpsc::Sender<IoEvent>,
+    io_rx: mpsc::Receiver<IoEvent>,
     /// True while a `quarto render` is in flight.
     compiling: bool,
     /// Captured output of the last render, shown in a scrollable overlay when
@@ -560,6 +575,7 @@ impl App {
         let (coach_tx, coach_rx) = mpsc::channel();
         let (conn_tx, conn_rx) = mpsc::channel();
         let (compile_tx, compile_rx) = mpsc::channel();
+        let (io_tx, io_rx) = mpsc::channel();
 
         Self {
             buffer,
@@ -653,6 +669,8 @@ impl App {
             disclosure_scroll: 0,
             compile_tx,
             compile_rx,
+            io_tx,
+            io_rx,
             compiling: false,
             compile_open: false,
             compile_output: String::new(),
@@ -1182,7 +1200,9 @@ impl App {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => self.quit = true,
             KeyCode::Char('s') | KeyCode::Char('S') => {
-                self.save();
+                // Save-and-quit must resolve before the editor closes, so use
+                // the synchronous path (the user is leaving the session).
+                self.save_now();
                 if self.dirty {
                     self.confirm_quit = false; // save failed — stay and show the error
                 } else {
@@ -2307,11 +2327,14 @@ impl App {
             self.message = "Quarto is already rendering…".into();
             return;
         }
-        // Quarto reads the file from disk, so flush any pending edits first.
+        // Quarto reads the file from disk, so flush any pending edits first —
+        // synchronously, because the render subprocess must see the bytes before
+        // it starts. (The user-facing save/autosave/export paths are async; this
+        // one can't be, since it gates a child process that reads the file.)
         if self.dirty {
-            self.save();
+            self.save_now();
             if self.dirty {
-                return; // save failed — `save()` already set the message
+                return; // save failed — `save_now()` already set the message
             }
         }
         let path = self.path.clone();
@@ -3083,10 +3106,16 @@ impl App {
     fn export_html(&mut self) {
         let out = self.path.with_extension("html");
         match render_to_html(&self.buffer.text()) {
-            Ok(html) => match atomic_write(&out, html.as_bytes()) {
-                Ok(()) => self.message = format!("HTML → {}", out.display()),
-                Err(e) => self.message = format!("HTML write failed: {e}"),
-            },
+            Ok(html) => {
+                let path = out.display().to_string();
+                self.spawn_write(
+                    out,
+                    html.into_bytes(),
+                    false,
+                    format!("HTML → {path}"),
+                    "HTML write failed".to_string(),
+                );
+            }
             Err(e) => self.message = format!("HTML blocked: {e}"),
         }
     }
@@ -3097,10 +3126,16 @@ impl App {
     fn export_text(&mut self) {
         let out = self.path.with_extension("txt");
         match render_to_plain(&self.buffer.text(), self.theme) {
-            Ok(text) => match atomic_write(&out, text.as_bytes()) {
-                Ok(()) => self.message = format!("Text → {}", out.display()),
-                Err(e) => self.message = format!("Text write failed: {e}"),
-            },
+            Ok(text) => {
+                let path = out.display().to_string();
+                self.spawn_write(
+                    out,
+                    text.into_bytes(),
+                    false,
+                    format!("Text → {path}"),
+                    "Text write failed".to_string(),
+                );
+            }
             Err(e) => self.message = format!("Text blocked: {e}"),
         }
     }
@@ -3483,7 +3518,52 @@ impl App {
         }
     }
 
-    /// Re-lint the buffer once it has been idle long enough since the last edit.
+    /// Write `bytes` to `path` on a worker thread, reporting back over the io
+    /// channel so a slow disk or network mount (NFS/SMB) can't freeze the editor.
+    /// `is_save` marks the write as one that should clear `dirty` on success.
+    /// `success_msg` / `failure_prefix` form the status-bar message; the path is
+    /// echoed back so the drain can refresh `file_mtime`.
+    fn spawn_write(
+        &mut self,
+        path: PathBuf,
+        bytes: Vec<u8>,
+        is_save: bool,
+        success_msg: String,
+        failure_prefix: String,
+    ) {
+        let tx = self.io_tx.clone();
+        std::thread::spawn(move || {
+            let (ok, message) = match atomic_write(&path, &bytes) {
+                Ok(()) => (true, success_msg),
+                Err(e) => (false, format!("{failure_prefix}: {e}")),
+            };
+            let _ = tx.send(IoEvent {
+                path,
+                ok,
+                is_save,
+                message,
+            });
+        });
+    }
+
+    /// Fold finished background writes into the UI: refresh `file_mtime` and the
+    /// status bar, and clear `dirty` for successful saves. Called from the run
+    /// loop. A late write for a superseded document (the buffer was reopened)
+    /// still reports its result, but only the path match refreshes mtime.
+    pub fn drain_io_events(&mut self) {
+        while let Ok(ev) = self.io_rx.try_recv() {
+            if ev.ok {
+                if ev.is_save && ev.path == self.path {
+                    self.dirty = false;
+                    self.file_mtime = file_mtime_of(&self.path);
+                }
+                self.message = ev.message;
+            } else {
+                self.message = ev.message;
+            }
+        }
+    }
+
     pub fn maybe_lint(&mut self) {
         if !self.lint_dirty {
             return;
@@ -3513,18 +3593,34 @@ impl App {
             self.file_mtime = Some(now); // a second Ctrl+S now proceeds
             return;
         }
+        // The write itself runs on a worker thread so a network mount (NFS/SMB)
+        // can't freeze the editor. `dirty`/`file_mtime` refresh when it lands.
+        self.message = format!("Saving {}…", self.file_label());
+        self.spawn_write(
+            self.path.clone(),
+            self.buffer.text().into_bytes(),
+            true,
+            format!("Saved {}", self.path.display()),
+            "Save failed".to_string(),
+        );
+    }
+
+    /// Save synchronously (blocking). Used only where a caller genuinely needs
+    /// the bytes on disk before proceeding — currently the Quarto render path,
+    /// whose child process reads the file. The user-facing save is async; this
+    /// is the escape hatch for a hard ordering dependency.
+    fn save_now(&mut self) {
         match atomic_write(&self.path, self.buffer.text().as_bytes()) {
             Ok(()) => {
                 self.dirty = false;
                 self.file_mtime = file_mtime_of(&self.path);
-                self.message = format!("Saved {}", self.path.display());
             }
             Err(e) => self.message = format!("Save failed: {e}"),
         }
     }
 
     /// Autosave a dirty buffer that has been idle briefly (called from the run
-    /// loop). No-op for an unnamed buffer.
+    /// loop). No-op for an unnamed buffer. The write runs off-thread like `save`.
     pub fn maybe_autosave(&mut self) {
         if !self.dirty || self.path.as_os_str().is_empty() {
             return;
@@ -3533,11 +3629,13 @@ impl App {
         if last.elapsed() < Duration::from_secs(3) {
             return;
         }
-        if atomic_write(&self.path, self.buffer.text().as_bytes()).is_ok() {
-            self.dirty = false;
-            self.file_mtime = file_mtime_of(&self.path);
-            self.message = format!("Autosaved {}", self.file_label());
-        }
+        self.spawn_write(
+            self.path.clone(),
+            self.buffer.text().into_bytes(),
+            true,
+            format!("Autosaved {}", self.file_label()),
+            "Autosave failed".to_string(),
+        );
     }
 
     fn file_label(&self) -> String {
@@ -5544,6 +5642,46 @@ mod tests {
         // A single undo reverts the whole contiguous burst.
         app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
         assert_eq!(app.buffer.text(), before);
+    }
+
+    #[test]
+    fn async_save_clears_dirty_via_drain_io_events() {
+        // Save now runs on a worker thread; the dirty flag clears only when the
+        // write lands and drain_io_events folds it in. This is the core of the
+        // "don't freeze the UI on a slow disk" change.
+        let dir = std::env::temp_dir();
+        let path = dir.join("whetstone_async_save_test.qmd");
+        let _ = std::fs::remove_file(&path);
+        let rt = rt();
+        let mut app = App::new(
+            "# existing\n".to_string(),
+            path.clone(),
+            None,
+            rt.handle().clone(),
+        );
+        // Type to make the buffer dirty, then save (async).
+        for c in " more".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert!(app.buffer.text().contains("more"), "typing didn't land");
+        assert!(app.dirty, "dirty not set after typing");
+        app.save();
+        // dirty is still set synchronously — the write is in flight.
+        assert!(app.dirty);
+        // Drain the worker-thread result. A local write completes in well under
+        // the 100ms poll interval, so a bounded wait is safe.
+        for _ in 0..200 {
+            app.drain_io_events();
+            if !app.dirty {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!app.dirty, "dirty never cleared after async save");
+        assert!(app.message.starts_with("Saved"), "got: {}", app.message);
+        // The bytes actually landed on disk.
+        assert!(std::fs::read_to_string(&path).unwrap().contains("more"));
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
