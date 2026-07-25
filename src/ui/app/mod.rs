@@ -1012,6 +1012,16 @@ impl App {
         self.quit
     }
 
+    /// Record that the document failed to open (permission denied, non-UTF-8,
+    /// etc.). The editor would otherwise open on an empty buffer gated behind
+    /// the "state your claim" modal — so the failure looks like a fresh empty
+    /// document and the error (in the status bar) is easily missed. This clears
+    /// the gate and sets a prominent message so the failure is unmissable.
+    pub fn set_open_error(&mut self, message: String) {
+        self.gated = false;
+        self.message = message;
+    }
+
     /// The document's word count, cached against `edit_version` so the status
     /// bar doesn't re-tokenize the whole buffer on every draw (the run loop
     /// draws ~10×/s; word_count NFKC-normalizes the full text). Recomputes only

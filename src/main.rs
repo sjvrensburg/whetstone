@@ -77,7 +77,10 @@ fn run_tui(file: PathBuf) -> Result<()> {
     let coach_config = CoachConfig::load();
     let mut app = App::new(text, file, coach_config, rt.handle().clone());
     if let Some(msg) = read_error {
-        app.message = msg;
+        // The document failed to load; surface the reason prominently instead
+        // of opening on an empty buffer gated behind the claim modal (which
+        // would make the failure look like a fresh empty document).
+        app.set_open_error(msg);
     }
     app.start_session();
 
