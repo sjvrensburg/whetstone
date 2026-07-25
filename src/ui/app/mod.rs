@@ -474,6 +474,11 @@ pub struct App {
 
     /// Cached preview render: `(edit_version, width, theme_name, text, height)`.
     preview_cache: Option<(u64, u16, &'static str, Text<'static>, usize)>,
+    /// Cached status-bar word count: `(edit_version, count)`. Recomputed only
+    /// when the buffer changes, not on every draw — word_count NFKC-normalizes
+    /// the whole document, which freezes the editor on a large thesis if run
+    /// per-frame (the run loop draws ~10×/s).
+    word_count_cache: Option<(u64, usize)>,
     /// Running process-mirror tallies, updated per journaled event (so the
     /// status bar never rescans the whole journal — O(1) amortized).
     m_typed: u32,
@@ -687,6 +692,7 @@ impl App {
             outline_start: 0,
             file_mtime,
             preview_cache: None,
+            word_count_cache: None,
             m_typed: 0,
             m_pasted: 0,
             m_pastes: std::collections::BTreeMap::new(),
@@ -998,6 +1004,22 @@ impl App {
 
     pub fn should_quit(&self) -> bool {
         self.quit
+    }
+
+    /// The document's word count, cached against `edit_version` so the status
+    /// bar doesn't re-tokenize the whole buffer on every draw (the run loop
+    /// draws ~10×/s; word_count NFKC-normalizes the full text). Recomputes only
+    /// when the buffer has changed since the last call.
+    pub fn word_count(&mut self) -> usize {
+        let version = self.edit_version;
+        if let Some((v, count)) = self.word_count_cache
+            && v == version
+        {
+            return count;
+        }
+        let count = crate::core::ngram::word_count(&self.buffer.text());
+        self.word_count_cache = Some((version, count));
+        count
     }
 
     pub fn handle_paste(&mut self, text: &str) {
@@ -3863,6 +3885,32 @@ mod tests {
         }
         let s = render(&mut app);
         assert!(s.contains("5w"), "word count did not update: {s}");
+    }
+
+    #[test]
+    fn word_count_is_cached_against_edit_version() {
+        // word_count NFKC-normalizes the whole buffer; if it ran per-draw it
+        // would freeze the editor on a large document. The cache must recompute
+        // only when edit_version changes.
+        let rt = rt();
+        let mut app = test_app(&rt);
+        let v0 = app.edit_version;
+        let n0 = app.word_count();
+        // Same edit-version: the cached value is reused, not recomputed. We
+        // verify this by checking the cache field directly.
+        assert_eq!(app.word_count_cache, Some((v0, n0)));
+        // A no-op draw cycle doesn't change edit_version, so the cache holds.
+        let _ = app.word_count();
+        assert_eq!(app.word_count_cache, Some((v0, n0)));
+        // An edit bumps edit_version and invalidates the cache. Type a
+        // space-delimited token so the count actually grows.
+        for c in " word".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert_ne!(app.edit_version, v0);
+        let n1 = app.word_count();
+        assert_eq!(app.word_count_cache, Some((app.edit_version, n1)));
+        assert_eq!(n1, n0 + 1, "word count should have grown by one");
     }
 
     #[test]

@@ -1259,10 +1259,10 @@ fn draw_status(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme;
     let (line, col) = app.buffer.cursor_line_col();
     let dirty = if app.dirty { "*" } else { " " };
-    // A live word count is a basic expectation in a writing tool. Uses the same
-    // Unicode-word tokenizer as the ownership metric (NFKC + confusable fold),
-    // so the count is consistent with how "your words" are measured elsewhere.
-    let words = crate::core::ngram::word_count(&app.buffer.text());
+    // A live word count is a basic expectation in a writing tool. Cached on the
+    // App against edit_version (word_count NFKC-normalizes the whole buffer, so
+    // calling it per-frame would freeze the editor on a large document).
+    let words = app.word_count();
     let gram = if app.diagnostics.is_empty() {
         "✓".to_string()
     } else {

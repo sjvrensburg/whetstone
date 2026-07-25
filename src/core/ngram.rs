@@ -69,9 +69,14 @@ pub fn canonical_words(text: &str) -> Vec<String> {
     folded.unicode_words().map(|w| w.to_string()).collect()
 }
 
-/// Number of canonical word tokens in `text` (see [`canonical_words`]).
+/// Number of canonical word tokens in `text` (see [`canonical_words`]). Counts
+/// the iterator directly rather than going through `canonical_words`, so it
+/// doesn't allocate a `String` per word — relevant for the status-bar word
+/// count, which runs (cached) on every buffer change.
 pub fn word_count(text: &str) -> usize {
-    canonical_words(text).len()
+    let normalized: String = text.nfkc().collect::<String>().to_lowercase();
+    let folded: String = normalized.chars().map(fold_confusable).collect();
+    folded.unicode_words().count()
 }
 
 /// Extract word-level n-grams from `text`. Words are produced by
