@@ -4829,6 +4829,10 @@ fn draw_status(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme;
     let (line, col) = app.buffer.cursor_line_col();
     let dirty = if app.dirty { "*" } else { " " };
+    // A live word count is a basic expectation in a writing tool. Uses the same
+    // Unicode-word tokenizer as the ownership metric (NFKC + confusable fold),
+    // so the count is consistent with how "your words" are measured elsewhere.
+    let words = crate::core::ngram::word_count(&app.buffer.text());
     let gram = if app.diagnostics.is_empty() {
         "✓".to_string()
     } else {
@@ -4846,7 +4850,7 @@ fn draw_status(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     let friction = menu::friction_level_name(app.friction.level());
     let status = format!(
-        " {}{dirty} │ {}:{} │ {gram} {mirror}│ {friction} │ {} ",
+        " {}{dirty} │ {}:{} │ {words}w │ {gram} {mirror}│ {friction} │ {} ",
         app.file_label(),
         line + 1,
         col + 1,
@@ -5286,6 +5290,22 @@ mod tests {
         for needle in ["File", "Edit", "View", "Coach", "Help", "EDIT", "PREVIEW"] {
             assert!(s.contains(needle), "missing {needle:?} in render");
         }
+    }
+
+    #[test]
+    fn status_bar_shows_live_word_count() {
+        // test_app() seeds "# Title\n\nHello world." → 3 words (title, hello,
+        // world). The status bar must show a live word-count segment, and it
+        // must grow as the writer types.
+        let rt = rt();
+        let mut app = test_app(&rt);
+        let s = render(&mut app);
+        assert!(s.contains("3w"), "status bar missing word count: {s}");
+        for c in " more words".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        let s = render(&mut app);
+        assert!(s.contains("5w"), "word count did not update: {s}");
     }
 
     #[test]
