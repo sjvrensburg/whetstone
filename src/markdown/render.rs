@@ -493,7 +493,10 @@ mod tests {
         // onerror / onload / onmouseover etc. must be stripped from kept tags.
         let src = "![alt](x) <img src=x onerror=alert(2)>";
         let html = render_to_html(src).unwrap();
-        assert!(!html.contains("onerror"), "onerror handler survived: {html}");
+        assert!(
+            !html.contains("onerror"),
+            "onerror handler survived: {html}"
+        );
         assert!(!html.contains("alert"), "alert payload survived: {html}");
     }
 
@@ -517,7 +520,10 @@ mod tests {
         let src = "# H\n\nA paragraph with **bold**, *italic*, `code`.\n\n> quote\n\n- item\n";
         let html = render_to_html(src).unwrap();
         assert!(html.contains("<h1>H</h1>"), "heading dropped: {html}");
-        assert!(html.contains("<strong>bold</strong>"), "bold dropped: {html}");
+        assert!(
+            html.contains("<strong>bold</strong>"),
+            "bold dropped: {html}"
+        );
         assert!(html.contains("<em>italic</em>"), "italic dropped: {html}");
         assert!(html.contains("<code>code</code>"), "code dropped: {html}");
         assert!(html.contains("<blockquote>"), "blockquote dropped: {html}");
