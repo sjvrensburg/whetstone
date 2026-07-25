@@ -3,10 +3,15 @@
 **Website:** https://sjvrensburg.github.io/whetstone/ (source under [`docs/`](docs/))
 
 A friction-first Quarto/Markdown editor for the terminal, written in Rust. It
-keeps the writing *yours*: pastes are quarantined and
-must be rewritten ("claim-to-own") or attributed, the optional AI coach can only
-ask questions (never ghostwrite), and an append-only journal lets you export an
-honest "how this was written" disclosure.
+keeps the writing *yours*: pastes are quarantined and must be rewritten
+("claim-to-own") or attributed, the optional AI coach can only ask questions
+(structured coaching can't ghostwrite by design; free-text chat replies are
+length-capped and screened, with a small residual risk), and an append-only
+journal lets you export an honest "how this was written" disclosure.
+
+**Privacy:** Whetstone makes **zero outbound network calls** unless you
+configure a coach endpoint. Grammar checking runs locally (via Harper); the
+editor itself never phones home.
 
 ## Install
 
@@ -125,8 +130,10 @@ Environment variables still work and override the saved file at startup:
 
 Every coach reply is screened before it is shown (length cap, rewrite/dictation
 patterns, n-gram overlap with the draft, and the forbidden-label guard) — and,
-if the judge is enabled, by the LLM judge on top of that; the draft and your
-message are injection-screened before egress.
+if the judge is enabled, by the LLM judge on top of that. The draft and your
+message (plus each prior chat turn on replay) pass a best-effort injection
+screen before egress — defense-in-depth on top of the untrusted-channel wrapping
+and the reply guard, not a guarantee against a determined bypass.
 
 ## Preferences
 
