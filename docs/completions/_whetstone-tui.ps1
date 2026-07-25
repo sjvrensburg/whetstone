@@ -42,12 +42,14 @@ Register-ArgumentCompleter -Native -CommandName 'whetstone-tui' -ScriptBlock {
             break
         }
         'whetstone-tui;lint' {
+            [CompletionResult]::new('--strict', '--strict', [CompletionResultType]::ParameterName, 'strict')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
         'whetstone-tui;coach' {
             [CompletionResult]::new('--message', '--message', [CompletionResultType]::ParameterName, 'message')
+            [CompletionResult]::new('--journal', '--journal', [CompletionResultType]::ParameterName, 'journal')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break

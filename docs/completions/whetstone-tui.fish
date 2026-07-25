@@ -36,8 +36,10 @@ complete -c whetstone-tui -n "__fish_whetstone_tui_needs_command" -a "export" -d
 complete -c whetstone-tui -n "__fish_whetstone_tui_needs_command" -a "words" -d 'Word/character/line counts for a document (JSON)'
 complete -c whetstone-tui -n "__fish_whetstone_tui_needs_command" -a "help" -d 'Print this message or the help of the given subcommand(s)'
 complete -c whetstone-tui -n "__fish_whetstone_tui_using_subcommand open" -s h -l help -d 'Print help'
+complete -c whetstone-tui -n "__fish_whetstone_tui_using_subcommand lint" -l strict -r
 complete -c whetstone-tui -n "__fish_whetstone_tui_using_subcommand lint" -s h -l help -d 'Print help'
 complete -c whetstone-tui -n "__fish_whetstone_tui_using_subcommand coach" -l message -r
+complete -c whetstone-tui -n "__fish_whetstone_tui_using_subcommand coach" -l journal -r
 complete -c whetstone-tui -n "__fish_whetstone_tui_using_subcommand coach" -s h -l help -d 'Print help'
 complete -c whetstone-tui -n "__fish_whetstone_tui_using_subcommand guard" -l reply -r
 complete -c whetstone-tui -n "__fish_whetstone_tui_using_subcommand guard" -l draft -r

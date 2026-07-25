@@ -38,6 +38,7 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (lint)
 _arguments "${_arguments_options[@]}" : \
+'--strict=[]: :_default' \
 '-h[Print help]' \
 '--help[Print help]' \
 ':file:_default' \
@@ -46,6 +47,7 @@ _arguments "${_arguments_options[@]}" : \
 (coach)
 _arguments "${_arguments_options[@]}" : \
 '--message=[]: :_default' \
+'--journal=[]: :_default' \
 '-h[Print help]' \
 '--help[Print help]' \
 ':file:_default' \
