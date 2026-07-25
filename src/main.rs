@@ -40,6 +40,13 @@ struct Cli {
 type Tui = Terminal<CrosstermBackend<io::Stdout>>;
 
 fn main() -> Result<()> {
+    // Rust ignores SIGPIPE by default, so writing JSON to a closing pipe (e.g.
+    // `whetstone-tui lint f.qmd | head`) raises EPIPE, which anyhow surfaces as
+    // a noisy "Broken pipe" error with exit 101. Restoring the OS default means
+    // a piped consumer that exits early terminates us cleanly and silently —
+    // the conventional Unix pipeline behavior. The TUI path is unaffected: it
+    // never writes stdout outside of raw-mode teardown.
+    reset_sigpipe_to_default();
     let cli = Cli::parse();
     let file = match cli.command {
         // Headless subcommands print JSON and exit — no terminal setup.
@@ -156,3 +163,23 @@ fn copy_to_clipboard(text: &str) {
     let _ = write!(out, "\x1b]52;c;{encoded}\x07");
     let _ = out.flush();
 }
+
+/// Restore SIGPIPE to the OS default so piped output (`cmd | head`) terminates
+/// cleanly instead of panicking with a broken-pipe error. No-op on non-Unix.
+#[cfg(unix)]
+fn reset_sigpipe_to_default() {
+    unsafe extern "C" {
+        fn signal(signum: i32, handler: usize) -> usize;
+    }
+    const SIGPIPE: i32 = 13;
+    const SIG_DFL: usize = 0;
+    // SAFETY: `signal` with SIG_DFL is the documented-default disposition and
+    // has no UB; we ignore the previous handler (we never want to restore it).
+    // This runs once at startup before any threads exist, so it is race-free.
+    unsafe {
+        signal(SIGPIPE, SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+fn reset_sigpipe_to_default() {}

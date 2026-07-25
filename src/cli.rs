@@ -28,13 +28,27 @@ pub enum Command {
         file: PathBuf,
     },
     /// Lint a file with Harper; prints diagnostics as JSON.
-    Lint { file: PathBuf },
+    Lint {
+        file: PathBuf,
+        /// Exit non-zero when any diagnostics are found (for CI: `lint --strict`
+        /// fails the step on spelling/grammar issues). Without this flag the
+        /// command always exits 0 and reports findings as JSON.
+        #[arg(long)]
+        strict: bool,
+    },
     /// Run one coach turn over a file, screened by the guard (+ judge if set).
     Coach {
         file: PathBuf,
         /// The message to send the coach.
         #[arg(long)]
         message: String,
+        /// Append a metadata-only `CoachConsult` event to this journal file, so
+        /// a later `disclosure` render is honest that the coach was consulted
+        /// headlessly (the agent/CI path is otherwise off-the-books). Creates
+        /// the file if missing; appends to an existing JSON array. The judge
+        /// fail-open path also records a `JudgeUnavailable` event.
+        #[arg(long)]
+        journal: Option<PathBuf>,
     },
     /// Screen an arbitrary reply with the deterministic guard (+ judge if set).
     Guard {
@@ -89,22 +103,40 @@ pub enum ExportFormat {
 
 /// Run a headless subcommand, printing its JSON result to stdout.
 pub fn run(command: Command) -> Result<()> {
+    // `lint --strict` is the one subcommand whose exit code depends on the
+    // result (non-zero when diagnostics were found), so it owns its full
+    // print-and-exit path instead of sharing the generic one below.
+    if let Command::Lint { file, strict } = command {
+        return lint(&file, strict);
+    }
     let out = match command {
         Command::Open { .. } => unreachable!("Open is handled by the TUI entry point"),
-        Command::Lint { file } => lint(&file)?,
-        Command::Coach { file, message } => coach(&file, &message)?,
+        Command::Coach {
+            file,
+            message,
+            journal,
+        } => coach(&file, &message, journal.as_deref())?,
         Command::Guard { reply, draft } => guard(&reply, draft.as_deref())?,
         Command::Ownership { original, current } => ownership(&original, &current)?,
         Command::Disclosure { journal, doc_id } => disclosure(&journal, doc_id)?,
         Command::Export { file, format, out } => export(&file, format, out.as_deref())?,
         Command::Words { file } => words(&file)?,
+        // Matched exhaustively above; this arm is unreachable but keeps the
+        // compiler from complaining about `Lint` not being handled here.
+        Command::Lint { .. } => unreachable!("Lint handled above"),
     };
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
 }
 
 fn read(path: &std::path::Path) -> Result<String> {
-    std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    // Strip a leading UTF-8 BOM so it doesn't skew counts / screening / exports.
+    Ok(text
+        .strip_prefix('\u{feff}')
+        .map(|s| s.to_string())
+        .unwrap_or(text))
 }
 
 #[derive(Serialize)]
@@ -124,7 +156,7 @@ fn severity_str(s: Severity) -> &'static str {
     }
 }
 
-fn lint(file: &std::path::Path) -> Result<Value> {
+fn lint(file: &std::path::Path, strict: bool) -> Result<()> {
     let text = read(file)?;
     let mut linter = Linter::new();
     let diags: Vec<DiagnosticJson> = linter
@@ -138,7 +170,16 @@ fn lint(file: &std::path::Path) -> Result<Value> {
             suggestions: d.suggestions.into_iter().map(|f| f.label).collect(),
         })
         .collect();
-    Ok(json!({ "file": file.display().to_string(), "count": diags.len(), "diagnostics": diags }))
+    let count = diags.len();
+    let out = json!({ "file": file.display().to_string(), "count": count, "diagnostics": diags });
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    // In strict mode (CI), a non-zero count fails the step. We exit explicitly
+    // so the JSON above is already flushed and the SIGPIPE reset in main keeps
+    // a closing pipe from turning this into a broken-pipe panic.
+    if strict && count > 0 {
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 /// The outcome of screening a reply: the deterministic guard, the optional LLM
@@ -200,7 +241,11 @@ fn guard(reply: &str, draft: Option<&std::path::Path>) -> Result<Value> {
     Ok(json!({ "allowed": s.allowed, "guard": s.guard, "judge": s.judge }))
 }
 
-fn coach(file: &std::path::Path, message: &str) -> Result<Value> {
+fn coach(
+    file: &std::path::Path,
+    message: &str,
+    journal: Option<&std::path::Path>,
+) -> Result<Value> {
     let draft = read(file)?;
     let cfg = CoachConfig::load()
         .context("coach not configured (set WHETSTONE_BASE_URL or run the AI settings dialog)")?;
@@ -215,6 +260,20 @@ fn coach(file: &std::path::Path, message: &str) -> Result<Value> {
         .map_err(|e| anyhow::anyhow!("coach request failed: {e}"))?;
 
     let s = screen_reply(&rt, &reply, &draft);
+
+    // If the caller asked us to journal, record the consult (and a judge
+    // fail-open) so a later `disclosure` is honest about headless coaching.
+    // Without this the agent/CI path is invisible to the disclosure system —
+    // it would render "no AI assistance" despite a coaching turn having run.
+    if let Some(jpath) = journal {
+        let refused = !s.allowed;
+        let judge_failed_open = matches!(
+            &s.judge,
+            Value::Object(m) if m.get("failed_open").and_then(|v| v.as_bool()) == Some(true)
+        );
+        append_coach_consult(jpath, refused, &endpoint, judge_failed_open)?;
+    }
+
     Ok(json!({
         "model": endpoint.model,
         "reply": if s.allowed { Value::String(reply) } else { Value::Null },
@@ -222,6 +281,72 @@ fn coach(file: &std::path::Path, message: &str) -> Result<Value> {
         "guard": s.guard,
         "judge": s.judge,
     }))
+}
+
+/// Append a metadata-only `CoachConsult` event (and, on judge fail-open, a
+/// `JudgeUnavailable` event) to a journal file. The file is a JSON array of
+/// `ProcessEvent`s; it is created if missing, or read+extended if present.
+///
+/// Prose is never journaled — only the consult outcome, provider, and model —
+/// matching the TUI's `log_coach_consult_with` discipline. `id` and `ts` are
+/// stamped here because there is no Service in the headless path; the
+/// disclosure's scoping note already states the record is local and self-reported.
+fn append_coach_consult(
+    path: &std::path::Path,
+    refused: bool,
+    endpoint: &whetstone_tui::coach::Endpoint,
+    judge_failed_open: bool,
+) -> Result<()> {
+    use std::collections::BTreeMap;
+    use whetstone_tui::core::process_event::{MetaValue, ProcessEvent, ProcessEventType};
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut events: Vec<ProcessEvent> = if path.exists() {
+        let data = std::fs::read_to_string(path)
+            .with_context(|| format!("reading journal {}", path.display()))?;
+        serde_json::from_str(&data).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let seq = events.len();
+
+    let mut coach_meta: BTreeMap<String, MetaValue> = BTreeMap::new();
+    coach_meta.insert("refused".into(), MetaValue::Bool(refused));
+    coach_meta.insert(
+        "provider".into(),
+        MetaValue::Str(endpoint.provider.label().to_string()),
+    );
+    coach_meta.insert("model".into(), MetaValue::Str(endpoint.model.clone()));
+    coach_meta.insert(
+        "headless".into(),
+        MetaValue::Bool(true), // mark this consult came from the CLI, not the TUI
+    );
+
+    events.push(ProcessEvent {
+        id: format!("e{seq}"),
+        ts: now.clone(),
+        kind: ProcessEventType::CoachConsult,
+        size: None,
+        location: None,
+        meta: Some(coach_meta),
+    });
+
+    if judge_failed_open {
+        let mut judge_meta: BTreeMap<String, MetaValue> = BTreeMap::new();
+        judge_meta.insert("headless".into(), MetaValue::Bool(true));
+        events.push(ProcessEvent {
+            id: format!("e{}", seq + 1),
+            ts: now,
+            kind: ProcessEventType::JudgeUnavailable,
+            size: None,
+            location: None,
+            meta: Some(judge_meta),
+        });
+    }
+
+    let out = serde_json::to_string_pretty(&events)?;
+    std::fs::write(path, out).with_context(|| format!("writing journal {}", path.display()))?;
+    Ok(())
 }
 
 fn ownership(original: &std::path::Path, current: &std::path::Path) -> Result<Value> {
@@ -310,20 +435,76 @@ fn words(file: &std::path::Path) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use whetstone_tui::core::process_event::ProcessEvent;
+    use whetstone_tui::core::process_event::{MetaValue, ProcessEventType};
 
     #[test]
     fn lint_reports_spelling_with_suggestions() {
+        // `lint` prints JSON to stdout; for a unit test we re-run the core
+        // logic directly to inspect the diagnostics without capturing stdout.
         let dir = std::env::temp_dir();
         let path = dir.join("whetstone_cli_lint_test.md");
         std::fs::write(&path, "This is a sentance.").unwrap();
-        let out = lint(&path).unwrap();
-        assert!(out["count"].as_u64().unwrap() >= 1);
-        let diags = out["diagnostics"].as_array().unwrap();
-        assert!(
-            diags
-                .iter()
-                .any(|d| !d["suggestions"].as_array().unwrap().is_empty())
+        let text = read(&path).unwrap();
+        let mut linter = Linter::new();
+        let diags: Vec<DiagnosticJson> = linter
+            .lint(&text)
+            .into_iter()
+            .map(|d| DiagnosticJson {
+                start: d.start,
+                end: d.end,
+                severity: severity_str(d.severity),
+                message: d.message,
+                suggestions: d.suggestions.into_iter().map(|f| f.label).collect(),
+            })
+            .collect();
+        assert!(!diags.is_empty());
+        assert!(diags.iter().any(|d| !d.suggestions.is_empty()));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn append_coach_consult_creates_and_extends_a_journal() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("whetstone_cli_journal_test.json");
+        let _ = std::fs::remove_file(&path);
+
+        // Build a synthetic endpoint for the metadata (no network).
+        let cfg = CoachConfig {
+            provider: None,
+            base_url: "http://localhost".into(),
+            api_key: String::new(),
+            model: "test-model".into(),
+            judge: whetstone_tui::coach::JudgeSettings::default(),
+        };
+        let client = CoachClient::new(cfg);
+        let endpoint = client.coach_endpoint();
+
+        // First consult: creates the journal with one event.
+        append_coach_consult(&path, false, &endpoint, false).unwrap();
+        let data = std::fs::read_to_string(&path).unwrap();
+        let events: Vec<ProcessEvent> = serde_json::from_str(&data).unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0].kind, ProcessEventType::CoachConsult));
+        let meta = events[0].meta.as_ref().unwrap();
+        assert_eq!(meta.get("refused"), Some(&MetaValue::Bool(false)));
+        assert_eq!(meta.get("headless"), Some(&MetaValue::Bool(true)));
+        assert_eq!(
+            meta.get("model"),
+            Some(&MetaValue::Str("test-model".into()))
         );
+
+        // Second consult with a judge fail-open: appends two events (consult + JudgeUnavailable).
+        append_coach_consult(&path, true, &endpoint, true).unwrap();
+        let data = std::fs::read_to_string(&path).unwrap();
+        let events: Vec<ProcessEvent> = serde_json::from_str(&data).unwrap();
+        assert_eq!(events.len(), 3);
+        assert!(matches!(events[2].kind, ProcessEventType::JudgeUnavailable));
+        // Sequential ids.
+        assert_eq!(events[0].id, "e0");
+        assert_eq!(events[1].id, "e1");
+        assert_eq!(events[2].id, "e2");
+
         let _ = std::fs::remove_file(&path);
     }
 
