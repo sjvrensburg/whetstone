@@ -38,6 +38,7 @@ futures = "0.3"
 # Screenshots (optional) — render the TUI to a PNG in-process, no external tools.
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 ab_glyph = { version = "0.2", optional = true }
+ammonia = "4.1.4"
 
 [features]
 # Reusable headless-driving harness (also compiled under `cargo test`).

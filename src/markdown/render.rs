@@ -286,8 +286,16 @@ fn code_style(theme: &Theme) -> Style {
 /// frontmatter first. Uses pulldown-cmark's built-in HTML writer (no feature
 /// gate required) with the same parsing options as the terminal renderer, so a
 /// `.qmd`/`.md` file exports faithfully without needing Quarto installed. The
-/// body is wrapped in a minimal styled template; the result is run through the
+/// rendered body is **sanitized** (raw `<script>`, inline event handlers,
+/// `javascript:` URLs, and other XSS vectors are stripped) before it is wrapped
+/// in a minimal styled template; the result is then run through the
 /// forbidden-label guard so an export can't carry proof-of-personhood language.
+///
+/// The sanitizer is load-bearing: pulldown-cmark is a Markdown→HTML serializer,
+/// not a sanitizer — it emits raw inline/block HTML verbatim, so without
+/// ammonia a draft containing `<script>` or `<img onerror=…>` would produce an
+/// HTML file that executes that payload when opened in a browser. The exported
+/// file is meant to be shared (handed in, emailed), so XSS matters here.
 pub fn render_to_html(src: &str) -> Result<String, String> {
     let body = strip_frontmatter(src);
     let opts = Options::ENABLE_TABLES
@@ -297,7 +305,12 @@ pub fn render_to_html(src: &str) -> Result<String, String> {
     let parser = Parser::new_ext(body, opts);
     let mut html = String::new();
     pulldown_cmark::html::push_html(&mut html, parser);
-    let doc = HTML_TEMPLATE.replacen("{body}", html.trim(), 1);
+    // Sanitize the rendered body before wrapping. ammonia's defaults strip
+    // <script>, on* event handlers, javascript: URLs, and unknown elements,
+    // while keeping the Markdown-derived tags (h1-h6, p, a, code, pre, table,
+    // blockquote, ul/ol/li, strong/em/del, etc.) intact.
+    let safe_body = ammonia::clean(html.trim());
+    let doc = HTML_TEMPLATE.replacen("{body}", &safe_body, 1);
     crate::core::labels::assert_no_forbidden_labels(&doc, "HTML export")?;
     Ok(doc)
 }
@@ -461,6 +474,54 @@ mod tests {
         // A proof-of-personhood label in the draft must not be exported.
         let src = "This draft is verified human writing.";
         assert!(render_to_html(src).is_err());
+    }
+
+    #[test]
+    fn render_to_html_strips_script_tags() {
+        // pulldown-cmark emits raw HTML verbatim; without sanitization a draft
+        // containing <script> would execute when the exported file is opened.
+        let src = "Text <script>alert(1)</script> more.";
+        let html = render_to_html(src).unwrap();
+        assert!(!html.contains("<script"), "script tag survived: {html}");
+        assert!(!html.contains("alert(1)"), "script body survived: {html}");
+        // The surrounding text is preserved.
+        assert!(html.contains("Text"), "legit text dropped: {html}");
+    }
+
+    #[test]
+    fn render_to_html_strips_inline_event_handlers() {
+        // onerror / onload / onmouseover etc. must be stripped from kept tags.
+        let src = "![alt](x) <img src=x onerror=alert(2)>";
+        let html = render_to_html(src).unwrap();
+        assert!(!html.contains("onerror"), "onerror handler survived: {html}");
+        assert!(!html.contains("alert"), "alert payload survived: {html}");
+    }
+
+    #[test]
+    fn render_to_html_strips_javascript_urls() {
+        // A javascript: link must not survive as a clickable href.
+        let src = "[click](javascript:alert(4))";
+        let html = render_to_html(src).unwrap();
+        assert!(
+            !html.contains("javascript:"),
+            "javascript: URL survived: {html}"
+        );
+        // The link text is still there (ammonia keeps the anchor, drops the href).
+        assert!(html.contains("click"), "link text dropped: {html}");
+    }
+
+    #[test]
+    fn render_to_html_preserves_legit_markdown() {
+        // The sanitizer must not strip the Markdown-derived tags that make the
+        // export useful: headings, emphasis, code, lists, tables, blockquotes.
+        let src = "# H\n\nA paragraph with **bold**, *italic*, `code`.\n\n> quote\n\n- item\n";
+        let html = render_to_html(src).unwrap();
+        assert!(html.contains("<h1>H</h1>"), "heading dropped: {html}");
+        assert!(html.contains("<strong>bold</strong>"), "bold dropped: {html}");
+        assert!(html.contains("<em>italic</em>"), "italic dropped: {html}");
+        assert!(html.contains("<code>code</code>"), "code dropped: {html}");
+        assert!(html.contains("<blockquote>"), "blockquote dropped: {html}");
+        assert!(html.contains("<li>"), "list item dropped: {html}");
     }
 
     #[test]
