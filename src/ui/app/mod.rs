@@ -3148,7 +3148,7 @@ impl App {
         let src = self.buffer.text();
         let out = self.path.with_extension("html");
         let path = out.display().to_string();
-        self.message = format!("Exporting HTML…");
+        self.message = "Exporting HTML…".to_string();
         self.spawn_render_and_write(
             out,
             move || render_to_html(&src).map(|s| s.into_bytes()),
@@ -3165,7 +3165,7 @@ impl App {
         let theme = self.theme;
         let out = self.path.with_extension("txt");
         let path = out.display().to_string();
-        self.message = format!("Exporting text…");
+        self.message = "Exporting text…".to_string();
         self.spawn_render_and_write(
             out,
             move || render_to_plain(&src, theme).map(|s| s.into_bytes()),
