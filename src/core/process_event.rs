@@ -13,8 +13,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-/// The eleven process-event types. Serialized `snake_case` to match the
-/// composer wire format and journal schema.
+/// The process-event types. Serialized `snake_case` to match the composer wire
+/// format and journal schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProcessEventType {
@@ -34,6 +34,15 @@ pub enum ProcessEventType {
     TeachBack,
     /// Instrument A (push-cadence coaching).
     PushCoaching,
+    /// The LLM judge was configured but could not be consulted on a chat reply,
+    /// so it was shown under the deterministic guard only. This is an auditable
+    /// fail-open: the product claim is friction, not proof, and a judge bypass
+    /// should be visible in the disclosure rather than silent.
+    JudgeUnavailable,
+    /// A prior chat turn in the replayed history tripped the injection screen,
+    /// so it was dropped from the request context. Surfaces a poisoned history
+    /// without ever journaling the prose itself — only a count of screened turns.
+    HistoryScreened,
 }
 
 /// A scalar metadata value. Prose cannot be expressed here — there is no
