@@ -4217,7 +4217,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         let _ = tmp.as_file().set_permissions(perms);
     }
     tmp.as_file().sync_all()?; // durability before the rename
-    tmp.persist(path).map_err(|e| e.error)?;
+    persist_with_retry(tmp, path)?;
     // fsync the parent directory so the rename (a directory-entry update) is
     // durable too. Without this, a power loss after `persist` returns can roll
     // back the rename on some filesystems, leaving the document at its pre-save
@@ -4227,6 +4227,30 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     // crash case (process killed mid-write).
     let _ = fsync_dir(parent);
     Ok(())
+}
+
+/// Rename the temp file over `path`, retrying briefly on Windows.
+///
+/// A POSIX rename replaces the target atomically and never fails transiently.
+/// Windows has no such guarantee: the replace is refused while anything else
+/// holds the target open — another writer mid-rename, an antivirus scanner, the
+/// search indexer — so a single attempt turns a routine save into "Save
+/// failed". A short bounded retry covers those windows without hiding a real
+/// error (a read-only volume still fails, ~200ms later).
+fn persist_with_retry(tmp: tempfile::NamedTempFile, path: &Path) -> std::io::Result<()> {
+    let attempts = if cfg!(windows) { 10 } else { 1 };
+    let mut tmp = tmp;
+    for attempt in 1.. {
+        match tmp.persist(path) {
+            Ok(_) => return Ok(()),
+            Err(e) if attempt < attempts => {
+                tmp = e.file;
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => return Err(e.error),
+        }
+    }
+    unreachable!("the loop returns on the last attempt")
 }
 
 /// [`atomic_write`], serialized against other writes to the same `path`.

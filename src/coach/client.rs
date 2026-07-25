@@ -535,7 +535,22 @@ mod tests {
         let ct = content_type.to_string();
         tokio::spawn(async move {
             if let Ok((mut stream, _)) = listener.accept().await {
-                use tokio::io::AsyncWriteExt;
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                // Read the request before answering: closing a socket that
+                // still has unread inbound data resets the connection on
+                // Windows, so the client never sees the response it is waiting
+                // for (WSAECONNABORTED).
+                let mut seen = Vec::new();
+                let mut buf = [0u8; 1024];
+                while let Ok(n) = stream.read(&mut buf).await {
+                    if n == 0 {
+                        break;
+                    }
+                    seen.extend_from_slice(&buf[..n]);
+                    if seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
                 let resp = format!(
                     "HTTP/1.1 {status}\r\nContent-Type: {ct}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
