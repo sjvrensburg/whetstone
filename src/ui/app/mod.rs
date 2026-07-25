@@ -247,10 +247,14 @@ struct CompileEvent {
 /// Result of a background file write (save, autosave, or export). The path is
 /// echoed back so the drain can refresh `file_mtime` and the status bar can name
 /// the file written. `is_save` marks writes that clear `dirty` on success.
+/// `edit_version` is the buffer's edit-version at spawn time, so the drain can
+/// avoid clearing `dirty` for a write whose bytes predate later edits (which
+/// would let a stale save mask unsaved work and lose it on quit).
 struct IoEvent {
     path: PathBuf,
     ok: bool,
     is_save: bool,
+    edit_version: u64,
     message: String,
 }
 
@@ -3551,6 +3555,9 @@ impl App {
         success_msg: String,
         failure_prefix: String,
     ) {
+        // Stamp the buffer's edit-version so the drain can tell a write whose
+        // bytes are current apart from one that predates later edits.
+        let edit_version = self.edit_version;
         let tx = self.io_tx.clone();
         std::thread::spawn(move || {
             let (ok, message) = match atomic_write(&path, &bytes) {
@@ -3561,6 +3568,7 @@ impl App {
                 path,
                 ok,
                 is_save,
+                edit_version,
                 message,
             });
         });
@@ -3568,17 +3576,27 @@ impl App {
 
     /// Fold finished background writes into the UI: refresh `file_mtime` and the
     /// status bar, and clear `dirty` for successful saves. Called from the run
-    /// loop. A late write for a superseded document (the buffer was reopened)
-    /// still reports its result, but only the path match refreshes mtime.
+    /// loop.
+    ///
+    /// A write only clears `dirty` when (a) it targets the current document,
+    /// (b) it is a save (not an export), and (c) **no edits happened between
+    /// dispatch and landing** — without (c), a stale save on a slow disk would
+    /// mask newer edits and `request_quit` (which skips the confirm when
+    /// `!dirty`) would silently lose them. A late write for a previous document
+    /// (Save As, reopen) is ignored for state but still surfaces its message
+    /// only if it matches the current path, so it can't clobber a newer status.
     pub fn drain_io_events(&mut self) {
         while let Ok(ev) = self.io_rx.try_recv() {
+            let current_doc = ev.path == self.path;
             if ev.ok {
-                if ev.is_save && ev.path == self.path {
+                if ev.is_save && current_doc && ev.edit_version == self.edit_version {
                     self.dirty = false;
                     self.file_mtime = file_mtime_of(&self.path);
                 }
-                self.message = ev.message;
-            } else {
+                if current_doc {
+                    self.message = ev.message;
+                }
+            } else if current_doc {
                 self.message = ev.message;
             }
         }
@@ -4086,6 +4104,54 @@ mod tests {
         assert!(app.message.starts_with("Saved"), "got: {}", app.message);
         // The bytes actually landed on disk.
         assert!(std::fs::read_to_string(&path).unwrap().contains("more"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn stale_save_does_not_clear_dirty_of_newer_edits() {
+        // Regression: a save dispatched at edit-version N captures those bytes.
+        // If the user types more (version N+1) before the write lands on a slow
+        // disk, the stale IoEvent must NOT clear dirty — otherwise request_quit
+        // (which skips the confirm when !dirty) silently loses the newer edits.
+        let dir = std::env::temp_dir();
+        let path = dir.join("whetstone_stale_save_test.qmd");
+        let _ = std::fs::remove_file(&path);
+        let rt = rt();
+        let mut app = App::new(
+            "# existing\n".to_string(),
+            path.clone(),
+            None,
+            rt.handle().clone(),
+        );
+        // Edit 1 + save (write A goes in flight, capturing "# existing\n first").
+        for c in " first".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        let version_at_save = app.edit_version;
+        app.save();
+        // Edit 2 AFTER the save was dispatched — the buffer now has UNSAVED work
+        // that the in-flight write does not contain.
+        for c in " UNSAVED".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert!(app.edit_version > version_at_save);
+        assert!(app.dirty);
+        // Wait for write A to land and fold it in.
+        for _ in 0..200 {
+            app.drain_io_events();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // dirty MUST still be set — the newer edits are not on disk.
+        assert!(
+            app.dirty,
+            "stale save cleared dirty; the newer edits would be lost on quit"
+        );
+        // And the on-disk file is missing the post-save edits.
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !on_disk.contains("UNSAVED"),
+            "stale write somehow contained the newer edits"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
