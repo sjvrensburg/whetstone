@@ -11,7 +11,6 @@
 mod render;
 
 pub use render::draw;
-use render::format_structured_coaching;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -3907,6 +3906,36 @@ fn scroll_key(scroll: &mut usize, code: KeyCode) -> bool {
         _ => return false,
     }
     true
+}
+
+/// Render structured coaching observations as plain coach-pane text. Pure
+/// formatting (no rendering concerns) — lives here, not in render.rs, because
+/// it's called from `impl App` (drain_coach_events) and the test module.
+fn format_structured_coaching(c: &StructuredCoaching) -> String {
+    if c.observations.is_empty() {
+        return "(no observations)".to_string();
+    }
+    let mut out = String::new();
+    for (i, o) in c.observations.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(&format!(
+            "• [{}] {}\n    ? {}",
+            kind_label(o.kind),
+            o.reflection,
+            o.question
+        ));
+    }
+    out
+}
+
+fn kind_label(k: ObservationKind) -> &'static str {
+    match k {
+        ObservationKind::ImplicitClaim => "implicit claim",
+        ObservationKind::IntendedMove => "intended move",
+        ObservationKind::LogicFork => "logic fork",
+    }
 }
 
 /// File modification time, if the path exists.

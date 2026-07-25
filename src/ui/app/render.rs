@@ -168,34 +168,6 @@ fn draw_confirm_quit(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(Paragraph::new(lines).block(block), rect);
 }
 
-/// Render structured coaching observations as plain coach-pane text.
-pub(super) fn format_structured_coaching(c: &StructuredCoaching) -> String {
-    if c.observations.is_empty() {
-        return "(no observations)".to_string();
-    }
-    let mut out = String::new();
-    for (i, o) in c.observations.iter().enumerate() {
-        if i > 0 {
-            out.push('\n');
-        }
-        out.push_str(&format!(
-            "• [{}] {}\n    ? {}",
-            kind_label(o.kind),
-            o.reflection,
-            o.question
-        ));
-    }
-    out
-}
-
-fn kind_label(k: ObservationKind) -> &'static str {
-    match k {
-        ObservationKind::ImplicitClaim => "implicit claim",
-        ObservationKind::IntendedMove => "intended move",
-        ObservationKind::LogicFork => "logic fork",
-    }
-}
-
 fn draw_coach_settings(frame: &mut Frame, app: &mut App, area: Rect) {
     /// Most discovered models to show at once; the rest are reachable by cycling.
     const MODEL_ROWS: usize = 6;
