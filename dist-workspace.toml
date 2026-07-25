@@ -12,5 +12,9 @@ installers = ["shell", "powershell", "homebrew"]
 # Publish a Homebrew formula to this tap repo on release
 tap = "sjvrensburg/homebrew-tap"
 publish-jobs = ["homebrew"]
+# Emit checksums (.sha256) alongside each release artifact
+checksum = true
+# Ship the man page from docs/man/ as a manpage installer extra
+man-pages = ["docs/man/whetstone-tui.1"]
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]

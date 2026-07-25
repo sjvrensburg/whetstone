@@ -62,6 +62,22 @@ The UI is mouse- and keyboard-driven (Fresh/Micro-style: familiar, no modes
 beyond transient menus/dialogs). Press **F1** for the keybinding cheat-sheet or
 **F10** for the menu bar.
 
+## Shell completions
+
+Generated bash/zsh/fish/PowerShell completions ship under
+[`docs/completions/`](docs/completions/). Install them per shell:
+
+```sh
+# bash
+sudo cp docs/completions/whetstone-tui.bash /etc/bash_completion.d/
+# zsh
+cp docs/completions/_whetstone-tui "$(brew --prefix)/share/zsh/site-functions/"
+# fish
+cp docs/completions/whetstone-tui.fish ~/.config/fish/completions/
+```
+
+To regenerate after a subcommand change: `cargo run --example gen_completions`.
+
 ## Keybindings
 
 | Key | Action |

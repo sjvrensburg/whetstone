@@ -1,0 +1,248 @@
+#compdef whetstone-tui
+
+autoload -U is-at-least
+
+_whetstone-tui() {
+    typeset -A opt_args
+    typeset -a _arguments_options
+    local ret=1
+
+    if is-at-least 5.2; then
+        _arguments_options=(-s -S -C)
+    else
+        _arguments_options=(-s -C)
+    fi
+
+    local context curcontext="$curcontext" state line
+    _arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+'-V[Print version]' \
+'--version[Print version]' \
+'::file -- Path to a `.qmd` / `.md` file to open in the editor (created if missing):_default' \
+":: :_whetstone-tui_commands" \
+"*::: :->whetstone-tui" \
+&& ret=0
+    case $state in
+    (whetstone-tui)
+        words=($line[2] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:whetstone-tui-command-$line[2]:"
+        case $line[2] in
+            (open)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+'::file -- Path to a `.qmd` / `.md` file to open (created if missing):_default' \
+&& ret=0
+;;
+(lint)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':file:_default' \
+&& ret=0
+;;
+(coach)
+_arguments "${_arguments_options[@]}" : \
+'--message=[]: :_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+':file:_default' \
+&& ret=0
+;;
+(guard)
+_arguments "${_arguments_options[@]}" : \
+'--reply=[]: :_default' \
+'--draft=[]: :_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(ownership)
+_arguments "${_arguments_options[@]}" : \
+'--original=[]: :_default' \
+'--current=[]: :_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(disclosure)
+_arguments "${_arguments_options[@]}" : \
+'--journal=[]: :_default' \
+'--doc-id=[]: :_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(export)
+_arguments "${_arguments_options[@]}" : \
+'--format=[]: :(html text)' \
+'--out=[]: :_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+':file:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_whetstone-tui__subcmd__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:whetstone-tui-help-command-$line[1]:"
+        case $line[1] in
+            (open)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(lint)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(coach)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(guard)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(ownership)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(disclosure)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(export)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+}
+
+(( $+functions[_whetstone-tui_commands] )) ||
+_whetstone-tui_commands() {
+    local commands; commands=(
+'open:Open the editor (same as passing a bare file path)' \
+'lint:Lint a file with Harper; prints diagnostics as JSON' \
+'coach:Run one coach turn over a file, screened by the guard (+ judge if set)' \
+'guard:Screen an arbitrary reply with the deterministic guard (+ judge if set)' \
+'ownership:Claim-to-own survival of an original paste within the current text' \
+'disclosure:Render a disclosure document from a journal (a JSON array of events)' \
+'export:Export a \`.qmd\` / \`.md\` document as HTML or plain text (no Quarto needed)' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'whetstone-tui commands' commands "$@"
+}
+(( $+functions[_whetstone-tui__subcmd__coach_commands] )) ||
+_whetstone-tui__subcmd__coach_commands() {
+    local commands; commands=()
+    _describe -t commands 'whetstone-tui coach commands' commands "$@"
+}
+(( $+functions[_whetstone-tui__subcmd__disclosure_commands] )) ||
+_whetstone-tui__subcmd__disclosure_commands() {
+    local commands; commands=()
+    _describe -t commands 'whetstone-tui disclosure commands' commands "$@"
+}
+(( $+functions[_whetstone-tui__subcmd__export_commands] )) ||
+_whetstone-tui__subcmd__export_commands() {
+    local commands; commands=()
+    _describe -t commands 'whetstone-tui export commands' commands "$@"
+}
+(( $+functions[_whetstone-tui__subcmd__guard_commands] )) ||
+_whetstone-tui__subcmd__guard_commands() {
+    local commands; commands=()
+    _describe -t commands 'whetstone-tui guard commands' commands "$@"
+}
+(( $+functions[_whetstone-tui__subcmd__help_commands] )) ||
+_whetstone-tui__subcmd__help_commands() {
+    local commands; commands=(
+'open:Open the editor (same as passing a bare file path)' \
+'lint:Lint a file with Harper; prints diagnostics as JSON' \
+'coach:Run one coach turn over a file, screened by the guard (+ judge if set)' \
+'guard:Screen an arbitrary reply with the deterministic guard (+ judge if set)' \
+'ownership:Claim-to-own survival of an original paste within the current text' \
+'disclosure:Render a disclosure document from a journal (a JSON array of events)' \
+'export:Export a \`.qmd\` / \`.md\` document as HTML or plain text (no Quarto needed)' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'whetstone-tui help commands' commands "$@"
+}
+(( $+functions[_whetstone-tui__subcmd__help__subcmd__coach_commands] )) ||
+_whetstone-tui__subcmd__help__subcmd__coach_commands() {
+    local commands; commands=()
+    _describe -t commands 'whetstone-tui help coach commands' commands "$@"
+}
+(( $+functions[_whetstone-tui__subcmd__help__subcmd__disclosure_commands] )) ||
+_whetstone-tui__subcmd__help__subcmd__disclosure_commands() {
+    local commands; commands=()
+    _describe -t commands 'whetstone-tui help disclosure commands' commands "$@"
+}
+(( $+functions[_whetstone-tui__subcmd__help__subcmd__export_commands] )) ||
+_whetstone-tui__subcmd__help__subcmd__export_commands() {
+    local commands; commands=()
+    _describe -t commands 'whetstone-tui help export commands' commands "$@"
+}
+(( $+functions[_whetstone-tui__subcmd__help__subcmd__guard_commands] )) ||
+_whetstone-tui__subcmd__help__subcmd__guard_commands() {
+    local commands; commands=()
+    _describe -t commands 'whetstone-tui help guard commands' commands "$@"
+}
+(( $+functions[_whetstone-tui__subcmd__help__subcmd__help_commands] )) ||
+_whetstone-tui__subcmd__help__subcmd__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'whetstone-tui help help commands' commands "$@"
+}
+(( $+functions[_whetstone-tui__subcmd__help__subcmd__lint_commands] )) ||
+_whetstone-tui__subcmd__help__subcmd__lint_commands() {
+    local commands; commands=()
+    _describe -t commands 'whetstone-tui help lint commands' commands "$@"
+}
+(( $+functions[_whetstone-tui__subcmd__help__subcmd__open_commands] )) ||
+_whetstone-tui__subcmd__help__subcmd__open_commands() {
+    local commands; commands=()
+    _describe -t commands 'whetstone-tui help open commands' commands "$@"
+}
+(( $+functions[_whetstone-tui__subcmd__help__subcmd__ownership_commands] )) ||
+_whetstone-tui__subcmd__help__subcmd__ownership_commands() {
+    local commands; commands=()
+    _describe -t commands 'whetstone-tui help ownership commands' commands "$@"
+}
+(( $+functions[_whetstone-tui__subcmd__lint_commands] )) ||
+_whetstone-tui__subcmd__lint_commands() {
+    local commands; commands=()
+    _describe -t commands 'whetstone-tui lint commands' commands "$@"
+}
+(( $+functions[_whetstone-tui__subcmd__open_commands] )) ||
+_whetstone-tui__subcmd__open_commands() {
+    local commands; commands=()
+    _describe -t commands 'whetstone-tui open commands' commands "$@"
+}
+(( $+functions[_whetstone-tui__subcmd__ownership_commands] )) ||
+_whetstone-tui__subcmd__ownership_commands() {
+    local commands; commands=()
+    _describe -t commands 'whetstone-tui ownership commands' commands "$@"
+}
+
+if [ "$funcstack[1]" = "_whetstone-tui" ]; then
+    _whetstone-tui "$@"
+else
+    compdef _whetstone-tui whetstone-tui
+fi

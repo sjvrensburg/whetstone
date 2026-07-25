@@ -1,0 +1,109 @@
+.TH WHETSTONE\-TUI 1 "2026\-07\-25" "whetstone\-tui 0.1.4" "Whetstone Manual"
+.SH NAME
+whetstone\-tui \- a friction\-first Markdown/Quarto editor for the terminal
+.SH SYNOPSIS
+.B whetstone\-tui
+.RI [ FILE ]
+.RI [ SUBCOMMAND ]
+.SH DESCRIPTION
+Whetstone is a friction\-first writing surface for students under honor codes,
+shipped as a terminal editor. It keeps the writing yours: pastes are quarantined
+and must be rewritten ("claim\-to\-own") or attributed, the optional AI coach can
+only ask questions (structured coaching can't ghostwrite by design; free\-text
+chat replies are length\-capped and screened, with a small residual risk), and an
+append\-only journal lets you export an honest "how this was written" disclosure.
+.PP
+The product claim is \fIfriction, not proof\fR: Whetstone never claims to verify
+who wrote anything. It makes zero outbound network calls unless you configure a
+coach endpoint; grammar checking runs locally.
+.PP
+A bare file path (or none) opens the editor. The subcommands below run
+non\-interactively and print JSON, so an agent, script, or CI step can drive the
+same core logic.
+.SH SUBCOMMANDS
+.TP
+.BR lint " " \fIFILE\fR
+Run Harper grammar/spell checking; print diagnostics as JSON.
+.TP
+.BR coach " " \fIFILE\fR " \fB\-\-message\fR " \fIMSG\fR
+Run one coach turn over the file, screened by the guard (and the judge, if
+configured).
+.TP
+.BR guard " \fB\-\-reply\fR " \fITEXT\fR " [\fB\-\-draft\fR " \fIFILE\fR "]"
+Screen an arbitrary reply with the deterministic guard (and the judge, if set).
+.TP
+.BR ownership " \fB\-\-original\fR " \fIFILE\fR " \fB\-\-current\fR " \fIFILE\fR
+Claim\-to\-own survival of an original paste within the current text.
+.TP
+.BR disclosure " \fB\-\-journal\fR " \fIFILE\fR " [\fB\-\-doc\-id\fR " \fIID\fR "]"
+Render a disclosure document from a journal (a JSON array of process events).
+.TP
+.BR export " " \fIFILE\fR " [\fB\-\-format\fR " \fIhtml\fR|\fItext\fR "] [\fB\-\-out\fR " \fIFILE\fR "]"
+Export a Markdown/Quarto document as HTML or plain text (no Quarto required).
+.TP
+.BR open " " \fIFILE\fR
+Open the editor on a file (same as passing a bare file path).
+.SH ENVIRONMENT
+Coach configuration (overrides the saved \fB~/.config/whetstone/coach.json\fR):
+.TP
+.B WHETSTONE_BASE_URL
+Coach endpoint, e.g. \fIhttp://localhost:11434/v1\fR (no trailing slash).
+.TP
+.B WHETSTONE_API_KEY
+Bearer token (optional for local servers).
+.TP
+.B WHETSTONE_MODEL
+Coach model, e.g. \fIllama3.1\fR, \fIgpt\-oss:latest\fR (default \fIgpt\-oss:latest\fR).
+.TP
+.B WHETSTONE_PROVIDER
+\fBopenai\fR or \fBanthropic\fR (omit to auto\-detect from the URL).
+.TP
+.B WHETSTONE_JUDGE
+\fB1\fR/\fBtrue\fR to enable the LLM judge.
+.TP
+.B WHETSTONE_JUDGE_MODEL
+Judge model (blank inherits the coach model).
+.TP
+.B WHETSTONE_JUDGE_BASE_URL ", " WHETSTONE_JUDGE_API_KEY ", " WHETSTONE_JUDGE_PROVIDER
+Judge endpoint overrides (blank inherits the coach's).
+.PP
+Preferences (override the saved \fB~/.config/whetstone/ui.json\fR):
+.TP
+.B WHETSTONE_THEME
+Theme name, e.g. \fIFresh Dark\fR.
+.TP
+.B WHETSTONE_FRICTION
+Friction level \fB0\fR\-\fB3\fR (Quiet / Coach / Engaged / Deep Work).
+.TP
+.B WHETSTONE_FRICTION_<INSTRUMENT>
+Per\-instrument override (\fIPASTE\fR, \fICLAIM\fR, \fITEACHBACK\fR, \fIPUSH\fR): a level
+\fB0\fR\-\fB3\fR, or \fIoff\fR/\fInone\fR/\fIpreset\fR to clear.
+.TP
+.B WHETSTONE_DIALECT
+Grammar dialect: \fIamerican\fR, \fIbritish\fR, \fIcanadian\fR, \fIaustralian\fR, \fIindian\fR.
+.SH FILES
+.TP
+.I ~/.config/whetstone/coach.json
+Coach endpoint/key/model and the optional judge. Mode \fB0600\fR on Unix.
+.TP
+.I ~/.config/whetstone/ui.json
+Theme, friction level, per\-instrument overrides, and grammar settings.
+.TP
+.I ~/.config/whetstone/coach\-history/
+Per\-document coach chat, keyed by absolute path. Mode \fB0600\fR on Unix.
+.SH KEYBINDINGS (EDITOR)
+Press \fBF1\fR in the editor for the full cheat\-sheet. Notable: \fBCtrl+S\fR/\fBCtrl+O\fR
+save/open, \fBCtrl+R\fR render with Quarto, \fBCtrl+Shift+E\fR/\fBCtrl+Shift+X\fR export
+HTML/text, \fBCtrl+D\fR export the disclosure, \fBCtrl+E\fR AI settings, \fBCtrl+K\fR state
+your claim, \fBCtrl+P\fR the process journal, \fBF10\fR the menu bar.
+.SH EXIT STATUS
+Exits \fB0\fR on success, non\-zero on error. Headless subcommands print a JSON
+document to stdout and a human\-readable error to stderr.
+.SH SEE ALSO
+.BR quarto (1)
+.SH BUGS
+Report issues at \fIhttps://github.com/sjvrensburg/whetstone/issues\fR. For guard
+bypasses, see \fBSECURITY.md\fR (report privately rather than opening a public
+issue).
+.SH AUTHOR
+sjvrensburg \fIhttps://github.com/sjvrensburg\fR
