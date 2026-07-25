@@ -32,6 +32,7 @@ Register-ArgumentCompleter -Native -CommandName 'whetstone-tui' -ScriptBlock {
             [CompletionResult]::new('ownership', 'ownership', [CompletionResultType]::ParameterValue, 'Claim-to-own survival of an original paste within the current text')
             [CompletionResult]::new('disclosure', 'disclosure', [CompletionResultType]::ParameterValue, 'Render a disclosure document from a journal (a JSON array of events)')
             [CompletionResult]::new('export', 'export', [CompletionResultType]::ParameterValue, 'Export a `.qmd` / `.md` document as HTML or plain text (no Quarto needed)')
+            [CompletionResult]::new('words', 'words', [CompletionResultType]::ParameterValue, 'Word/character/line counts for a document (JSON)')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
@@ -79,6 +80,11 @@ Register-ArgumentCompleter -Native -CommandName 'whetstone-tui' -ScriptBlock {
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
+        'whetstone-tui;words' {
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
+            break
+        }
         'whetstone-tui;help' {
             [CompletionResult]::new('open', 'open', [CompletionResultType]::ParameterValue, 'Open the editor (same as passing a bare file path)')
             [CompletionResult]::new('lint', 'lint', [CompletionResultType]::ParameterValue, 'Lint a file with Harper; prints diagnostics as JSON')
@@ -87,6 +93,7 @@ Register-ArgumentCompleter -Native -CommandName 'whetstone-tui' -ScriptBlock {
             [CompletionResult]::new('ownership', 'ownership', [CompletionResultType]::ParameterValue, 'Claim-to-own survival of an original paste within the current text')
             [CompletionResult]::new('disclosure', 'disclosure', [CompletionResultType]::ParameterValue, 'Render a disclosure document from a journal (a JSON array of events)')
             [CompletionResult]::new('export', 'export', [CompletionResultType]::ParameterValue, 'Export a `.qmd` / `.md` document as HTML or plain text (no Quarto needed)')
+            [CompletionResult]::new('words', 'words', [CompletionResultType]::ParameterValue, 'Word/character/line counts for a document (JSON)')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
@@ -109,6 +116,9 @@ Register-ArgumentCompleter -Native -CommandName 'whetstone-tui' -ScriptBlock {
             break
         }
         'whetstone-tui;help;export' {
+            break
+        }
+        'whetstone-tui;help;words' {
             break
         }
         'whetstone-tui;help;help' {

@@ -41,6 +41,11 @@ Render a disclosure document from a journal (a JSON array of process events).
 .BR export " " \fIFILE\fR " [\fB\-\-format\fR " \fIhtml\fR|\fItext\fR "] [\fB\-\-out\fR " \fIFILE\fR "]"
 Export a Markdown/Quarto document as HTML or plain text (no Quarto required).
 .TP
+.BR words " " \fIFILE\fR
+Print word/character/line counts as JSON (\fIprose_words\fR strips Markdown
+noise; \fIraw_words\fR is the unstripped tokenizer count the ownership metric
+uses). The headless equivalent of the status-bar word count.
+.TP
 .BR open " " \fIFILE\fR
 Open the editor on a file (same as passing a bare file path).
 .SH ENVIRONMENT

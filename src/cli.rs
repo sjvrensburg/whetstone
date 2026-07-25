@@ -74,6 +74,8 @@ pub enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Word counts for a document (prose + raw + characters/lines).
+    Words { file: PathBuf },
 }
 
 /// The export format for the headless `export` subcommand.
@@ -95,6 +97,7 @@ pub fn run(command: Command) -> Result<()> {
         Command::Ownership { original, current } => ownership(&original, &current)?,
         Command::Disclosure { journal, doc_id } => disclosure(&journal, doc_id)?,
         Command::Export { file, format, out } => export(&file, format, out.as_deref())?,
+        Command::Words { file } => words(&file)?,
     };
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
@@ -284,6 +287,26 @@ fn export(
     }))
 }
 
+/// Word/character/line counts for a document, mirroring the status-bar count.
+/// `prose` is the Markdown-noise-stripped count (what the TUI shows); `raw` is
+/// the unstripped tokenizer count (what the ownership metric uses); `chars` and
+/// `lines` are the obvious totals. Gives a screen-reader user the same
+/// orientation the status bar gives a sighted one.
+fn words(file: &std::path::Path) -> Result<Value> {
+    let text = read(file)?;
+    let prose = whetstone_tui::core::ngram::prose_word_count(&text);
+    let raw = whetstone_tui::core::ngram::word_count(&text);
+    let chars = text.chars().count();
+    let lines = text.lines().count();
+    Ok(json!({
+        "file": file.display().to_string(),
+        "prose_words": prose,
+        "raw_words": raw,
+        "chars": chars,
+        "lines": lines,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,5 +381,24 @@ mod tests {
         assert!(body.contains("paragraph"));
         let _ = std::fs::remove_file(&src);
         let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
+    fn words_reports_prose_and_raw_counts() {
+        let dir = std::env::temp_dir();
+        let src = dir.join("whetstone_cli_words_src.md");
+        std::fs::write(
+            &src,
+            "# Title\n\nSee https://example.com/a/b/c for `code`.\n",
+        )
+        .unwrap();
+        let v = words(&src).unwrap();
+        // prose strips the URL + inline code; raw does not, so prose < raw.
+        let prose = v["prose_words"].as_u64().unwrap();
+        let raw = v["raw_words"].as_u64().unwrap();
+        assert!(prose < raw, "prose ({prose}) should be < raw ({raw})");
+        assert!(v["chars"].as_u64().unwrap() > 0);
+        assert!(v["lines"].as_u64().unwrap() >= 2);
+        let _ = std::fs::remove_file(&src);
     }
 }

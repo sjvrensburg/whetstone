@@ -64,6 +64,9 @@ fn subcommands() -> Vec<Command> {
                     .default_value("html"),
             )
             .arg(Arg::new("out").long("out")),
+        Command::new("words")
+            .about("Word/character/line counts for a document (JSON)")
+            .arg(Arg::new("file").required(true)),
         // clap auto-adds a `help` subcommand; don't declare it explicitly.
     ]
 }

@@ -40,6 +40,9 @@ _whetstone-tui() {
             whetstone__tui,ownership)
                 cmd="whetstone__tui__subcmd__ownership"
                 ;;
+            whetstone__tui,words)
+                cmd="whetstone__tui__subcmd__words"
+                ;;
             whetstone__tui__subcmd__help,coach)
                 cmd="whetstone__tui__subcmd__help__subcmd__coach"
                 ;;
@@ -64,6 +67,9 @@ _whetstone-tui() {
             whetstone__tui__subcmd__help,ownership)
                 cmd="whetstone__tui__subcmd__help__subcmd__ownership"
                 ;;
+            whetstone__tui__subcmd__help,words)
+                cmd="whetstone__tui__subcmd__help__subcmd__words"
+                ;;
             *)
                 ;;
         esac
@@ -71,7 +77,7 @@ _whetstone-tui() {
 
     case "${cmd}" in
         whetstone__tui)
-            opts="-h -V --help --version open lint coach guard ownership disclosure export help"
+            opts="-h -V --help --version open lint coach guard ownership disclosure export words help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -169,7 +175,7 @@ _whetstone-tui() {
             return 0
             ;;
         whetstone__subcmd__tui__subcmd__help)
-            opts="open lint coach guard ownership disclosure export help"
+            opts="open lint coach guard ownership disclosure export words help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -294,6 +300,20 @@ _whetstone-tui() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        whetstone__subcmd__tui__subcmd__help__subcmd__words)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         whetstone__subcmd__tui__subcmd__lint)
             opts="-h --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
@@ -337,6 +357,20 @@ _whetstone-tui() {
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        whetstone__subcmd__tui__subcmd__words)
+            opts="-h --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
                 *)
                     COMPREPLY=()
                     ;;

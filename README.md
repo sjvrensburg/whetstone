@@ -272,6 +272,7 @@ whetstone-tui ownership --original a.txt --current b.txt   # claim-to-own surviv
 whetstone-tui disclosure --journal events.json --doc-id essay.qmd
 whetstone-tui export file.qmd --format html       # standalone HTML (no Quarto)
 whetstone-tui export file.qmd --format text       # rendered plain text
+whetstone-tui words file.qmd                      # word/char/line counts (JSON)
 ```
 
 ## Screenshots
