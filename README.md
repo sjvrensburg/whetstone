@@ -18,12 +18,6 @@ editor itself never phones home.
 Prebuilt binaries for macOS (Intel + Apple Silicon), Linux (x86_64 + aarch64),
 and Windows (x86_64) ship with every release.
 
-**cargo** (any platform with a Rust toolchain):
-
-```sh
-cargo install whetstone-tui
-```
-
 **Homebrew** (macOS / Linux):
 
 ```sh
@@ -44,6 +38,13 @@ irm https://github.com/sjvrensburg/whetstone/releases/latest/download/whetstone-
 ```
 
 Or grab an archive from the [latest release](https://github.com/sjvrensburg/whetstone/releases/latest).
+
+**From git** (any platform with a Rust 1.85+ toolchain; no crates.io publish needed):
+
+```sh
+cargo install --git https://github.com/sjvrensburg/whetstone whetstone-tui
+```
+
 From source, see **Build & run** below.
 
 ## Build & run

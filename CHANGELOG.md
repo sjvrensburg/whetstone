@@ -17,7 +17,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   hatch for screen-reader users.
 - Two auditable process events — `JudgeUnavailable` and `HistoryScreened` — so a
   judge fail-open and a replayed-turn injection screen appear in the disclosure.
-- `cargo install whetstone-tui` one-liner in the README install section.
+- `cargo install --git` one-liner in the README install section (works without
+  a crates.io publish).
 - Tests for the `grammar/harper.rs` bridge module (char-offset correctness,
   severity/fix mapping, dialect aliases, disabled-rule round-trip).
 
@@ -41,6 +42,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a class of TUI-crashing panics (a crash drops the user into a raw shell).
 - The `insert_or_replace` `expect()` now falls back to a plain insert if the
   buffer's selection invariant drifts.
+- **Data-loss race**: a save dispatched on a slow disk no longer clears `dirty`
+  for edits made after the save was captured (which let `Ctrl+Q` silently lose
+  them). Each write is now stamped with the buffer's edit-version and the drain
+  only clears `dirty` when no edits occurred since dispatch.
+- **Editor freeze on large docs**: the status-bar word count is now cached
+  against `edit_version` instead of recomputed every frame (it NFKC-normalizes
+  the whole buffer — 842ms/draw on a 100k-word thesis).
+- **Stored XSS in HTML export**: the rendered body is now sanitized with
+  `ammonia` (pulldown-cmark emits raw `<script>`/`onerror`/`javascript:`
+  verbatim; the export is meant to be shared).
+- **Symlink + race in atomic_write**: the fixed-name temp file is replaced with
+  a random, exclusively-created `NamedTempFile` (closes a CWE-377/59 symlink
+  attack and overlapping-autosave data loss on slow disks).
+- **Release pipeline**: `checksum = true` (a parse error) is now `checksum =
+  "sha256"`; the unrecognized `man-pages` key is removed (cargo-dist 0.32 has no
+  manpage installer; the man page ships via the repo + README).
 
 ## [0.1.3] — earlier
 
