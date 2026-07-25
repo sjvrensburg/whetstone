@@ -22,12 +22,15 @@ non\-interactively and print JSON, so an agent, script, or CI step can drive the
 same core logic.
 .SH SUBCOMMANDS
 .TP
-.BR lint " " \fIFILE\fR
-Run Harper grammar/spell checking; print diagnostics as JSON.
+.BR lint " " \fIFILE\fR " [\fB\-\-strict\fR]"
+Run Harper grammar/spell checking; print diagnostics as JSON. With
+\fB\-\-strict\fR, exit non-zero when any diagnostics are found (for CI).
 .TP
-.BR coach " " \fIFILE\fR " \fB\-\-message\fR " \fIMSG\fR
+.BR coach " " \fIFILE\fR " \fB\-\-message\fR " \fIMSG\fR " [\fB\-\-journal\fR " \fIFILE\fR "]"
 Run one coach turn over the file, screened by the guard (and the judge, if
-configured).
+configured). With \fB\-\-journal\fR, append a metadata-only consult event (and a
+\fBJudgeUnavailable\fR event on judge fail-open) so a later \fBdisclosure\fR
+render is honest about headless coaching.
 .TP
 .BR guard " \fB\-\-reply\fR " \fITEXT\fR " [\fB\-\-draft\fR " \fIFILE\fR "]"
 Screen an arbitrary reply with the deterministic guard (and the judge, if set).

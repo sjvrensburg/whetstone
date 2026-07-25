@@ -113,8 +113,8 @@ non-color cues are layered on top of the theme colors so colorblind users can
 distinguish states without relying on hue: quarantined pastes are underlined
 (not just amber), and grammar issues use underline for errors/warnings versus
 dim for style suggestions. Screen-reader users can drive every check headlessly
-via the subcommands (`lint`, `coach`, `guard`, `ownership`, `disclosure`) — see
-**Headless / agentic use** below.
+via the subcommands (`lint`, `coach`, `guard`, `ownership`, `disclosure`,
+`export`, `words`) — see **Headless / agentic use** below.
 
 ## AI coach (optional)
 
@@ -266,7 +266,9 @@ bare file path still opens the editor.
 
 ```sh
 whetstone-tui lint file.qmd                       # Harper diagnostics + fixes
+whetstone-tui lint file.qmd --strict              # exit non-zero if issues found (CI)
 whetstone-tui coach file.qmd --message "…"        # one guarded (+ judged) coach turn
+whetstone-tui coach file.qmd --message "…" --journal events.json   # also journal the consult
 whetstone-tui guard --reply "…" --draft file.qmd  # screen an arbitrary reply
 whetstone-tui ownership --original a.txt --current b.txt   # claim-to-own survival
 whetstone-tui disclosure --journal events.json --doc-id essay.qmd

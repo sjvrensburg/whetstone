@@ -7,7 +7,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [0.1.4] — 2026-07-25
 
 ### Added
-- **Document export** (HTML and plain text) — `Ctrl+Shift+E` / `Ctrl+Shift+X`
+- **Document export** (HTML and plain text) — `Ctrl+Shift+E` / `Ctrl+Shift*X`
   in the editor, or the headless `export` subcommand. No Quarto required; both
   pass the forbidden-label guard.
 - **Live word count** in the status bar.
@@ -19,6 +19,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   judge fail-open and a replayed-turn injection screen appear in the disclosure.
 - `cargo install --git` one-liner in the README install section (works without
   a crates.io publish).
+- `lint --strict` (exit non-zero on findings) and `coach --journal` (append a
+  metadata-only consult event so headless coaching is honest in the disclosure)
+  for CI / agentic use.
+- `rust-version = "1.85"` declared in `Cargo.toml` (edition 2024 requires it).
 - Tests for the `grammar/harper.rs` bridge module (char-offset correctness,
   severity/fix mapping, dialect aliases, disabled-rule round-trip).
 
@@ -58,6 +62,40 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Release pipeline**: `checksum = true` (a parse error) is now `checksum =
   "sha256"`; the unrecognized `man-pages` key is removed (cargo-dist 0.32 has no
   manpage installer; the man page ships via the repo + README).
+- **Broken bash completions**: `clap_complete` 4.6.x emits `cmd` case-match arms
+  whose token ordering disagrees with the assignments when the bin name contains
+  a hyphen, so bash completion silently returned nothing after any subcommand.
+  The generator now normalizes the arms and a drift test guards the invariant.
+- **Autosave clobbering concurrent external edits**: autosave now runs the same
+  external-change (mtime) guard as a manual save, so another tool rewriting the
+  file while the editor is idle no longer gets silently overwritten.
+- **Opaque coach HTTP errors**: `error_for_status()` discarded the response body,
+  so a misconfigured Ollama (404 "model not found") or proxy (502) showed an
+  opaque status. The body is now read, parsed (OpenAI/Ollama JSON shapes), and
+  excerpted into the error.
+- **SIGPIPE panics**: piped output (`lint | head`) no longer panics with a broken
+  pipe; SIGPIPE is reset to the OS default at startup for clean pipeline exits.
+- **Uncapped paste freeze**: a multi-MB paste is now capped (256 KB) with a
+  status message instead of locking the editor for seconds on the synchronous
+  insert + re-lint + word-count recompute.
+- **atomic_write durability**: the parent directory is now fsynced after the
+  rename so a power loss can't roll the rename back (the file-data fsync alone
+  didn't protect the directory entry).
+- **Stale coach reply after settings change**: saving coach settings now bumps
+  `coach_generation`, so an in-flight request against the old endpoint/model is
+  superseded instead of landing as a mislabelled coach turn.
+- **UTF-8 BOM**: a leading BOM (Windows/PowerShell exports) is stripped on load
+  so it isn't persisted back into the file or skewing word/char counts.
+- **Forbidden-label bypass**: the guard now normalizes zero-width characters,
+  soft hyphens, and joiner punctuation before matching, so `verified\u{200b}human`
+  and `verified-human` can't slip past the substring check.
+- **Save-As overwrite**: saving to a path that already exists now requires a
+  second confirmation of the same path, preventing a typo from destroying an
+  unrelated file.
+- **Disclosure honesty**: the scoping note now states the record is not
+  tamper-evident (anyone with the file can edit entries).
+- **Connection-test secret scrubbing**: the settings dialog's test-connection
+  error path now scrubs secrets, matching the runtime coach-error path.
 
 ## [0.1.3] — earlier
 
