@@ -1025,7 +1025,9 @@ impl App {
     /// The document's word count, cached against `edit_version` so the status
     /// bar doesn't re-tokenize the whole buffer on every draw (the run loop
     /// draws ~10×/s; word_count NFKC-normalizes the full text). Recomputes only
-    /// when the buffer has changed since the last call.
+    /// when the buffer has changed since the last call. Uses `prose_word_count`
+    /// (Markdown noise stripped) so the number tracks a word processor more
+    /// closely than the raw ownership-metric tokenization.
     pub fn word_count(&mut self) -> usize {
         let version = self.edit_version;
         if let Some((v, count)) = self.word_count_cache
@@ -1033,7 +1035,7 @@ impl App {
         {
             return count;
         }
-        let count = crate::core::ngram::word_count(&self.buffer.text());
+        let count = crate::core::ngram::prose_word_count(&self.buffer.text());
         self.word_count_cache = Some((version, count));
         count
     }
