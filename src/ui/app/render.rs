@@ -1126,6 +1126,12 @@ fn draw_coach(frame: &mut Frame, app: &mut App, area: Rect) {
             theme.dim(),
         )));
     } else {
+        // Rebuilds every turn into Lines each frame. This is O(turns) per draw
+        // (~2.8ms at 500 turns), accepted as a trade-off: a cache would have to
+        // key on the full turns content + scroll + busy + theme, and invalidate
+        // on essentially every turn addition (the common case during coaching),
+        // so it would add complexity for little win. Conversations are
+        // per-document and bounded, not unbounded across the session.
         for t in &app.coach_turns {
             let (label, color) = match t.role {
                 ChatTurnRole::Writer => ("you", theme.coach_you),
