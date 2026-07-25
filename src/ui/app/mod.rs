@@ -13,6 +13,7 @@ mod render;
 pub use render::draw;
 use render::format_structured_coaching;
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -452,6 +453,10 @@ pub struct App {
     /// the editor. Results drain back here.
     io_tx: mpsc::Sender<IoEvent>,
     io_rx: mpsc::Receiver<IoEvent>,
+    /// True while a save (not an export) write is in flight, so `maybe_autosave`
+    /// doesn't stack overlapping writes on a slow disk — every 100ms tick would
+    /// otherwise spawn a fresh thread while the previous one is still writing.
+    io_save_in_flight: bool,
     /// True while a `quarto render` is in flight.
     compiling: bool,
     /// Captured output of the last render, shown in a scrollable overlay when
@@ -680,6 +685,7 @@ impl App {
             compile_rx,
             io_tx,
             io_rx,
+            io_save_in_flight: false,
             compiling: false,
             compile_open: false,
             compile_output: String::new(),
@@ -3580,6 +3586,9 @@ impl App {
         // Stamp the buffer's edit-version so the drain can tell a write whose
         // bytes are current apart from one that predates later edits.
         let edit_version = self.edit_version;
+        if is_save {
+            self.io_save_in_flight = true;
+        }
         let tx = self.io_tx.clone();
         std::thread::spawn(move || {
             let (ok, message) = match atomic_write(&path, &bytes) {
@@ -3610,6 +3619,9 @@ impl App {
     pub fn drain_io_events(&mut self) {
         while let Ok(ev) = self.io_rx.try_recv() {
             let current_doc = ev.path == self.path;
+            if ev.is_save {
+                self.io_save_in_flight = false;
+            }
             if ev.ok {
                 if ev.is_save && current_doc && ev.edit_version == self.edit_version {
                     self.dirty = false;
@@ -3683,6 +3695,14 @@ impl App {
     /// loop). No-op for an unnamed buffer. The write runs off-thread like `save`.
     pub fn maybe_autosave(&mut self) {
         if !self.dirty || self.path.as_os_str().is_empty() {
+            return;
+        }
+        // Don't stack overlapping autosaves: on a slow disk a write can take
+        // longer than the 100ms poll interval, and without this guard the run
+        // loop would spawn a fresh thread every tick (each writing a slightly
+        // different buffer snapshot). A manual Ctrl+S still proceeds — only the
+        // idle-triggered autosave waits for the previous one to land.
+        if self.io_save_in_flight {
             return;
         }
         let Some(last) = self.last_edit else { return };
@@ -3817,19 +3837,34 @@ fn env_instrument_override(inst: Instrument) -> Option<Option<u8>> {
     }
 }
 
-/// Write `bytes` to `path` atomically (temp file in the same dir, then rename),
-/// so a crash mid-write can't truncate the document.
+/// Write `bytes` to `path` atomically (a randomly-named temp file in the same
+/// directory, then an atomic rename), so a crash mid-write can't truncate the
+/// document. The temp file is created with `O_CREAT|O_EXCL` under a random name
+/// (via `tempfile::NamedTempFile`), which closes two hazards the old fixed-name
+/// `whetstone-tmp` approach had on shared or attacker-writable directories:
+///
+/// - **Symlink following (CWE-377/59):** a pre-placed `<doc>.whetstone-tmp ->
+///   <victim>` symlink would route the document content into `<victim>`. A
+///   random, exclusively-created temp name can't be pre-placed.
+/// - **Clobbering under overlapping writes:** two concurrent saves/autosaves
+///   shared one temp path and could clobber each other's bytes. Random names
+///   don't collide, so each write is independent.
 fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use tempfile::NamedTempFile;
     // Create missing parent directories so "Save as notes/draft.qmd" works even
-    // when `notes/` doesn't exist yet.
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("whetstone-tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)
+    // when `notes/` doesn't exist yet. Use the parent, or "." for a bare name.
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => {
+            std::fs::create_dir_all(p)?;
+            p
+        }
+        _ => Path::new("."),
+    };
+    let mut tmp = NamedTempFile::new_in(parent)?;
+    tmp.write_all(bytes)?;
+    tmp.as_file().sync_all()?; // durability before the rename
+    tmp.persist(path).map_err(|e| e.error)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -4201,6 +4236,77 @@ mod tests {
             "stale write somehow contained the newer edits"
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn atomic_write_concurrent_writes_dont_lose_data() {
+        // Regression: the old fixed-name temp (whetstone-tmp) let two
+        // overlapping writes clobber each other's temp file, losing ~half the
+        // writes and potentially keeping an older snapshot. Random temp names
+        // make each write independent — the last rename to land wins, and every
+        // write either fully lands or is dropped (no corruption).
+        let dir = std::env::temp_dir();
+        let path = dir.join("whetstone_atomic_concurrent_test.txt");
+        let _ = std::fs::remove_file(&path);
+        // Spawn N concurrent writes of distinct payloads; all must report Ok
+        // (no temp-clobbering failures), and the final content must be exactly
+        // one of the payloads (atomic rename → no corruption).
+        let path_clone = path.clone();
+        let handles: Vec<_> = (0..20)
+            .map(move |i| {
+                let p = path_clone.clone();
+                std::thread::spawn(move || {
+                    let payload = format!("payload-{i}");
+                    atomic_write(&p, payload.as_bytes())
+                })
+            })
+            .collect();
+        let mut oks = 0;
+        for h in handles {
+            if h.join().unwrap().is_ok() {
+                oks += 1;
+            }
+        }
+        // With random temp names, every write should succeed (no clobbering).
+        assert_eq!(oks, 20, "some concurrent writes failed: {oks}/20");
+        let final_content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            final_content.starts_with("payload-"),
+            "final content corrupted: {final_content}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn atomic_write_does_not_follow_preplaced_symlink() {
+        // Regression (CWE-377/59): the old fixed-name temp meant a pre-placed
+        // `<doc>.whetstone-tmp -> <victim>` symlink would route the document
+        // content into <victim>. The random, exclusively-created temp name
+        // can't be pre-placed, so a victim file at the old temp path is never
+        // touched.
+        let dir = std::env::temp_dir();
+        let doc = dir.join("whetstone_symlink_doc.txt");
+        let victim = dir.join("whetstone_symlink_victim.txt");
+        let old_temp = dir.join("whetstone_symlink_doc.whetstone-tmp");
+        let _ = std::fs::remove_file(&doc);
+        let _ = std::fs::remove_file(&victim);
+        let _ = std::fs::remove_file(&old_temp);
+        std::fs::write(&victim, "VICTIM-ORIGINAL").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&victim, &old_temp).unwrap();
+        atomic_write(&doc, b"DOCUMENT-CONTENT").unwrap();
+        // The document got its content...
+        assert_eq!(std::fs::read_to_string(&doc).unwrap(), "DOCUMENT-CONTENT");
+        // ...and the victim (and the stale symlink) were NOT touched.
+        assert_eq!(
+            std::fs::read_to_string(&victim).unwrap(),
+            "VICTIM-ORIGINAL",
+            "symlink attack routed document content into the victim"
+        );
+        let _ = std::fs::remove_file(&doc);
+        let _ = std::fs::remove_file(&victim);
+        #[cfg(unix)]
+        let _ = std::fs::remove_file(&old_temp);
     }
 
     #[test]
