@@ -69,6 +69,7 @@ beyond transient menus/dialogs). Press **F1** for the keybinding cheat-sheet or
 | `Ctrl+M` | Mark the pasted region under the cursor as a quotation |
 | `Ctrl+B` | Outline — list headings and jump to one |
 | `Ctrl+R` | Render the document with Quarto (saves first) |
+| `Ctrl+Shift+E` / `Ctrl+Shift+X` | Export the document as HTML / plain text (no Quarto needed) |
 | `Ctrl+L` | Move focus to the bottom-right pane (Coach or Suggestions tab); `Tab` switches the tab; `Ctrl+J` coaches the current selection |
 | `Ctrl+E` | AI settings (provider, endpoint, API key, model, + optional judge) |
 | `Ctrl+P` | Process / journal view |
@@ -208,6 +209,16 @@ fails (or Quarto isn't installed), the captured output opens in a scrollable
 overlay so you can read the error. Requires [Quarto](https://quarto.org) on your
 `PATH`.
 
+## Export (HTML / plain text)
+
+For when you want a readable artifact without installing Quarto, press
+**Ctrl+Shift+E** (**File ▸ Export HTML**) for a standalone HTML document or
+**Ctrl+Shift+X** (**File ▸ Export text**) for the rendered preview as plain
+text. Both write next to the source (`<name>.html` / `<name>.txt`), use the same
+markdown parser as the preview pane, and pass the forbidden-label guard so an
+export can't carry proof-of-personhood language. The headless `export`
+subcommand does the same for scripts and CI.
+
 ## Grammar & suggestions (Harper)
 
 Grammar/spell checking is local (via `harper-core`, no external calls). Issues
@@ -236,6 +247,8 @@ whetstone-tui coach file.qmd --message "…"        # one guarded (+ judged) coa
 whetstone-tui guard --reply "…" --draft file.qmd  # screen an arbitrary reply
 whetstone-tui ownership --original a.txt --current b.txt   # claim-to-own survival
 whetstone-tui disclosure --journal events.json --doc-id essay.qmd
+whetstone-tui export file.qmd --format html       # standalone HTML (no Quarto)
+whetstone-tui export file.qmd --format text       # rendered plain text
 ```
 
 ## Screenshots

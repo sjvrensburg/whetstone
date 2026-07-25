@@ -63,6 +63,26 @@ pub enum Command {
         #[arg(long = "doc-id")]
         doc_id: Option<String>,
     },
+    /// Export a `.qmd` / `.md` document as HTML or plain text (no Quarto needed).
+    Export {
+        /// The source Markdown/Quarto document.
+        file: PathBuf,
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = ExportFormat::Html)]
+        format: ExportFormat,
+        /// Output path (default: `<file>.html` or `<file>.txt`).
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+}
+
+/// The export format for the headless `export` subcommand.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportFormat {
+    /// A standalone HTML5 document.
+    Html,
+    /// Plain text, as rendered by the preview pane.
+    Text,
 }
 
 /// Run a headless subcommand, printing its JSON result to stdout.
@@ -74,6 +94,7 @@ pub fn run(command: Command) -> Result<()> {
         Command::Guard { reply, draft } => guard(&reply, draft.as_deref())?,
         Command::Ownership { original, current } => ownership(&original, &current)?,
         Command::Disclosure { journal, doc_id } => disclosure(&journal, doc_id)?,
+        Command::Export { file, format, out } => export(&file, format, out.as_deref())?,
     };
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
@@ -223,6 +244,46 @@ fn disclosure(journal: &std::path::Path, doc_id: Option<String>) -> Result<Value
     }))
 }
 
+fn export(
+    file: &std::path::Path,
+    format: ExportFormat,
+    out: Option<&std::path::Path>,
+) -> Result<Value> {
+    let text = read(file)?;
+    let ext = match format {
+        ExportFormat::Html => "html",
+        ExportFormat::Text => "txt",
+    };
+    let (content, out) = match format {
+        ExportFormat::Html => {
+            let html = whetstone_tui::markdown::render::render_to_html(&text)
+                .map_err(|e| anyhow::anyhow!("export rejected by forbidden-label guard: {e}"))?;
+            let out = out
+                .map(PathBuf::from)
+                .unwrap_or_else(|| file.with_extension(ext));
+            (html, out)
+        }
+        ExportFormat::Text => {
+            let theme = whetstone_tui::ui::theme::default_theme();
+            let plain = whetstone_tui::markdown::render::render_to_plain(&text, theme)
+                .map_err(|e| anyhow::anyhow!("export rejected by forbidden-label guard: {e}"))?;
+            let out = out
+                .map(PathBuf::from)
+                .unwrap_or_else(|| file.with_extension(ext));
+            (plain, out)
+        }
+    };
+    let bytes = content.len();
+    std::fs::write(&out, content.as_bytes())
+        .with_context(|| format!("writing {}", out.display()))?;
+    Ok(json!({
+        "source": file.display().to_string(),
+        "path": out.display().to_string(),
+        "format": format!("{ext}"),
+        "bytes": bytes,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,5 +327,36 @@ mod tests {
         );
         assert!(s.allowed);
         assert_eq!(s.guard["ok"], json!(true));
+    }
+
+    #[test]
+    fn export_html_writes_a_standalone_document() {
+        let dir = std::env::temp_dir();
+        let src = dir.join("whetstone_cli_export_src.md");
+        let out = dir.join("whetstone_cli_export_out.html");
+        std::fs::write(&src, "# Hello\n\nA paragraph.\n").unwrap();
+        let v = export(&src, ExportFormat::Html, Some(&out)).unwrap();
+        assert_eq!(v["format"], json!("html"));
+        assert_eq!(v["path"].as_str().unwrap(), out.display().to_string());
+        let body = std::fs::read_to_string(&out).unwrap();
+        assert!(body.starts_with("<!doctype html>"));
+        assert!(body.contains("<h1>Hello</h1>"));
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
+    fn export_text_writes_plain_rendered_text() {
+        let dir = std::env::temp_dir();
+        let src = dir.join("whetstone_cli_export_src.md");
+        let out = dir.join("whetstone_cli_export_out.txt");
+        std::fs::write(&src, "# Hello\n\nA paragraph.\n").unwrap();
+        let v = export(&src, ExportFormat::Text, Some(&out)).unwrap();
+        assert_eq!(v["format"], json!("txt"));
+        let body = std::fs::read_to_string(&out).unwrap();
+        assert!(body.contains("Hello"));
+        assert!(body.contains("paragraph"));
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&out);
     }
 }

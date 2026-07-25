@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.6;
+    max-width: 42rem;
+    margin: 2rem auto;
+    padding: 0 1rem;
+  }
+  pre, code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  pre { background: rgba(127, 127, 127, 0.12); padding: 0.75rem 1rem; overflow-x: auto; }
+  code { background: rgba(127, 127, 127, 0.12); padding: 0.1em 0.3em; border-radius: 3px; }
+  pre code { background: none; padding: 0; }
+  blockquote { border-left: 3px solid rgba(127, 127, 127, 0.4); margin: 0; padding-left: 1rem; color: rgba(127, 127, 127, 1); }
+  table { border-collapse: collapse; }
+  th, td { border: 1px solid rgba(127, 127, 127, 0.4); padding: 0.3em 0.6em; }
+</style>
+</head>
+<body>
+<h1>Introduction</h1>
+<p>This is a sample Quarto document for testing the Whetstone TUI editor.
+Edit on the left; the rendered preview (with Unicode math) updates on the right.</p>
+<h2>Inline and display math</h2>
+<p>Euler's identity is <span class="math math-inline">e^{i\pi} + 1 = 0</span>, and the mass-energy equivalence is
+<span class="math math-inline">E = mc^2</span>. The Gaussian integral is a display equation:</p>
+<p><span class="math math-display">\int_{-\infty}^{\infty} e^{-x^2}\, dx = \sqrt{\pi}</span></p>
+<p>A sum with limits:</p>
+<p><span class="math math-display">\sum_{i=1}^{n} x_i = x_1 + x_2 + \cdots + x_n</span></p>
+<h2>A Quarto code cell</h2>
+<pre><code class="language-{r}">x &lt;- c(1, 2, 3)
+mean(x)
+</code></pre>
+<h2>Try it</h2>
+<ul>
+<li>Type to edit. Arrows / Home / End to move.</li>
+<li><strong>Ctrl+S</strong> saves. <strong>Ctrl+Q</strong> (or Ctrl+C) quits.</li>
+<li>Paste (≥40 chars) — quarantine marking comes in M4.</li>
+</ul>
+</body>
+</html>

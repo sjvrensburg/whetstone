@@ -38,7 +38,7 @@ use crate::editor::quarantine::{Outcome, Quarantine, Region};
 use crate::editor::transaction::{Change, ChangeSet};
 use crate::grammar::{Diagnostic, FixAction, GrammarDialect, GrammarSettings, Linter, Severity};
 use crate::instruments;
-use crate::markdown::render::render_to_text;
+use crate::markdown::render::{render_to_html, render_to_plain, render_to_text};
 use crate::ui::menu::{self, Menu, MenuAction};
 use crate::ui::settings::Settings;
 use crate::ui::theme::{self, Theme};
@@ -1128,6 +1128,11 @@ impl App {
             match key.code {
                 KeyCode::Char('k') => self.dispatch(MenuAction::EditClaim),
                 KeyCode::Char('d') => self.export_disclosure(),
+                // Ctrl+Shift+E / Ctrl+Shift+X arrive as uppercase chars and so
+                // never collide with lowercase Ctrl+e (coach settings) or
+                // Ctrl+x (cut). Doc export needs no Quarto installed.
+                KeyCode::Char('E') if shift => self.export_html(),
+                KeyCode::Char('X') if shift => self.export_text(),
                 KeyCode::Char('m') if editing => self.attribute_region(),
                 KeyCode::Char('j') if editing => self.coach_selection(),
                 KeyCode::Char('s') => self.save(),
@@ -1337,6 +1342,8 @@ impl App {
             MenuAction::SaveAs => self.open_prompt(PromptKind::SaveAs),
             MenuAction::Open => self.open_prompt(PromptKind::OpenFile),
             MenuAction::Export => self.export_disclosure(),
+            MenuAction::ExportHtml => self.export_html(),
+            MenuAction::ExportText => self.export_text(),
             MenuAction::PreviewDisclosure => self.open_disclosure_preview(),
             MenuAction::Compile => self.do_compile(),
             MenuAction::Outline => self.open_outline(),
@@ -3066,6 +3073,35 @@ impl App {
                 }
             }
             Err(e) => self.message = format!("Disclosure blocked: {e}"),
+        }
+    }
+
+    /// Export the current document as a standalone HTML file next to the source
+    /// (no Quarto required). Uses the same markdown parser as the preview pane,
+    /// wrapped in a minimal styled template. A blocked export (forbidden-label
+    /// guard) surfaces the reason in the status bar rather than writing the file.
+    fn export_html(&mut self) {
+        let out = self.path.with_extension("html");
+        match render_to_html(&self.buffer.text()) {
+            Ok(html) => match atomic_write(&out, html.as_bytes()) {
+                Ok(()) => self.message = format!("HTML → {}", out.display()),
+                Err(e) => self.message = format!("HTML write failed: {e}"),
+            },
+            Err(e) => self.message = format!("HTML blocked: {e}"),
+        }
+    }
+
+    /// Export the rendered (preview-pane) text as a `.txt` file next to the
+    /// source. The cheapest export: no Markdown, no HTML, just the readable
+    /// text as it renders in-app.
+    fn export_text(&mut self) {
+        let out = self.path.with_extension("txt");
+        match render_to_plain(&self.buffer.text(), self.theme) {
+            Ok(text) => match atomic_write(&out, text.as_bytes()) {
+                Ok(()) => self.message = format!("Text → {}", out.display()),
+                Err(e) => self.message = format!("Text write failed: {e}"),
+            },
+            Err(e) => self.message = format!("Text blocked: {e}"),
         }
     }
 
