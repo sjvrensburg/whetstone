@@ -108,6 +108,24 @@ impl Drop for DoneGuard {
     }
 }
 
+/// Drop-guard for a background file write: if the worker thread panics (or is
+/// cancelled) before the explicit `tx.send`, the guard fires on drop and emits
+/// a failure `IoEvent` so `drain_io_events` always learns the write finished —
+/// keeping `io_save_in_flight` from getting stuck nonzero (which would
+/// permanently suppress autosave).
+struct IoDoneGuard {
+    tx: Option<mpsc::Sender<IoEvent>>,
+    event: Option<IoEvent>,
+}
+
+impl Drop for IoDoneGuard {
+    fn drop(&mut self) {
+        if let (Some(tx), Some(ev)) = (self.tx.take(), self.event.take()) {
+            let _ = tx.send(ev);
+        }
+    }
+}
+
 /// Which undo group a contiguous run of edits belongs to (for coalescing).
 #[derive(PartialEq, Eq)]
 enum GroupKind {
@@ -453,10 +471,14 @@ pub struct App {
     /// the editor. Results drain back here.
     io_tx: mpsc::Sender<IoEvent>,
     io_rx: mpsc::Receiver<IoEvent>,
-    /// True while a save (not an export) write is in flight, so `maybe_autosave`
-    /// doesn't stack overlapping writes on a slow disk — every 100ms tick would
-    /// otherwise spawn a fresh thread while the previous one is still writing.
-    io_save_in_flight: bool,
+    /// Count of save (not export) writes in flight, so `maybe_autosave` doesn't
+    /// stack overlapping writes on a slow disk — every 100ms tick would
+    /// otherwise spawn a fresh thread while a previous one is still writing. A
+    /// count (not a bool) survives overlapping saves and a dropped event: each
+    /// successful drain decrements it, and a panic-guarded send (see
+    /// `IoDoneGuard`) ensures an event always arrives so the count can't get
+    /// stuck nonzero and permanently suppress autosave.
+    io_save_in_flight: u32,
     /// True while a `quarto render` is in flight.
     compiling: bool,
     /// Captured output of the last render, shown in a scrollable overlay when
@@ -685,7 +707,7 @@ impl App {
             compile_rx,
             io_tx,
             io_rx,
-            io_save_in_flight: false,
+            io_save_in_flight: 0,
             compiling: false,
             compile_open: false,
             compile_output: String::new(),
@@ -3594,15 +3616,30 @@ impl App {
         // bytes are current apart from one that predates later edits.
         let edit_version = self.edit_version;
         if is_save {
-            self.io_save_in_flight = true;
+            self.io_save_in_flight = self.io_save_in_flight.saturating_add(1);
         }
         let tx = self.io_tx.clone();
         std::thread::spawn(move || {
+            // Arm a drop-guard with a failure event so a panic before the
+            // explicit send still notifies the drain (and decrements the
+            // in-flight count). Disarmed once the real event is staged.
+            let mut guard = IoDoneGuard {
+                tx: Some(tx),
+                event: Some(IoEvent {
+                    path: path.clone(),
+                    ok: false,
+                    is_save,
+                    edit_version,
+                    message: format!("{failure_prefix}: worker aborted"),
+                }),
+            };
             let (ok, message) = match atomic_write(&path, &bytes) {
                 Ok(()) => (true, success_msg),
                 Err(e) => (false, format!("{failure_prefix}: {e}")),
             };
-            let _ = tx.send(IoEvent {
+            // Stage the real event; the guard sends it on drop (even on panic
+            // between here and the function returning, the staged event wins).
+            guard.event = Some(IoEvent {
                 path,
                 ok,
                 is_save,
@@ -3629,13 +3666,26 @@ impl App {
         let edit_version = self.edit_version; // unused for state, kept for a uniform IoEvent
         let tx = self.io_tx.clone();
         std::thread::spawn(move || {
+            // Arm a drop-guard so a panic during render/write still notifies the
+            // drain (the user sees "export failed" rather than the UI hanging
+            // on "Exporting…").
+            let mut guard = IoDoneGuard {
+                tx: Some(tx),
+                event: Some(IoEvent {
+                    path: path.clone(),
+                    ok: false,
+                    is_save: false,
+                    edit_version,
+                    message: format!("{failure_prefix}: worker aborted"),
+                }),
+            };
             let (ok, message) = match render().and_then(|bytes| {
                 atomic_write(&path, &bytes).map_err(|e| format!("{failure_prefix}: {e}"))
             }) {
                 Ok(()) => (true, success_msg),
                 Err(msg) => (false, msg),
             };
-            let _ = tx.send(IoEvent {
+            guard.event = Some(IoEvent {
                 path,
                 ok,
                 is_save: false,
@@ -3660,7 +3710,7 @@ impl App {
         while let Ok(ev) = self.io_rx.try_recv() {
             let current_doc = ev.path == self.path;
             if ev.is_save {
-                self.io_save_in_flight = false;
+                self.io_save_in_flight = self.io_save_in_flight.saturating_sub(1);
             }
             if ev.ok {
                 if ev.is_save && current_doc && ev.edit_version == self.edit_version {
@@ -3747,7 +3797,7 @@ impl App {
         // loop would spawn a fresh thread every tick (each writing a slightly
         // different buffer snapshot). A manual Ctrl+S still proceeds — only the
         // idle-triggered autosave waits for the previous one to land.
-        if self.io_save_in_flight {
+        if self.io_save_in_flight > 0 {
             return;
         }
         let Some(last) = self.last_edit else { return };
@@ -4269,6 +4319,18 @@ mod tests {
             app.drain_io_events();
             std::thread::sleep(Duration::from_millis(5));
         }
+        // The save MUST have actually landed — otherwise the dirty assertion
+        // below would pass vacuously (no event drained → dirty trivially still
+        // set). io_save_in_flight returns to 0 only when the save's IoEvent was
+        // processed, and the on-disk file must contain the pre-save edit.
+        assert_eq!(
+            app.io_save_in_flight, 0,
+            "the save never landed; the dirty assertion below would be vacuous"
+        );
+        assert!(
+            std::fs::read_to_string(&path).unwrap().contains("first"),
+            "the save's bytes never reached disk"
+        );
         // dirty MUST still be set — the newer edits are not on disk.
         assert!(
             app.dirty,
