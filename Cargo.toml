@@ -2,6 +2,10 @@
 name = "whetstone-tui"
 version = "0.1.4"
 edition = "2024"
+# Edition 2024 stabilized in Rust 1.85. Declaring the MSRV gives Cargo a clean
+# "package requires rustc 1.85" message instead of an edition parse error for a
+# user/packager on an older toolchain, and lets nixpkgs/AUR/Homebrew read it.
+rust-version = "1.85"
 description = "Whetstone — a friction-first Quarto markdown editor for the terminal"
 license = "MIT"
 repository = "https://github.com/sjvrensburg/whetstone"

@@ -700,7 +700,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
         row("Ctrl+R", "Render with Quarto (saves first)"),
         row(
             "Ctrl+Shift+E / X",
-            "Export HTML · export text (no Quarto needed)",
+            "Export HTML · export text (or File menu; no Quarto needed)",
         ),
         row("Ctrl+L / J", "Focus coach · coach the selection"),
         row("Ctrl+E", "AI settings (endpoint, API key, model)"),

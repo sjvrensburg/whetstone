@@ -14,7 +14,7 @@ use crate::core::labels::assert_no_forbidden_labels;
 use crate::core::process_event::{ProcessEvent, ProcessEventType, meta_bool, meta_string};
 
 /// The honest scoping note — friction, not proof (ADR-009).
-pub const SCOPING_NOTE: &str = "This is a record of how the piece was written in Whetstone — evidence of process, not proof of authorship. The record is local and self-reported.";
+pub const SCOPING_NOTE: &str = "This is a record of how the piece was written in Whetstone — evidence of process, not proof of authorship. The record is local and self-reported, and is not tamper-evident: anyone with the file can edit or delete entries.";
 
 /// Composition breakdown derivable from the metadata-only event stream.
 #[derive(Debug, Clone, Default, PartialEq)]
