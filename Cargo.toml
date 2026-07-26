@@ -1,6 +1,6 @@
 [package]
 name = "whetstone-tui"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 # Edition 2024 stabilized in Rust 1.85. Declaring the MSRV gives Cargo a clean
 # "package requires rustc 1.85" message instead of an edition parse error for a

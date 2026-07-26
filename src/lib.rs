@@ -7,9 +7,11 @@
 //! `core` is pure domain logic (ported from an earlier web composer that has
 //! since been removed); it has no I/O and no UI/editor dependencies.
 
+pub mod cli_args;
 pub mod coach;
 pub mod core;
 pub mod editor;
+pub mod fs_util;
 pub mod grammar;
 pub mod instruments;
 pub mod markdown;

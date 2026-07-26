@@ -9,97 +9,16 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use clap::Subcommand;
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use whetstone_tui::cli_args::{Command, ExportFormat};
 use whetstone_tui::coach::{CoachClient, CoachConfig};
 use whetstone_tui::core::guard::screen_chat_reply;
 use whetstone_tui::core::ownership::{is_claimed_to_own, survival_ratio};
 use whetstone_tui::core::process_event::ProcessEvent;
 use whetstone_tui::core::prompts::build_chat_messages;
 use whetstone_tui::grammar::{Linter, Severity};
-
-#[derive(Subcommand)]
-pub enum Command {
-    /// Open the editor (same as passing a bare file path).
-    Open {
-        /// Path to a `.qmd` / `.md` file to open (created if missing).
-        file: PathBuf,
-    },
-    /// Lint a file with Harper; prints diagnostics as JSON.
-    Lint {
-        file: PathBuf,
-        /// Exit non-zero when any diagnostics are found (for CI: `lint --strict`
-        /// fails the step on spelling/grammar issues). Without this flag the
-        /// command always exits 0 and reports findings as JSON.
-        #[arg(long)]
-        strict: bool,
-    },
-    /// Run one coach turn over a file, screened by the guard (+ judge if set).
-    Coach {
-        file: PathBuf,
-        /// The message to send the coach.
-        #[arg(long)]
-        message: String,
-        /// Append a metadata-only `CoachConsult` event to this journal file, so
-        /// a later `disclosure` render is honest that the coach was consulted
-        /// headlessly (the agent/CI path is otherwise off-the-books). Creates
-        /// the file if missing; appends to an existing JSON array. The judge
-        /// fail-open path also records a `JudgeUnavailable` event.
-        #[arg(long)]
-        journal: Option<PathBuf>,
-    },
-    /// Screen an arbitrary reply with the deterministic guard (+ judge if set).
-    Guard {
-        /// The candidate reply text to screen.
-        #[arg(long)]
-        reply: String,
-        /// Optional draft file for n-gram-overlap screening.
-        #[arg(long)]
-        draft: Option<PathBuf>,
-    },
-    /// Claim-to-own survival of an original paste within the current text.
-    Ownership {
-        /// The original pasted text.
-        #[arg(long)]
-        original: PathBuf,
-        /// The current text.
-        #[arg(long)]
-        current: PathBuf,
-    },
-    /// Render a disclosure document from a journal (a JSON array of events).
-    Disclosure {
-        /// Path to a JSON array of `ProcessEvent`s.
-        #[arg(long)]
-        journal: PathBuf,
-        /// Document id shown in the disclosure (default: the journal path).
-        #[arg(long = "doc-id")]
-        doc_id: Option<String>,
-    },
-    /// Export a `.qmd` / `.md` document as HTML or plain text (no Quarto needed).
-    Export {
-        /// The source Markdown/Quarto document.
-        file: PathBuf,
-        /// Output format.
-        #[arg(long, value_enum, default_value_t = ExportFormat::Html)]
-        format: ExportFormat,
-        /// Output path (default: `<file>.html` or `<file>.txt`).
-        #[arg(long)]
-        out: Option<PathBuf>,
-    },
-    /// Word counts for a document (prose + raw + characters/lines).
-    Words { file: PathBuf },
-}
-
-/// The export format for the headless `export` subcommand.
-#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ExportFormat {
-    /// A standalone HTML5 document.
-    Html,
-    /// Plain text, as rendered by the preview pane.
-    Text,
-}
 
 /// Run a headless subcommand, printing its JSON result to stdout.
 pub fn run(command: Command) -> Result<()> {
@@ -359,7 +278,8 @@ fn append_coach_consult(
     }
 
     let out = serde_json::to_string_pretty(&events)?;
-    std::fs::write(path, out).with_context(|| format!("writing journal {}", path.display()))?;
+    whetstone_tui::fs_util::atomic_write(path, out.as_bytes())
+        .with_context(|| format!("writing journal {}", path.display()))?;
     Ok(())
 }
 
@@ -416,7 +336,7 @@ fn export(
         }
     };
     let bytes = content.len();
-    std::fs::write(&out, content.as_bytes())
+    whetstone_tui::fs_util::atomic_write(&out, content.as_bytes())
         .with_context(|| format!("writing {}", out.display()))?;
     Ok(json!({
         "source": file.display().to_string(),

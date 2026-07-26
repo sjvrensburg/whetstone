@@ -19,7 +19,7 @@ _whetstone-tui() {
 '--help[Print help]' \
 '-V[Print version]' \
 '--version[Print version]' \
-'::file -- Path to a `.qmd` / `.md` file to open in the editor (created if missing):_default' \
+'::file -- Path to a `.qmd` / `.md` file to open in the editor (created if missing):_files' \
 ":: :_whetstone-tui_commands" \
 "*::: :->whetstone-tui" \
 && ret=0
@@ -33,64 +33,65 @@ _whetstone-tui() {
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help]' \
 '--help[Print help]' \
-'::file -- Path to a `.qmd` / `.md` file to open (created if missing):_default' \
+':file -- Path to a `.qmd` / `.md` file to open (created if missing):_files' \
 && ret=0
 ;;
 (lint)
 _arguments "${_arguments_options[@]}" : \
-'--strict=[]: :_default' \
+'--strict[Exit non-zero when any diagnostics are found (for CI\: \`lint --strict\` fails the step on spelling/grammar issues). Without this flag the command always exits 0 and reports findings as JSON]' \
 '-h[Print help]' \
 '--help[Print help]' \
-':file:_default' \
+':file:_files' \
 && ret=0
 ;;
 (coach)
 _arguments "${_arguments_options[@]}" : \
-'--message=[]: :_default' \
-'--journal=[]: :_default' \
+'--message=[The message to send the coach]:MESSAGE:_default' \
+'--journal=[Append a metadata-only \`CoachConsult\` event to this journal file, so a later \`disclosure\` render is honest that the coach was consulted headlessly (the agent/CI path is otherwise off-the-books). Creates the file if missing; appends to an existing JSON array. The judge fail-open path also records a \`JudgeUnavailable\` event]:JOURNAL:_files' \
 '-h[Print help]' \
 '--help[Print help]' \
-':file:_default' \
+':file:_files' \
 && ret=0
 ;;
 (guard)
 _arguments "${_arguments_options[@]}" : \
-'--reply=[]: :_default' \
-'--draft=[]: :_default' \
+'--reply=[The candidate reply text to screen]:REPLY:_default' \
+'--draft=[Optional draft file for n-gram-overlap screening]:DRAFT:_files' \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0
 ;;
 (ownership)
 _arguments "${_arguments_options[@]}" : \
-'--original=[]: :_default' \
-'--current=[]: :_default' \
+'--original=[The original pasted text]:ORIGINAL:_files' \
+'--current=[The current text]:CURRENT:_files' \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0
 ;;
 (disclosure)
 _arguments "${_arguments_options[@]}" : \
-'--journal=[]: :_default' \
-'--doc-id=[]: :_default' \
+'--journal=[Path to a JSON array of \`ProcessEvent\`s]:JOURNAL:_files' \
+'--doc-id=[Document id shown in the disclosure (default\: the journal path)]:DOC_ID:_default' \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0
 ;;
 (export)
 _arguments "${_arguments_options[@]}" : \
-'--format=[]: :(html text)' \
-'--out=[]: :_default' \
-'-h[Print help]' \
-'--help[Print help]' \
-':file:_default' \
+'--format=[Output format]:FORMAT:((html\:"A standalone HTML5 document"
+text\:"Plain text, as rendered by the preview pane"))' \
+'--out=[Output path (default\: \`<file>.html\` or \`<file>.txt\`)]:OUT:_files' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':file -- The source Markdown/Quarto document:_files' \
 && ret=0
 ;;
 (words)
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help]' \
 '--help[Print help]' \
-':file:_default' \
+':file:_files' \
 && ret=0
 ;;
 (help)
@@ -160,7 +161,7 @@ _whetstone-tui_commands() {
 'ownership:Claim-to-own survival of an original paste within the current text' \
 'disclosure:Render a disclosure document from a journal (a JSON array of events)' \
 'export:Export a \`.qmd\` / \`.md\` document as HTML or plain text (no Quarto needed)' \
-'words:Word/character/line counts for a document (JSON)' \
+'words:Word counts for a document (prose + raw + characters/lines)' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
     _describe -t commands 'whetstone-tui commands' commands "$@"
@@ -195,7 +196,7 @@ _whetstone-tui__subcmd__help_commands() {
 'ownership:Claim-to-own survival of an original paste within the current text' \
 'disclosure:Render a disclosure document from a journal (a JSON array of events)' \
 'export:Export a \`.qmd\` / \`.md\` document as HTML or plain text (no Quarto needed)' \
-'words:Word/character/line counts for a document (JSON)' \
+'words:Word counts for a document (prose + raw + characters/lines)' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
     _describe -t commands 'whetstone-tui help commands' commands "$@"
