@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] — 2026-07-26
+
+### Fixed
+- **Non-atomic CLI writes**: the headless `coach --journal` and `export`
+  subcommands now write via the same crash-safe atomic-rename path as the TUI's
+  save/autosave (`fs_util::atomic_write`, factored out of `ui/app` into a
+  shared module) instead of a plain `std::fs::write` that could truncate the
+  file on a crash mid-write.
+- **Drifted shell completions**: `examples/gen_completions.rs` hand-duplicated
+  the `clap` command tree and had already drifted from it — `open`'s file
+  argument was missing `required`, and `lint --strict` was generated as a
+  value-taking flag instead of a boolean switch. The generator now builds the
+  real `clap::Command` from the same `Cli` type `main.rs` parses at runtime
+  (via `clap::CommandFactory`, moved to a shared `cli_args` module), so the two
+  can no longer disagree. `docs/completions/*` regenerated.
+
 ## [0.1.4] — 2026-07-25
 
 ### Added

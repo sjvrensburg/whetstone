@@ -32,7 +32,7 @@ Register-ArgumentCompleter -Native -CommandName 'whetstone-tui' -ScriptBlock {
             [CompletionResult]::new('ownership', 'ownership', [CompletionResultType]::ParameterValue, 'Claim-to-own survival of an original paste within the current text')
             [CompletionResult]::new('disclosure', 'disclosure', [CompletionResultType]::ParameterValue, 'Render a disclosure document from a journal (a JSON array of events)')
             [CompletionResult]::new('export', 'export', [CompletionResultType]::ParameterValue, 'Export a `.qmd` / `.md` document as HTML or plain text (no Quarto needed)')
-            [CompletionResult]::new('words', 'words', [CompletionResultType]::ParameterValue, 'Word/character/line counts for a document (JSON)')
+            [CompletionResult]::new('words', 'words', [CompletionResultType]::ParameterValue, 'Word counts for a document (prose + raw + characters/lines)')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
@@ -42,44 +42,44 @@ Register-ArgumentCompleter -Native -CommandName 'whetstone-tui' -ScriptBlock {
             break
         }
         'whetstone-tui;lint' {
-            [CompletionResult]::new('--strict', '--strict', [CompletionResultType]::ParameterName, 'strict')
+            [CompletionResult]::new('--strict', '--strict', [CompletionResultType]::ParameterName, 'Exit non-zero when any diagnostics are found (for CI: `lint --strict` fails the step on spelling/grammar issues). Without this flag the command always exits 0 and reports findings as JSON')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
         'whetstone-tui;coach' {
-            [CompletionResult]::new('--message', '--message', [CompletionResultType]::ParameterName, 'message')
-            [CompletionResult]::new('--journal', '--journal', [CompletionResultType]::ParameterName, 'journal')
+            [CompletionResult]::new('--message', '--message', [CompletionResultType]::ParameterName, 'The message to send the coach')
+            [CompletionResult]::new('--journal', '--journal', [CompletionResultType]::ParameterName, 'Append a metadata-only `CoachConsult` event to this journal file, so a later `disclosure` render is honest that the coach was consulted headlessly (the agent/CI path is otherwise off-the-books). Creates the file if missing; appends to an existing JSON array. The judge fail-open path also records a `JudgeUnavailable` event')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
         'whetstone-tui;guard' {
-            [CompletionResult]::new('--reply', '--reply', [CompletionResultType]::ParameterName, 'reply')
-            [CompletionResult]::new('--draft', '--draft', [CompletionResultType]::ParameterName, 'draft')
+            [CompletionResult]::new('--reply', '--reply', [CompletionResultType]::ParameterName, 'The candidate reply text to screen')
+            [CompletionResult]::new('--draft', '--draft', [CompletionResultType]::ParameterName, 'Optional draft file for n-gram-overlap screening')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
         'whetstone-tui;ownership' {
-            [CompletionResult]::new('--original', '--original', [CompletionResultType]::ParameterName, 'original')
-            [CompletionResult]::new('--current', '--current', [CompletionResultType]::ParameterName, 'current')
+            [CompletionResult]::new('--original', '--original', [CompletionResultType]::ParameterName, 'The original pasted text')
+            [CompletionResult]::new('--current', '--current', [CompletionResultType]::ParameterName, 'The current text')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
         'whetstone-tui;disclosure' {
-            [CompletionResult]::new('--journal', '--journal', [CompletionResultType]::ParameterName, 'journal')
-            [CompletionResult]::new('--doc-id', '--doc-id', [CompletionResultType]::ParameterName, 'doc-id')
+            [CompletionResult]::new('--journal', '--journal', [CompletionResultType]::ParameterName, 'Path to a JSON array of `ProcessEvent`s')
+            [CompletionResult]::new('--doc-id', '--doc-id', [CompletionResultType]::ParameterName, 'Document id shown in the disclosure (default: the journal path)')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
         'whetstone-tui;export' {
-            [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterName, 'format')
-            [CompletionResult]::new('--out', '--out', [CompletionResultType]::ParameterName, 'out')
-            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
-            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
+            [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterName, 'Output format')
+            [CompletionResult]::new('--out', '--out', [CompletionResultType]::ParameterName, 'Output path (default: `<file>.html` or `<file>.txt`)')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
             break
         }
         'whetstone-tui;words' {
@@ -95,7 +95,7 @@ Register-ArgumentCompleter -Native -CommandName 'whetstone-tui' -ScriptBlock {
             [CompletionResult]::new('ownership', 'ownership', [CompletionResultType]::ParameterValue, 'Claim-to-own survival of an original paste within the current text')
             [CompletionResult]::new('disclosure', 'disclosure', [CompletionResultType]::ParameterValue, 'Render a disclosure document from a journal (a JSON array of events)')
             [CompletionResult]::new('export', 'export', [CompletionResultType]::ParameterValue, 'Export a `.qmd` / `.md` document as HTML or plain text (no Quarto needed)')
-            [CompletionResult]::new('words', 'words', [CompletionResultType]::ParameterValue, 'Word/character/line counts for a document (JSON)')
+            [CompletionResult]::new('words', 'words', [CompletionResultType]::ParameterValue, 'Word counts for a document (prose + raw + characters/lines)')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }

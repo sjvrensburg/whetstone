@@ -16,26 +16,11 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
+use whetstone_tui::cli_args::{Cli, Command};
 use whetstone_tui::coach::CoachConfig;
 use whetstone_tui::ui::{App, draw};
 
 mod cli;
-use cli::Command;
-
-#[derive(Parser)]
-#[command(
-    name = "whetstone-tui",
-    version,
-    about = "Whetstone — a friction-first Quarto markdown editor for the terminal",
-    // `whetstone-tui file.qmd` opens the TUI; subcommands run headlessly.
-    args_conflicts_with_subcommands = true
-)]
-struct Cli {
-    /// Path to a `.qmd` / `.md` file to open in the editor (created if missing).
-    file: Option<PathBuf>,
-    #[command(subcommand)]
-    command: Option<Command>,
-}
 
 type Tui = Terminal<CrosstermBackend<io::Stdout>>;
 

@@ -325,10 +325,6 @@ _whetstone-tui() {
                 return 0
             fi
             case "${prev}" in
-                --strict)
-                    COMPREPLY=($(compgen -f "${cur}"))
-                    return 0
-                    ;;
                 *)
                     COMPREPLY=()
                     ;;
