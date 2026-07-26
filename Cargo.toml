@@ -10,6 +10,9 @@ description = "Whetstone — a friction-first Quarto markdown editor for the ter
 license = "MIT"
 repository = "https://github.com/sjvrensburg/whetstone"
 homepage = "https://sjvrensburg.github.io/whetstone/"
+readme = "README.md"
+keywords = ["editor", "tui", "markdown", "quarto"]
+categories = ["command-line-utilities", "text-editors"]
 
 [dependencies]
 # Core domain (pure ports)
