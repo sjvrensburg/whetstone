@@ -39,10 +39,10 @@ irm https://github.com/sjvrensburg/whetstone/releases/latest/download/whetstone-
 
 Or grab an archive from the [latest release](https://github.com/sjvrensburg/whetstone/releases/latest).
 
-**From git** (any platform with a Rust 1.85+ toolchain; no crates.io publish needed):
+**crates.io** (any platform with a Rust 1.85+ toolchain):
 
 ```sh
-cargo install --git https://github.com/sjvrensburg/whetstone whetstone-tui
+cargo install whetstone-tui
 ```
 
 From source, see **Build & run** below.
