@@ -204,6 +204,24 @@ startup via `WHETSTONE_FRICTION_<INSTRUMENT>` (`PASTE`, `CLAIM`, `TEACHBACK`,
 An institutional floor (when set) still applies to every instrument: an
 override can raise an instrument or lower it, but never below the floor.
 
+## Diagnostic log
+
+Coach and judge errors are clamped to one status-bar line and scrubbed of
+secrets before they're shown, and a panic kills the process before its message
+can appear — neither leaves enough to debug from. Whetstone writes the full
+(still secret-scrubbed) text of those failures, plus a backtrace on a crash, to
+a diagnostic log:
+
+- Default location: `$XDG_STATE_HOME/whetstone/whetstone.log` (falls back to
+  `~/.local/state/whetstone/whetstone.log`; `%LOCALAPPDATA%\whetstone` on
+  Windows — Local, not Roaming, so the log doesn't follow you across machines).
+- Override with `--log-file <path>`, or `WHETSTONE_LOG_FILE`. The path is shown
+  at the bottom of the in-app help (`F1`).
+- Verbosity: `--log-level` / `WHETSTONE_LOG_LEVEL` — `off`, `error`, `warn`, or
+  `info` (default `info`).
+- Disable entirely with `--log-file off`. The log rotates to `.log.old` past
+  256 KiB, keeping one generation of history.
+
 ## Coach-conversation persistence
 
 The coach chat is mirrored to disk per document, so reopening a file restores

@@ -1893,12 +1893,14 @@ impl App {
             if ev.generation != self.conn_generation {
                 continue;
             }
-            let Some(s) = self.coach_settings.as_mut() else {
-                continue;
-            };
-            s.testing = false;
             match ev.result {
                 Ok(models) => {
+                    // A success only matters while the dialog is open — a result
+                    // arriving after Esc closed it has nowhere to land.
+                    let Some(s) = self.coach_settings.as_mut() else {
+                        continue;
+                    };
+                    s.testing = false;
                     s.status = Some(match models.len() {
                         0 => "✓ Reachable — server listed no models.".to_string(),
                         1 => "✓ Reachable — 1 model. Ctrl+N/Ctrl+P or click to choose.".to_string(),
@@ -1911,11 +1913,20 @@ impl App {
                     s.models = models;
                 }
                 Err(e) => {
-                    // Mirror the runtime coach-error path: scrub secrets then
-                    // truncate. The dialog sends the raw API key typed into the
-                    // field, and a misbehaving proxy/gateway that echoes the
-                    // request would otherwise render the key in this status line.
-                    s.status = Some(format!("✗ {}", coach_error_status(&e)));
+                    // Build the status string (and log the failure) BEFORE the
+                    // dialog-open gate: closing the dialog with Esc while a test
+                    // is in flight clears coach_settings without bumping the
+                    // generation, so the check above still passes — gating the
+                    // log on the dialog being open would silently drop the
+                    // failure, leaving no record anywhere (the status bar is
+                    // gone with the dialog). The status is computed up-front
+                    // but only shown if the dialog is still open below.
+                    let status = log_error_then_status("connection test failed", &e);
+                    let Some(s) = self.coach_settings.as_mut() else {
+                        continue;
+                    };
+                    s.testing = false;
+                    s.status = Some(format!("✗ {status}"));
                     s.models.clear();
                 }
             }
@@ -3043,7 +3054,12 @@ impl App {
                 Ok(reply) => self.accept_coach_reply(reply, ev.judge),
                 Err(e) => {
                     self.log_coach_consult(true);
-                    self.message = format!("Coach error: {}", coach_error_status(&e));
+                    // Log the (scrubbed) failure and build the status-bar
+                    // one-liner with its "(see log)" suffix via the shared
+                    // helper, so this path stays a mirror of the connection-test
+                    // error path in `drain_conn_test_events`.
+                    let status = log_error_then_status("coach request failed", &e);
+                    self.message = format!("Coach error: {status}");
                 }
             }
         }
@@ -3152,6 +3168,11 @@ impl App {
             }
             other => {
                 let unavailable = matches!(other, Some(Err(_)));
+                // The judge error string is otherwise dropped — log it so a
+                // fail-open is diagnosable instead of a silent status message.
+                if let Some(Err(e)) = &other {
+                    crate::log::warn(&format!("judge unavailable (fail-open): {e}"));
+                }
                 if let Some(Ok(_)) = other {
                     meta.push(("judge_allowed", MetaValue::Bool(true)));
                 }
@@ -3741,7 +3762,12 @@ impl App {
     fn editor_cell_to_pos(&self, column: u16, row: u16) -> (usize, usize) {
         let inner = self.editor_inner;
         let row = row.clamp(inner.y, inner.y + inner.height.saturating_sub(1));
-        let line = self.editor_scroll + (row - inner.y) as usize;
+        // Clamp into the buffer's line range: a short document leaves empty
+        // space below its last line, and a click there computes a row beyond
+        // `len_lines()`. Without this, `char_col_for_display` → `rope.line()`
+        // panics ("line index N, Rope line length M") on a tall editor pane.
+        let last = self.buffer.line_count().saturating_sub(1);
+        let line = (self.editor_scroll + (row - inner.y) as usize).min(last);
         let target = self.editor_hscroll + (column as usize).saturating_sub(inner.x as usize);
         (line, self.buffer.char_col_for_display(line, target))
     }
@@ -4043,46 +4069,45 @@ impl App {
     }
 }
 
-/// Clamp a connection-test error to one dialog line (errors from reqwest can be
-/// long), appending an ellipsis when truncated.
-fn truncate_status(msg: &str) -> String {
-    const MAX: usize = 56;
-    truncate_to(&msg.replace('\n', " "), MAX)
+/// One status-bar / dialog line: collapse embedded newlines (so a multi-line
+/// error or backtrace stays one record) and clamp to `width` columns, adding an
+/// ellipsis when truncated. Errors from reqwest can be long; the status bar and
+/// the connection-test dialog both need a one-line summary.
+fn clamp_one_line(msg: &str, width: usize) -> String {
+    truncate_to(&msg.replace(['\n', '\r'], " "), width)
 }
 
-/// Strip anything that looks like an API-key or bearer token from a string
-/// before it reaches the status bar. reqwest errors normally carry only the
-/// URL, not the `Authorization` header — but a misbehaving proxy or gateway
-/// that echoes the request back in an error body would otherwise expose a key
-/// in full. This is defense-in-depth, not a guarantee.
-fn scrub_secrets(s: &str) -> String {
-    use regex::Regex;
-    static TOKENS: std::sync::LazyLock<Vec<Regex>> = std::sync::LazyLock::new(|| {
-        [
-            // OpenAI-style keys: `sk-...` (20+ word chars), case-insensitive.
-            r#"(?i)\bsk-[a-z0-9_-]{20,}\b"#,
-            // An explicit Authorization header, with or without the scheme.
-            r#"(?i)\bauthorization\s*:\s*(?:bearer\s+)?[a-z0-9._\-]{20,}"#,
-            // A bare `Bearer <token>` value.
-            r#"(?i)\bbearer\s+[a-z0-9._\-]{20,}"#,
-        ]
-        .iter()
-        .copied()
-        .map(|p| Regex::new(p).expect("valid secret-scrub regex"))
-        .collect()
-    });
-    let mut out = s.to_string();
-    for re in TOKENS.iter() {
-        out = re.replace_all(&out, "[redacted]").to_string();
-    }
+/// The default one-line clamp width for the status bar and connection-test
+/// dialog.
+const STATUS_MAX: usize = 56;
+
+/// Write `{log_prefix}: {e}` to the diagnostic log at `error` level and return
+/// a status-bar one-liner for `e`: scrubbed, clamped to one line, with a
+/// " (see log)" suffix folded *inside* the clamp when the log is actually
+/// recording. Shared by the failed-coach-request and failed-connection-test
+/// drain paths so the log level, suffix policy, and clamp logic cannot drift
+/// between them — the connection-test dialog and the status bar must agree
+/// about whether the log holds the failure.
+fn log_error_then_status(log_prefix: &str, e: &str) -> String {
+    crate::log::error(&format!("{log_prefix}: {e}"));
+    let suffix = if crate::log::healthy() {
+        " (see log)"
+    } else {
+        ""
+    };
+    coach_error_status_with_suffix(e, suffix)
+}
+
+/// Clamp a coach/provider error to one line: scrub secrets first (the full, still
+/// scrubbed error is written to the diagnostic log by the caller), then reserve
+/// space for `suffix` *inside* the clamp and append it. Reserving the suffix's
+/// width keeps a cue like " (see log)" inside the status bar instead of
+/// appending it after the clamp and letting it be clipped off the right edge.
+fn coach_error_status_with_suffix(msg: &str, suffix: &str) -> String {
+    let budget = STATUS_MAX.saturating_sub(suffix.chars().count());
+    let mut out = clamp_one_line(&crate::log::scrub_secrets(msg), budget);
+    out.push_str(suffix);
     out
-}
-
-/// Clamp a coach/provider error to one status-bar line and strip anything that
-/// looks like a secret first. The runtime coach-error path did neither before;
-/// the connection-test dialog already used `truncate_status`.
-fn coach_error_status(msg: &str) -> String {
-    truncate_status(&scrub_secrets(msg))
 }
 
 /// Re-screen each prior chat turn against the injection patterns before it is
@@ -4874,6 +4899,33 @@ mod tests {
     }
 
     #[test]
+    fn click_below_last_line_clamps_instead_of_panicking() {
+        // Regression: a short document in a tall editor pane leaves empty rows
+        // below the last line. A click there computed a line index past
+        // `rope.len_lines()` and panicked in `rope.line(...)` — "line index N,
+        // Rope line length M". It must clamp to the final line instead.
+        let rt = rt();
+        let mut app = test_app(&rt);
+        let _ = render(&mut app); // populate editor_inner / editor_height
+        assert!(app.editor_inner.height > app.buffer.line_count() as u16);
+        let last = app.buffer.line_count().saturating_sub(1);
+        // Bottom-most row of the editor pane: inside it, but below all content.
+        let col = app.editor_inner.x + 1;
+        let row = app.editor_inner.y + app.editor_inner.height - 1;
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+        let (line, _) = app.buffer.cursor_line_col();
+        assert!(
+            line <= last,
+            "click below content indexed line {line} past last line {last}"
+        );
+    }
+
+    #[test]
     fn outline_opens_and_jumps_to_heading() {
         let rt = rt();
         let mut app = test_app(&rt);
@@ -4961,10 +5013,12 @@ mod tests {
     }
 
     #[test]
-    fn truncate_status_collapses_and_clamps() {
-        assert_eq!(truncate_status("line one\nline two"), "line one line two");
-        let long = "x".repeat(80);
-        let out = truncate_status(&long);
+    fn clamp_one_line_collapses_and_clamps() {
+        assert_eq!(
+            clamp_one_line("line one\nline two", 56),
+            "line one line two"
+        );
+        let out = clamp_one_line(&"x".repeat(80), 56);
         assert_eq!(out.chars().count(), 56);
         assert!(out.ends_with('…'));
     }
@@ -5134,38 +5188,58 @@ mod tests {
     }
 
     #[test]
-    fn scrub_secrets_strips_known_token_shapes() {
-        // OpenAI-style key.
-        let out = scrub_secrets("error: key sk-abcdefghij1234567890XYZ is invalid");
-        assert!(!out.contains("sk-abcdefghij1234567890XYZ"));
-        assert!(out.contains("[redacted]"));
-
-        // An Authorization header (with or without "Bearer") is scrubbed whole.
-        let out = scrub_secrets("echoed: Authorization: Bearer abcdefghij1234567890XYZ");
-        assert!(!out.contains("Bearer"));
-        assert!(!out.contains("abcdefghij"));
-        assert!(out.contains("[redacted]"));
-
-        // A bare Bearer token value (no header name) is scrubbed.
-        let out = scrub_secrets("sent bearer abcdefghij1234567890XYZ over the wire");
-        assert!(!out.contains("abcdefghij"));
-
-        // A short lowercase string that isn't a key is left intact.
-        assert_eq!(scrub_secrets("connection refused"), "connection refused");
-        // A short "sk-" prefix that is too short to be a real key is left intact.
-        assert_eq!(
-            scrub_secrets("the token sk-short failed"),
-            "the token sk-short failed"
-        );
+    fn failed_conn_test_with_closed_dialog_is_drained_safely() {
+        // Closing the dialog (Esc) while a test is in flight clears
+        // coach_settings without bumping conn_generation, so the in-flight
+        // failure still matches the current generation. The error must be
+        // logged before the dialog-open gate (the actual log write isn't
+        // observable here — the lib test process never opens a sink, and
+        // opening one would break `healthy_is_false_without_a_sink`), so this
+        // guards the restructure: the matching event is consumed, the closed
+        // dialog stays closed, and nothing panics on the None path.
+        let rt = rt();
+        let mut app = test_app(&rt);
+        app.open_coach_settings();
+        app.conn_generation += 1;
+        app.conn_tx
+            .send(ConnTestEvent {
+                generation: app.conn_generation,
+                result: Err("connection refused".into()),
+            })
+            .unwrap();
+        app.coach_settings = None; // Esc closed the dialog mid-request.
+        app.drain_conn_test_events();
+        assert!(app.coach_settings.is_none());
+        // The matching failure was consumed, not left blocking the channel.
+        assert!(app.conn_rx.try_recv().is_err());
     }
 
     #[test]
     fn coach_error_status_truncates_and_scrubs() {
         // A long error containing a key is both scrubbed and clamped.
         let msg = "gateway echoed: sk-abcdefghij1234567890XYZ plus a lot of trailing text here";
-        let out = coach_error_status(msg);
+        let out = coach_error_status_with_suffix(msg, "");
         assert!(!out.contains("sk-"));
         assert!(out.len() <= 60); // 56 + possible ellipsis chars
+    }
+
+    #[test]
+    fn coach_error_status_keeps_suffix_inside_the_clamp() {
+        // A suffix must reserve its own width inside the clamp so it isn't
+        // appended after the fact and clipped off the right edge. A long error
+        // plus " (see log)" still fits STATUS_MAX, and the suffix survives.
+        let suffix = " (see log)";
+        let msg = "x".repeat(80);
+        let out = coach_error_status_with_suffix(&msg, suffix);
+        assert!(out.ends_with(suffix), "suffix should survive truncation");
+        assert!(
+            out.chars().count() <= STATUS_MAX,
+            "whole line (body + suffix) must fit the clamp"
+        );
+        // With no suffix the body alone may use the full width.
+        let no_suffix = coach_error_status_with_suffix(&msg, "");
+        assert!(no_suffix.chars().count() <= STATUS_MAX);
+        assert!(!no_suffix.ends_with(suffix));
     }
 
     #[test]
