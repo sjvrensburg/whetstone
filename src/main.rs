@@ -35,7 +35,11 @@ fn main() -> Result<()> {
     reset_sigpipe_to_default();
     let cli = Cli::parse();
     let file = match cli.command {
-        // Headless subcommands print JSON and exit — no terminal setup.
+        // Headless subcommands print JSON and exit — no terminal setup, and no
+        // diagnostic log either: those commands were side-effect-free before,
+        // and the log is a TUI diagnostic (the status bar truncates coach
+        // errors; a panic kills the process). `lint f.qmd | head` must not
+        // touch the filesystem or print "could not create log dir".
         Some(Command::Open { file }) => file,
         Some(command) => return cli::run(command),
         // No file and no subcommand: open an untitled buffer. The empty path
@@ -43,7 +47,26 @@ fn main() -> Result<()> {
         // stay off until it is saved.
         None => cli.file.unwrap_or_default(),
     };
+    // Start the diagnostic log only on the interactive path, but before
+    // `run_tui` so coach/judge failures and startup panics (config load, the
+    // runtime build, App::new) leave a trail. `--log-file off` or
+    // `WHETSTONE_LOG_FILE=off` disables it.
+    whetstone_tui::log::init(cli.log_file.as_deref(), cli.log_level.as_deref());
+    install_panic_logger();
     run_tui(file)
+}
+
+/// Record panics (with a backtrace) in the diagnostic log, then delegate to the
+/// previous hook. Installed in `main` — before `run_tui`'s config load, runtime
+/// build, and `App::new` — so a startup crash is captured, not just panics from
+/// the event loop. `run_tui` layers a terminal-restore hook on top of this one.
+fn install_panic_logger() {
+    let original = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let bt = std::backtrace::Backtrace::force_capture();
+        whetstone_tui::log::error(&format!("panic: {info}\n{bt}"));
+        original(info);
+    }));
 }
 
 /// Launch the interactive editor on `file`.
@@ -94,10 +117,15 @@ fn run_tui(file: PathBuf) -> Result<()> {
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
 
     // Restore the terminal even on panic so the user's shell isn't left raw.
-    let original_hook = std::panic::take_hook();
+    // This hook wraps the panic logger installed in `main`: restore() runs
+    // FIRST, before the logger's backtrace capture and — critically — before
+    // its synchronous log flush. A slow log write (e.g. an NFS-mounted state
+    // dir) must not leave the terminal stuck in raw mode, so the shell stays
+    // usable regardless of how long the logging takes.
+    let panic_logger = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = restore();
-        original_hook(info);
+        panic_logger(info);
     }));
 
     let result = run(&mut terminal, &mut app);

@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Diagnostic log**: coach/judge errors and panics are written (secret-scrubbed,
+  with a backtrace on a crash) to a log file the user can read after the fact —
+  the status bar truncates them and a crash leaves no trace otherwise. Default
+  location `$XDG_STATE_HOME/whetstone/whetstone.log`; override with
+  `--log-file` / `WHETSTONE_LOG_FILE` and `--log-level` / `WHETSTONE_LOG_LEVEL`
+  (`off` / `error` / `warn` / `info`); the path is shown in the in-app help.
+
+### Fixed
+- **Crash on click below the last line**: clicking in the empty area beneath a
+  short document indexed past the rope's line count and panicked
+  (`Attempt to index past end of Rope: line index N, Rope line length M`). The
+  hit-tested line is now clamped into range.
+
 ## [0.1.5] — 2026-07-26
 
 ### Fixed

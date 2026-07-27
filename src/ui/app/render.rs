@@ -683,7 +683,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
             Span::styled(desc.to_string(), theme.text()),
         ])
     };
-    let lines = vec![
+    let mut lines = vec![
         row("Ctrl+S / O", "Save · open file (Save as via File menu)"),
         row("Ctrl+Z / Y", "Undo / redo"),
         row(
@@ -724,7 +724,20 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
             "  ↑/↓ or wheel to scroll · Esc or any other key to close",
             theme.dim(),
         )),
+        Line::raw(""),
     ];
+    // The diagnostic log holds the full text of coach/judge errors and panics
+    // (the status bar truncates them). Show where it lives so the user can find
+    // it after a failed request or a crash; `--log-file` overrides this path.
+    if let Some(p) = crate::log::path() {
+        lines.push(Line::from(vec![
+            Span::styled("  Diagnostic log: ", theme.dim()),
+            Span::styled(
+                p.display().to_string(),
+                theme.dim().add_modifier(Modifier::ITALIC),
+            ),
+        ]));
+    }
     let text = Text::from(lines);
     let content = wrapped_height(&text, inner.width as usize);
     let max = content.saturating_sub(inner.height as usize);

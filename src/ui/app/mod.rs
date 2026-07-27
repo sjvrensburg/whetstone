@@ -1915,6 +1915,7 @@ impl App {
                     // truncate. The dialog sends the raw API key typed into the
                     // field, and a misbehaving proxy/gateway that echoes the
                     // request would otherwise render the key in this status line.
+                    crate::log::warn(&format!("connection test failed: {e}"));
                     s.status = Some(format!("✗ {}", coach_error_status(&e)));
                     s.models.clear();
                 }
@@ -3043,7 +3044,18 @@ impl App {
                 Ok(reply) => self.accept_coach_reply(reply, ev.judge),
                 Err(e) => {
                     self.log_coach_consult(true);
-                    self.message = format!("Coach error: {}", coach_error_status(&e));
+                    // The status bar shows a truncated, scrubbed one-liner; the
+                    // full error (still scrubbed) goes to the diagnostic log so
+                    // the failure can actually be diagnosed. Only point at the
+                    // log when it's actually recording — `--log-file off` or an
+                    // unwritable path leaves no log to look up.
+                    crate::log::error(&format!("coach request failed: {e}"));
+                    let suffix = if crate::log::has_sink() {
+                        " (see log)"
+                    } else {
+                        ""
+                    };
+                    self.message = format!("Coach error: {}{suffix}", coach_error_status(&e));
                 }
             }
         }
@@ -3152,6 +3164,11 @@ impl App {
             }
             other => {
                 let unavailable = matches!(other, Some(Err(_)));
+                // The judge error string is otherwise dropped — log it so a
+                // fail-open is diagnosable instead of a silent status message.
+                if let Some(Err(e)) = &other {
+                    crate::log::warn(&format!("judge unavailable (fail-open): {e}"));
+                }
                 if let Some(Ok(_)) = other {
                     meta.push(("judge_allowed", MetaValue::Bool(true)));
                 }
@@ -3741,7 +3758,12 @@ impl App {
     fn editor_cell_to_pos(&self, column: u16, row: u16) -> (usize, usize) {
         let inner = self.editor_inner;
         let row = row.clamp(inner.y, inner.y + inner.height.saturating_sub(1));
-        let line = self.editor_scroll + (row - inner.y) as usize;
+        // Clamp into the buffer's line range: a short document leaves empty
+        // space below its last line, and a click there computes a row beyond
+        // `len_lines()`. Without this, `char_col_for_display` → `rope.line()`
+        // panics ("line index N, Rope line length M") on a tall editor pane.
+        let last = self.buffer.line_count().saturating_sub(1);
+        let line = (self.editor_scroll + (row - inner.y) as usize).min(last);
         let target = self.editor_hscroll + (column as usize).saturating_sub(inner.x as usize);
         (line, self.buffer.char_col_for_display(line, target))
     }
@@ -4050,39 +4072,12 @@ fn truncate_status(msg: &str) -> String {
     truncate_to(&msg.replace('\n', " "), MAX)
 }
 
-/// Strip anything that looks like an API-key or bearer token from a string
-/// before it reaches the status bar. reqwest errors normally carry only the
-/// URL, not the `Authorization` header — but a misbehaving proxy or gateway
-/// that echoes the request back in an error body would otherwise expose a key
-/// in full. This is defense-in-depth, not a guarantee.
-fn scrub_secrets(s: &str) -> String {
-    use regex::Regex;
-    static TOKENS: std::sync::LazyLock<Vec<Regex>> = std::sync::LazyLock::new(|| {
-        [
-            // OpenAI-style keys: `sk-...` (20+ word chars), case-insensitive.
-            r#"(?i)\bsk-[a-z0-9_-]{20,}\b"#,
-            // An explicit Authorization header, with or without the scheme.
-            r#"(?i)\bauthorization\s*:\s*(?:bearer\s+)?[a-z0-9._\-]{20,}"#,
-            // A bare `Bearer <token>` value.
-            r#"(?i)\bbearer\s+[a-z0-9._\-]{20,}"#,
-        ]
-        .iter()
-        .copied()
-        .map(|p| Regex::new(p).expect("valid secret-scrub regex"))
-        .collect()
-    });
-    let mut out = s.to_string();
-    for re in TOKENS.iter() {
-        out = re.replace_all(&out, "[redacted]").to_string();
-    }
-    out
-}
-
 /// Clamp a coach/provider error to one status-bar line and strip anything that
 /// looks like a secret first. The runtime coach-error path did neither before;
-/// the connection-test dialog already used `truncate_status`.
+/// the connection-test dialog already used `truncate_status`. The full (still
+/// scrubbed) error is written to the diagnostic log by the caller.
 fn coach_error_status(msg: &str) -> String {
-    truncate_status(&scrub_secrets(msg))
+    truncate_status(&crate::log::scrub_secrets(msg))
 }
 
 /// Re-screen each prior chat turn against the injection patterns before it is
@@ -4874,6 +4869,33 @@ mod tests {
     }
 
     #[test]
+    fn click_below_last_line_clamps_instead_of_panicking() {
+        // Regression: a short document in a tall editor pane leaves empty rows
+        // below the last line. A click there computed a line index past
+        // `rope.len_lines()` and panicked in `rope.line(...)` — "line index N,
+        // Rope line length M". It must clamp to the final line instead.
+        let rt = rt();
+        let mut app = test_app(&rt);
+        let _ = render(&mut app); // populate editor_inner / editor_height
+        assert!(app.editor_inner.height > app.buffer.line_count() as u16);
+        let last = app.buffer.line_count().saturating_sub(1);
+        // Bottom-most row of the editor pane: inside it, but below all content.
+        let col = app.editor_inner.x + 1;
+        let row = app.editor_inner.y + app.editor_inner.height - 1;
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+        let (line, _) = app.buffer.cursor_line_col();
+        assert!(
+            line <= last,
+            "click below content indexed line {line} past last line {last}"
+        );
+    }
+
+    #[test]
     fn outline_opens_and_jumps_to_heading() {
         let rt = rt();
         let mut app = test_app(&rt);
@@ -5131,32 +5153,6 @@ mod tests {
         let s = app.coach_settings.as_ref().unwrap();
         assert!(s.models.is_empty());
         assert!(s.status.as_deref().unwrap().starts_with('✗'));
-    }
-
-    #[test]
-    fn scrub_secrets_strips_known_token_shapes() {
-        // OpenAI-style key.
-        let out = scrub_secrets("error: key sk-abcdefghij1234567890XYZ is invalid");
-        assert!(!out.contains("sk-abcdefghij1234567890XYZ"));
-        assert!(out.contains("[redacted]"));
-
-        // An Authorization header (with or without "Bearer") is scrubbed whole.
-        let out = scrub_secrets("echoed: Authorization: Bearer abcdefghij1234567890XYZ");
-        assert!(!out.contains("Bearer"));
-        assert!(!out.contains("abcdefghij"));
-        assert!(out.contains("[redacted]"));
-
-        // A bare Bearer token value (no header name) is scrubbed.
-        let out = scrub_secrets("sent bearer abcdefghij1234567890XYZ over the wire");
-        assert!(!out.contains("abcdefghij"));
-
-        // A short lowercase string that isn't a key is left intact.
-        assert_eq!(scrub_secrets("connection refused"), "connection refused");
-        // A short "sk-" prefix that is too short to be a real key is left intact.
-        assert_eq!(
-            scrub_secrets("the token sk-short failed"),
-            "the token sk-short failed"
-        );
     }
 
     #[test]

@@ -22,6 +22,15 @@ use clap::{Parser, Subcommand};
 pub struct Cli {
     /// Path to a `.qmd` / `.md` file to open in the editor (created if missing).
     pub file: Option<PathBuf>,
+    /// Write a diagnostic log here (coach errors, judge fail-opens, panics).
+    /// Default: `$XDG_STATE_HOME/whetstone/whetstone.log`. Also set via
+    /// `WHETSTONE_LOG_FILE`. Use `--log-file off` to disable.
+    #[arg(long, global = true)]
+    pub log_file: Option<String>,
+    /// Log verbosity for `--log-file`: `off`, `error`, `warn`, or `info`
+    /// (default `info`). Also set via `WHETSTONE_LOG_LEVEL`.
+    #[arg(long, global = true)]
+    pub log_level: Option<String>,
     #[command(subcommand)]
     pub command: Option<Command>,
 }
