@@ -71,8 +71,9 @@ fn install_panic_logger() {
         // the load-bearing behavior; the log is best-effort after that.
         original(info);
         // Only pay the capture cost when something will actually record it.
+        // `capture()` (not `force_capture()`) honors RUST_BACKTRACE=0.
         if whetstone_tui::log::has_sink() {
-            let bt = std::backtrace::Backtrace::force_capture();
+            let bt = std::backtrace::Backtrace::capture();
             whetstone_tui::log::error(&format!("panic: {info}\n{bt}"));
         }
     }));
@@ -131,9 +132,20 @@ fn run_tui(file: PathBuf) -> Result<()> {
     // its synchronous log flush. A slow log write (e.g. an NFS-mounted state
     // dir) must not leave the terminal stuck in raw mode, so the shell stays
     // usable regardless of how long the logging takes.
+    //
+    // But only on the *main* thread: the hook is process-global, so a panic on
+    // a worker thread (a tokio coach task, the spawn_write log thread) would
+    // otherwise fire restore() against the shared terminal while the main event
+    // loop is still alive — disabling raw mode and leaving the alternate screen
+    // mid-flight, freezing the editor with no in-app message. Worker-thread
+    // panics still get logged by the wrapped logger below; the worker task ends
+    // and the main loop carries on untouched.
     let panic_logger = std::panic::take_hook();
+    let main_thread = std::thread::current().id();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = restore();
+        if std::thread::current().id() == main_thread {
+            let _ = restore();
+        }
         panic_logger(info);
     }));
 

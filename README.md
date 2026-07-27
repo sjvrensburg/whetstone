@@ -213,7 +213,8 @@ can appear — neither leaves enough to debug from. Whetstone writes the full
 a diagnostic log:
 
 - Default location: `$XDG_STATE_HOME/whetstone/whetstone.log` (falls back to
-  `~/.local/state/whetstone/whetstone.log`; `%APPDATA%` on Windows).
+  `~/.local/state/whetstone/whetstone.log`; `%LOCALAPPDATA%\whetstone` on
+  Windows — Local, not Roaming, so the log doesn't follow you across machines).
 - Override with `--log-file <path>`, or `WHETSTONE_LOG_FILE`. The path is shown
   at the bottom of the in-app help (`F1`).
 - Verbosity: `--log-level` / `WHETSTONE_LOG_LEVEL` — `off`, `error`, `warn`, or

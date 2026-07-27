@@ -19,6 +19,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   short document indexed past the rope's line count and panicked
   (`Attempt to index past end of Rope: line index N, Rope line length M`). The
   hit-tested line is now clamped into range.
+- **Panic hook honors `RUST_BACKTRACE=0`**: the panic logger now uses
+  `Backtrace::capture()` instead of `force_capture()`, so setting
+  `RUST_BACKTRACE=0` actually skips backtrace capture as documented.
+- **Status-bar `\r` corruption**: the status-bar/dialog one-line clamp now
+  collapses `\r` as well as `\n`, matching the diagnostic log's own scrub, so a
+  CRLF-bearing error no longer leaves a stray carriage return in the rendered
+  status line.
+- **Stale "log healthy" cue after a poisoned lock**: a poisoned log-sink mutex
+  (from an earlier panic mid-write) is now recovered via `into_inner()` instead
+  of silently no-op'ing forever while `healthy()` kept reporting the log as
+  writable.
 
 ## [0.1.5] — 2026-07-26
 

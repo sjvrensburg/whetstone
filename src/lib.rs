@@ -51,10 +51,13 @@ pub fn config_dir() -> Option<PathBuf> {
 
 /// The user state directory — the XDG-correct home for mutable, machine-local
 /// per-user data like logs: `$XDG_STATE_HOME` if set (absolute), else
-/// `$HOME/.local/state`, else `%LOCALAPPDATA%` (Local — NOT Roaming) on Windows.
-/// `None` if none can be found. Diagnostic logs embed machine-local detail (a
-/// scrubbed backtrace carries the edited file's path), so they must not roam
-/// with the profile to every machine the user signs into.
+/// `%LOCALAPPDATA%` (Local — NOT Roaming) on Windows, else `$HOME/.local/state`.
+/// `None` if none can be found. The precedence matches [`xdg_dir`]: the Windows
+/// branch is tried before the `$HOME` fallback, so on Windows with `HOME` set
+/// (Git Bash / MSYS2) the log still lands in Local storage. Diagnostic logs
+/// embed machine-local detail (a scrubbed backtrace carries the edited file's
+/// path), so they must not roam with the profile to every machine the user
+/// signs into.
 pub fn state_dir() -> Option<PathBuf> {
     xdg_dir("XDG_STATE_HOME", "LOCALAPPDATA", ".local/state")
 }
@@ -90,5 +93,15 @@ mod tests {
         }
         assert_eq!(state_dir().as_deref(), Some(dir.as_path()));
         let _ = std::fs::remove_dir_all(&dir);
+        // Tear the var down too: ENV_LOCK only *serializes* env mutation, it
+        // doesn't restore prior state on teardown. Leaving XDG_STATE_HOME
+        // pointing at the now-removed temp dir would make every later
+        // `state_dir()` call in this process resolve to a path that no longer
+        // exists — silently breaking any future test that relies on the real
+        // XDG fallback chain.
+        // SAFETY: ENV_LOCK serializes env mutation across these tests.
+        unsafe {
+            std::env::remove_var("XDG_STATE_HOME");
+        }
     }
 }

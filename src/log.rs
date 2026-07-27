@@ -223,11 +223,19 @@ fn rotate_if_large(path: &Path) {
         PathBuf::from(b)
     };
     if let Ok(contents) = std::fs::read(path) {
-        let _ = std::fs::write(&backup, contents);
-        // `File::create` truncates the live file in place — the inode is
-        // preserved, so every already-open fd stays valid and points at the
-        // (now empty) file subsequent appends extend.
-        let _ = File::create(path);
+        // Only truncate once the backup has landed. The backup holds the prior
+        // session's history — often the only record of a crash — and truncating
+        // the live file is destructive and irreversible. If the backup write
+        // fails (disk full, read-only mount, a denied `.old` path), dropping its
+        // error and truncating anyway would destroy that history with no copy
+        // surviving. Best-effort rotation then means: a backup failure leaves us
+        // appending to the large live file rather than losing what's there.
+        if std::fs::write(&backup, contents).is_ok() {
+            // `File::create` truncates the live file in place — the inode is
+            // preserved, so every already-open fd stays valid and points at the
+            // (now empty) file subsequent appends extend.
+            let _ = File::create(path);
+        }
     }
 }
 
@@ -246,14 +254,17 @@ pub fn write(level: Level, msg: &str) {
     // error or backtrace stays on a single, grep-friendly record.
     let collapsed = scrub_secrets(msg).replace(['\n', '\r'], " ");
     let line = format!("[{ts} {label}] {collapsed}\n", label = level.label());
-    if let Ok(mut f) = sink.lock() {
-        // A failed write or flush flips the process-wide health flag so
-        // `healthy()` (and thus the UI's "(see log)" cue) stops advertising a
-        // log this write never reached. Once unhealthy, stays unhealthy — the
-        // sink is opened once and a transient cause usually persists.
-        if f.write_all(line.as_bytes()).is_err() || f.flush().is_err() {
-            WRITE_HEALTHY.store(false, Ordering::Relaxed);
-        }
+    // A failed write or flush — or a poisoned lock, which means some earlier
+    // holder panicked mid-write — flips the process-wide health flag so
+    // `healthy()` (and thus the UI's "(see log)" cue) stops advertising a log
+    // this write never reached. Once unhealthy, stays unhealthy — the sink is
+    // opened once and a transient cause usually persists.
+    let mut f = match sink.lock() {
+        Ok(f) => f,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if f.write_all(line.as_bytes()).is_err() || f.flush().is_err() {
+        WRITE_HEALTHY.store(false, Ordering::Relaxed);
     }
 }
 
@@ -395,6 +406,24 @@ mod tests {
             !dir.join("diary.log.old").exists(),
             "backup must not replace the extension"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rotate_preserves_log_when_backup_write_fails() {
+        // If the backup can't be written, the live log must NOT be truncated —
+        // otherwise the only copy of the prior session's history (often the
+        // sole record of a crash) is destroyed with no backup created. Force a
+        // backup-write failure portably by making the `.old` path an existing
+        // directory, which `std::fs::write` cannot replace on any platform.
+        let dir = rotate_test_dir("backupfail");
+        let log = dir.join("big.log");
+        let body = "y".repeat(ROTATE_CAP_BYTES as usize + 1);
+        std::fs::write(&log, &body).unwrap();
+        std::fs::create_dir(dir.join("big.log.old")).unwrap();
+        rotate_if_large(&log);
+        // Live log untouched: history intact, no destructive truncation.
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), body);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

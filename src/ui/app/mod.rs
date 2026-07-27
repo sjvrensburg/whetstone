@@ -1893,12 +1893,14 @@ impl App {
             if ev.generation != self.conn_generation {
                 continue;
             }
-            let Some(s) = self.coach_settings.as_mut() else {
-                continue;
-            };
-            s.testing = false;
             match ev.result {
                 Ok(models) => {
+                    // A success only matters while the dialog is open — a result
+                    // arriving after Esc closed it has nowhere to land.
+                    let Some(s) = self.coach_settings.as_mut() else {
+                        continue;
+                    };
+                    s.testing = false;
                     s.status = Some(match models.len() {
                         0 => "✓ Reachable — server listed no models.".to_string(),
                         1 => "✓ Reachable — 1 model. Ctrl+N/Ctrl+P or click to choose.".to_string(),
@@ -1911,20 +1913,20 @@ impl App {
                     s.models = models;
                 }
                 Err(e) => {
-                    // Mirror the runtime coach-error path exactly: log at error
-                    // (a failed connection test blocks the coach workflow just as
-                    // a failed request does, so `--log-level error` must keep
-                    // it), scrub secrets then truncate, and point at the log
-                    // when it's healthy. The dialog sends the raw API key typed
-                    // into the field, and a misbehaving proxy/gateway that
-                    // echoes the request would otherwise render the key here.
-                    crate::log::error(&format!("connection test failed: {e}"));
-                    let suffix = if crate::log::healthy() {
-                        " (see log)"
-                    } else {
-                        ""
+                    // Build the status string (and log the failure) BEFORE the
+                    // dialog-open gate: closing the dialog with Esc while a test
+                    // is in flight clears coach_settings without bumping the
+                    // generation, so the check above still passes — gating the
+                    // log on the dialog being open would silently drop the
+                    // failure, leaving no record anywhere (the status bar is
+                    // gone with the dialog). The status is computed up-front
+                    // but only shown if the dialog is still open below.
+                    let status = log_error_then_status("connection test failed", &e);
+                    let Some(s) = self.coach_settings.as_mut() else {
+                        continue;
                     };
-                    s.status = Some(format!("✗ {}", coach_error_status_with_suffix(&e, suffix)));
+                    s.testing = false;
+                    s.status = Some(format!("✗ {status}"));
                     s.models.clear();
                 }
             }
@@ -3052,27 +3054,12 @@ impl App {
                 Ok(reply) => self.accept_coach_reply(reply, ev.judge),
                 Err(e) => {
                     self.log_coach_consult(true);
-                    // The status bar shows a truncated, scrubbed one-liner; the
-                    // full error (still scrubbed) goes to the diagnostic log so
-                    // the failure can actually be diagnosed. Only point at the
-                    // log when it's actually recording — `--log-file off` or an
-                    // unwritable path leaves no log to look up.
-                    crate::log::error(&format!("coach request failed: {e}"));
-                    // Point at the log only when it's actually recording AND the
-                    // write above landed — `healthy` flips false once a write
-                    // fails (disk full, file unlinked under the handle), so the
-                    // cue disappears rather than misleading the user into opening
-                    // an empty log. Folding the suffix into the clamp (not
-                    // appending after it) keeps it inside the status-bar width.
-                    let suffix = if crate::log::healthy() {
-                        " (see log)"
-                    } else {
-                        ""
-                    };
-                    self.message = format!(
-                        "Coach error: {}",
-                        coach_error_status_with_suffix(&e, suffix)
-                    );
+                    // Log the (scrubbed) failure and build the status-bar
+                    // one-liner with its "(see log)" suffix via the shared
+                    // helper, so this path stays a mirror of the connection-test
+                    // error path in `drain_conn_test_events`.
+                    let status = log_error_then_status("coach request failed", &e);
+                    self.message = format!("Coach error: {status}");
                 }
             }
         }
@@ -4087,12 +4074,29 @@ impl App {
 /// ellipsis when truncated. Errors from reqwest can be long; the status bar and
 /// the connection-test dialog both need a one-line summary.
 fn clamp_one_line(msg: &str, width: usize) -> String {
-    truncate_to(&msg.replace('\n', " "), width)
+    truncate_to(&msg.replace(['\n', '\r'], " "), width)
 }
 
 /// The default one-line clamp width for the status bar and connection-test
 /// dialog.
 const STATUS_MAX: usize = 56;
+
+/// Write `{log_prefix}: {e}` to the diagnostic log at `error` level and return
+/// a status-bar one-liner for `e`: scrubbed, clamped to one line, with a
+/// " (see log)" suffix folded *inside* the clamp when the log is actually
+/// recording. Shared by the failed-coach-request and failed-connection-test
+/// drain paths so the log level, suffix policy, and clamp logic cannot drift
+/// between them — the connection-test dialog and the status bar must agree
+/// about whether the log holds the failure.
+fn log_error_then_status(log_prefix: &str, e: &str) -> String {
+    crate::log::error(&format!("{log_prefix}: {e}"));
+    let suffix = if crate::log::healthy() {
+        " (see log)"
+    } else {
+        ""
+    };
+    coach_error_status_with_suffix(e, suffix)
+}
 
 /// Clamp a coach/provider error to one line: scrub secrets first (the full, still
 /// scrubbed error is written to the diagnostic log by the caller), then reserve
@@ -5181,6 +5185,33 @@ mod tests {
         let s = app.coach_settings.as_ref().unwrap();
         assert!(s.models.is_empty());
         assert!(s.status.as_deref().unwrap().starts_with('✗'));
+    }
+
+    #[test]
+    fn failed_conn_test_with_closed_dialog_is_drained_safely() {
+        // Closing the dialog (Esc) while a test is in flight clears
+        // coach_settings without bumping conn_generation, so the in-flight
+        // failure still matches the current generation. The error must be
+        // logged before the dialog-open gate (the actual log write isn't
+        // observable here — the lib test process never opens a sink, and
+        // opening one would break `healthy_is_false_without_a_sink`), so this
+        // guards the restructure: the matching event is consumed, the closed
+        // dialog stays closed, and nothing panics on the None path.
+        let rt = rt();
+        let mut app = test_app(&rt);
+        app.open_coach_settings();
+        app.conn_generation += 1;
+        app.conn_tx
+            .send(ConnTestEvent {
+                generation: app.conn_generation,
+                result: Err("connection refused".into()),
+            })
+            .unwrap();
+        app.coach_settings = None; // Esc closed the dialog mid-request.
+        app.drain_conn_test_events();
+        assert!(app.coach_settings.is_none());
+        // The matching failure was consumed, not left blocking the channel.
+        assert!(app.conn_rx.try_recv().is_err());
     }
 
     #[test]
