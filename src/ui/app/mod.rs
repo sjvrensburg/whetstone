@@ -1911,12 +1911,20 @@ impl App {
                     s.models = models;
                 }
                 Err(e) => {
-                    // Mirror the runtime coach-error path: scrub secrets then
-                    // truncate. The dialog sends the raw API key typed into the
-                    // field, and a misbehaving proxy/gateway that echoes the
-                    // request would otherwise render the key in this status line.
-                    crate::log::warn(&format!("connection test failed: {e}"));
-                    s.status = Some(format!("✗ {}", coach_error_status(&e)));
+                    // Mirror the runtime coach-error path exactly: log at error
+                    // (a failed connection test blocks the coach workflow just as
+                    // a failed request does, so `--log-level error` must keep
+                    // it), scrub secrets then truncate, and point at the log
+                    // when it's healthy. The dialog sends the raw API key typed
+                    // into the field, and a misbehaving proxy/gateway that
+                    // echoes the request would otherwise render the key here.
+                    crate::log::error(&format!("connection test failed: {e}"));
+                    let suffix = if crate::log::healthy() {
+                        " (see log)"
+                    } else {
+                        ""
+                    };
+                    s.status = Some(format!("✗ {}", coach_error_status_with_suffix(&e, suffix)));
                     s.models.clear();
                 }
             }
@@ -3050,12 +3058,21 @@ impl App {
                     // log when it's actually recording — `--log-file off` or an
                     // unwritable path leaves no log to look up.
                     crate::log::error(&format!("coach request failed: {e}"));
-                    let suffix = if crate::log::has_sink() {
+                    // Point at the log only when it's actually recording AND the
+                    // write above landed — `healthy` flips false once a write
+                    // fails (disk full, file unlinked under the handle), so the
+                    // cue disappears rather than misleading the user into opening
+                    // an empty log. Folding the suffix into the clamp (not
+                    // appending after it) keeps it inside the status-bar width.
+                    let suffix = if crate::log::healthy() {
                         " (see log)"
                     } else {
                         ""
                     };
-                    self.message = format!("Coach error: {}{suffix}", coach_error_status(&e));
+                    self.message = format!(
+                        "Coach error: {}",
+                        coach_error_status_with_suffix(&e, suffix)
+                    );
                 }
             }
         }
@@ -4065,19 +4082,28 @@ impl App {
     }
 }
 
-/// Clamp a connection-test error to one dialog line (errors from reqwest can be
-/// long), appending an ellipsis when truncated.
-fn truncate_status(msg: &str) -> String {
-    const MAX: usize = 56;
-    truncate_to(&msg.replace('\n', " "), MAX)
+/// One status-bar / dialog line: collapse embedded newlines (so a multi-line
+/// error or backtrace stays one record) and clamp to `width` columns, adding an
+/// ellipsis when truncated. Errors from reqwest can be long; the status bar and
+/// the connection-test dialog both need a one-line summary.
+fn clamp_one_line(msg: &str, width: usize) -> String {
+    truncate_to(&msg.replace('\n', " "), width)
 }
 
-/// Clamp a coach/provider error to one status-bar line and strip anything that
-/// looks like a secret first. The runtime coach-error path did neither before;
-/// the connection-test dialog already used `truncate_status`. The full (still
-/// scrubbed) error is written to the diagnostic log by the caller.
-fn coach_error_status(msg: &str) -> String {
-    truncate_status(&crate::log::scrub_secrets(msg))
+/// The default one-line clamp width for the status bar and connection-test
+/// dialog.
+const STATUS_MAX: usize = 56;
+
+/// Clamp a coach/provider error to one line: scrub secrets first (the full, still
+/// scrubbed error is written to the diagnostic log by the caller), then reserve
+/// space for `suffix` *inside* the clamp and append it. Reserving the suffix's
+/// width keeps a cue like " (see log)" inside the status bar instead of
+/// appending it after the clamp and letting it be clipped off the right edge.
+fn coach_error_status_with_suffix(msg: &str, suffix: &str) -> String {
+    let budget = STATUS_MAX.saturating_sub(suffix.chars().count());
+    let mut out = clamp_one_line(&crate::log::scrub_secrets(msg), budget);
+    out.push_str(suffix);
+    out
 }
 
 /// Re-screen each prior chat turn against the injection patterns before it is
@@ -4983,10 +5009,12 @@ mod tests {
     }
 
     #[test]
-    fn truncate_status_collapses_and_clamps() {
-        assert_eq!(truncate_status("line one\nline two"), "line one line two");
-        let long = "x".repeat(80);
-        let out = truncate_status(&long);
+    fn clamp_one_line_collapses_and_clamps() {
+        assert_eq!(
+            clamp_one_line("line one\nline two", 56),
+            "line one line two"
+        );
+        let out = clamp_one_line(&"x".repeat(80), 56);
         assert_eq!(out.chars().count(), 56);
         assert!(out.ends_with('…'));
     }
@@ -5159,9 +5187,28 @@ mod tests {
     fn coach_error_status_truncates_and_scrubs() {
         // A long error containing a key is both scrubbed and clamped.
         let msg = "gateway echoed: sk-abcdefghij1234567890XYZ plus a lot of trailing text here";
-        let out = coach_error_status(msg);
+        let out = coach_error_status_with_suffix(msg, "");
         assert!(!out.contains("sk-"));
         assert!(out.len() <= 60); // 56 + possible ellipsis chars
+    }
+
+    #[test]
+    fn coach_error_status_keeps_suffix_inside_the_clamp() {
+        // A suffix must reserve its own width inside the clamp so it isn't
+        // appended after the fact and clipped off the right edge. A long error
+        // plus " (see log)" still fits STATUS_MAX, and the suffix survives.
+        let suffix = " (see log)";
+        let msg = "x".repeat(80);
+        let out = coach_error_status_with_suffix(&msg, suffix);
+        assert!(out.ends_with(suffix), "suffix should survive truncation");
+        assert!(
+            out.chars().count() <= STATUS_MAX,
+            "whole line (body + suffix) must fit the clamp"
+        );
+        // With no suffix the body alone may use the full width.
+        let no_suffix = coach_error_status_with_suffix(&msg, "");
+        assert!(no_suffix.chars().count() <= STATUS_MAX);
+        assert!(!no_suffix.ends_with(suffix));
     }
 
     #[test]

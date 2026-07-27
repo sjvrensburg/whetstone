@@ -24,12 +24,14 @@ pub struct Cli {
     pub file: Option<PathBuf>,
     /// Write a diagnostic log here (coach errors, judge fail-opens, panics).
     /// Default: `$XDG_STATE_HOME/whetstone/whetstone.log`. Also set via
-    /// `WHETSTONE_LOG_FILE`. Use `--log-file off` to disable.
-    #[arg(long, global = true)]
+    /// `WHETSTONE_LOG_FILE`. Use `--log-file off` to disable. Top-level only —
+    /// the headless subcommands stay side-effect-free (no filesystem writes), so
+    /// these are not honored there and not advertised on their `--help`.
+    #[arg(long)]
     pub log_file: Option<String>,
     /// Log verbosity for `--log-file`: `off`, `error`, `warn`, or `info`
-    /// (default `info`). Also set via `WHETSTONE_LOG_LEVEL`.
-    #[arg(long, global = true)]
+    /// (default `info`). Also set via `WHETSTONE_LOG_LEVEL`. Top-level only.
+    #[arg(long)]
     pub log_level: Option<String>,
     #[command(subcommand)]
     pub command: Option<Command>,

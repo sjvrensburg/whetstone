@@ -63,9 +63,18 @@ fn main() -> Result<()> {
 fn install_panic_logger() {
     let original = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let bt = std::backtrace::Backtrace::force_capture();
-        whetstone_tui::log::error(&format!("panic: {info}\n{bt}"));
+        // Print to stderr FIRST, before the (synchronous, un-timed) log write.
+        // On a slow/unreachable log mount (e.g. a hard-mounted NFS state dir)
+        // `write_all`+`flush` inside `log::error` can block indefinitely — if it
+        // ran first, the stderr message would never appear and the process would
+        // hang with no diagnostic. Surfacing the panic on stderr immediately is
+        // the load-bearing behavior; the log is best-effort after that.
         original(info);
+        // Only pay the capture cost when something will actually record it.
+        if whetstone_tui::log::has_sink() {
+            let bt = std::backtrace::Backtrace::force_capture();
+            whetstone_tui::log::error(&format!("panic: {info}\n{bt}"));
+        }
     }));
 }
 
